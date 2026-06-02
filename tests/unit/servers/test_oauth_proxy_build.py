@@ -443,6 +443,26 @@ def test_build_auth_provider_none_when_nonsecret_config_missing(monkeypatch):
     assert provider is None
 
 
+def test_build_auth_provider_fails_closed_on_multi_provider(monkeypatch):
+    """The server refuses to start when config implies more than one upstream.
+
+    A single proxy fronts exactly one provider. Configuring OAuth client
+    credentials for both the Atlassian (Jira/Confluence) and Bitbucket families
+    is ambiguous, so _build_auth_provider raises rather than guessing.
+    """
+    monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+    monkeypatch.setenv("JIRA_URL", "https://jira.example.com")
+    monkeypatch.setenv("ATLASSIAN_OAUTH_CLIENT_ID", "client-id")
+    monkeypatch.setenv("ATLASSIAN_OAUTH_CLIENT_SECRET", "client-secret")
+    monkeypatch.setenv("ATLASSIAN_OAUTH_REDIRECT_URI", "http://localhost:3000/callback")
+    monkeypatch.setenv("BITBUCKET_URL", "https://bitbucket.example.com")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_SECRET", "bb-client-secret")
+
+    with pytest.raises(RuntimeError, match="more than one upstream provider"):
+        _build_auth_provider()
+
+
 def test_build_auth_provider_none_when_secret_missing(monkeypatch):
     """Provider returns None when client secret is missing."""
     monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
