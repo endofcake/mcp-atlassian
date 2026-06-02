@@ -57,9 +57,15 @@ def env_scenarios():
     }
 
 
-def _assert_service_availability(result, confluence_expected, jira_expected):
+def _assert_service_availability(
+    result, confluence_expected, jira_expected, bitbucket_expected=False
+):
     """Helper to assert service availability."""
-    assert result == {"confluence": confluence_expected, "jira": jira_expected}
+    assert result == {
+        "confluence": confluence_expected,
+        "jira": jira_expected,
+        "bitbucket": bitbucket_expected,
+    }
 
 
 def _assert_authentication_logs(caplog, auth_type, services):
@@ -239,7 +245,7 @@ class TestGetAvailableServices:
             result = get_available_services()
 
             assert isinstance(result, dict)
-            assert set(result.keys()) == {"confluence", "jira"}
+            assert set(result.keys()) == {"confluence", "jira", "bitbucket"}
             assert all(isinstance(v, bool) for v in result.values())
 
     @pytest.mark.parametrize(
@@ -516,3 +522,91 @@ class TestGetAvailableServicesWithHeaders:
             _assert_service_availability(
                 result, confluence_expected=False, jira_expected=False
             )
+
+
+class TestGetAvailableServicesBitbucket:
+    """Bitbucket DC detection (OAuth-only)."""
+
+    def test_bitbucket_dc_oauth_client_credentials(self, caplog):
+        """DC OAuth client credentials mark Bitbucket available."""
+        with MockEnvironment.clean_env():
+            import os
+
+            os.environ["BITBUCKET_URL"] = "https://bitbucket.corp.example.com"
+            os.environ["BITBUCKET_OAUTH_CLIENT_ID"] = "bb-client"
+            os.environ["BITBUCKET_OAUTH_CLIENT_SECRET"] = "bb-secret"
+
+            result = get_available_services()
+            _assert_service_availability(
+                result,
+                confluence_expected=False,
+                jira_expected=False,
+                bitbucket_expected=True,
+            )
+            assert "Bitbucket OAuth 2.0 authentication (Data Center)" in caplog.text
+
+    def test_bitbucket_dc_byo_access_token(self):
+        """A BYO access token marks Bitbucket available."""
+        with MockEnvironment.clean_env():
+            import os
+
+            os.environ["BITBUCKET_URL"] = "https://bitbucket.corp.example.com"
+            os.environ["BITBUCKET_OAUTH_ACCESS_TOKEN"] = "bb-token"
+
+            result = get_available_services()
+            assert result["bitbucket"] is True
+
+    def test_bitbucket_oauth_enable_user_tokens(self):
+        """ATLASSIAN_OAUTH_ENABLE marks Bitbucket available for header tokens."""
+        with MockEnvironment.clean_env():
+            import os
+
+            os.environ["BITBUCKET_URL"] = "https://bitbucket.corp.example.com"
+            os.environ["ATLASSIAN_OAUTH_ENABLE"] = "true"
+
+            result = get_available_services()
+            assert result["bitbucket"] is True
+
+    def test_bitbucket_url_without_oauth_not_available(self):
+        """A bare BITBUCKET_URL with no OAuth is not available."""
+        with MockEnvironment.clean_env():
+            import os
+
+            os.environ["BITBUCKET_URL"] = "https://bitbucket.corp.example.com"
+
+            result = get_available_services()
+            assert result["bitbucket"] is False
+
+    def test_bitbucket_shared_oauth_creds_do_not_mark_available(self):
+        """Shared ATLASSIAN_OAUTH_* belongs to the Jira/Confluence provider.
+
+        Bitbucket DC is a separate OAuth provider, so shared client
+        credentials plus a BITBUCKET_URL must NOT mark Bitbucket available
+        without service-scoped BITBUCKET_OAUTH_* or ATLASSIAN_OAUTH_ENABLE.
+        """
+        with MockEnvironment.clean_env():
+            import os
+
+            os.environ["BITBUCKET_URL"] = "https://bitbucket.corp.example.com"
+            os.environ["ATLASSIAN_OAUTH_CLIENT_ID"] = "shared-client"
+            os.environ["ATLASSIAN_OAUTH_CLIENT_SECRET"] = "shared-secret"
+
+            result = get_available_services()
+            assert result["bitbucket"] is False
+
+    def test_bitbucket_shared_access_token_does_not_mark_available(self):
+        """A shared ATLASSIAN_OAUTH_ACCESS_TOKEN must not mark Bitbucket available."""
+        with MockEnvironment.clean_env():
+            import os
+
+            os.environ["BITBUCKET_URL"] = "https://bitbucket.corp.example.com"
+            os.environ["ATLASSIAN_OAUTH_ACCESS_TOKEN"] = "shared-token"
+
+            result = get_available_services()
+            assert result["bitbucket"] is False
+
+    def test_bitbucket_absent_when_no_url(self):
+        """No BITBUCKET_URL means Bitbucket is not available."""
+        with MockEnvironment.clean_env():
+            result = get_available_services()
+            assert result["bitbucket"] is False

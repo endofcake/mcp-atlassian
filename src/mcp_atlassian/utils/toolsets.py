@@ -1,6 +1,6 @@
 """Toolset definitions and filtering utilities for MCP Atlassian.
 
-Groups 68 tools into 21 named toolsets controlled via the TOOLSETS env var.
+Groups tools into named toolsets controlled via the TOOLSETS env var.
 Supports 'all', 'default', and comma-separated toolset names.
 """
 
@@ -142,11 +142,22 @@ CONFLUENCE_TOOLSETS: dict[str, ToolsetDefinition] = {
     ),
 }
 
+# --- Bitbucket toolsets (1) ---
+
+BITBUCKET_TOOLSETS: dict[str, ToolsetDefinition] = {
+    "bitbucket_projects": ToolsetDefinition(
+        name="bitbucket_projects",
+        description="Bitbucket Data Center project listing",
+        default=False,
+    ),
+}
+
 # --- Combined registry ---
 
 ALL_TOOLSETS: dict[str, ToolsetDefinition] = {
     **JIRA_TOOLSETS,
     **CONFLUENCE_TOOLSETS,
+    **BITBUCKET_TOOLSETS,
 }
 
 DEFAULT_TOOLSETS: set[str] = {
@@ -157,7 +168,7 @@ DEFAULT_TOOLSETS: set[str] = {
 def get_enabled_toolsets() -> set[str]:
     """Parse the TOOLSETS env var into a set of enabled toolset names.
 
-    Supports keywords 'all' (all 21 toolsets) and 'default' (6 defaults),
+    Supports keywords 'all' (all toolsets) and 'default' (6 core defaults),
     plus comma-separated specific toolset names. Case-insensitive for keywords.
 
     When TOOLSETS is unset or empty, returns all toolsets with a deprecation
@@ -170,11 +181,12 @@ def get_enabled_toolsets() -> set[str]:
         names are given, returns an empty set (fail-closed).
 
     Examples:
-        TOOLSETS unset -> all 21 toolsets (with deprecation warning)
-        TOOLSETS="" -> all 21 toolsets (with deprecation warning)
-        TOOLSETS="all" -> all 21 names
+        TOOLSETS unset -> all toolsets (with deprecation warning)
+        TOOLSETS="" -> all toolsets (with deprecation warning)
+        TOOLSETS="all" -> all toolset names
         TOOLSETS="default" -> 6 default names
         TOOLSETS="default,jira_agile" -> defaults + jira_agile
+        TOOLSETS="bitbucket_projects" -> Bitbucket project listing only
         TOOLSETS="typo_name" -> set() (fail-closed)
     """
     toolsets_str = os.getenv("TOOLSETS")

@@ -54,7 +54,7 @@ uv run pytest --cov=src/mcp_atlassian --cov-report=term-missing  # coverage
 3. **Type safety**: All functions require type hints
 4. **Testing**: New features need tests, bug fixes need regression tests
 5. **Commits**: Use trailers for attribution, never mention tools/AI
-6. **Commit types**: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `ci` — scopes: `jira`, `confluence`, `server`, `auth`, `docker`, `docs`
+6. **Commit types**: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `ci` — scopes: `jira`, `confluence`, `bitbucket`, `server`, `auth`, `docker`, `docs`
 7. **File hygiene**: Prefer editing existing files over creating new ones
 
 ---

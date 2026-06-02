@@ -175,6 +175,35 @@ def get_available_services(
             jira_is_setup = True
             logger.info("Using Jira authentication from header personal token")
 
+    bitbucket_url = os.getenv("BITBUCKET_URL")
+    bitbucket_is_setup = False
+    if bitbucket_url:
+        # Bitbucket DC uses OAuth here (Data Center, so no cloud_id), and it is
+        # a SEPARATE OAuth provider on a separate host from Jira/Confluence.
+        # The shared ATLASSIAN_OAUTH_CLIENT_ID/SECRET belong to that other
+        # provider, so they must NOT mark Bitbucket available; require
+        # service-scoped BITBUCKET_OAUTH_* (or a BITBUCKET_OAUTH_ACCESS_TOKEN,
+        # or ATLASSIAN_OAUTH_ENABLE for per-request header tokens).
+        bitbucket_client_id = os.getenv("BITBUCKET_OAUTH_CLIENT_ID")
+        bitbucket_client_secret = os.getenv("BITBUCKET_OAUTH_CLIENT_SECRET")
+        bitbucket_access_token = os.getenv("BITBUCKET_OAUTH_ACCESS_TOKEN")
+
+        if bitbucket_client_id and bitbucket_client_secret:
+            bitbucket_is_setup = True
+            logger.info("Using Bitbucket OAuth 2.0 authentication (Data Center)")
+        elif bitbucket_access_token:
+            bitbucket_is_setup = True
+            logger.info(
+                "Using Bitbucket OAuth 2.0 authentication (Data Center) "
+                "with provided access token"
+            )
+        elif os.getenv("ATLASSIAN_OAUTH_ENABLE", "").lower() in ("true", "1", "yes"):
+            bitbucket_is_setup = True
+            logger.info(
+                "Using Bitbucket OAuth with BITBUCKET_URL "
+                "- expecting user-provided tokens via headers"
+            )
+
     if not confluence_is_setup:
         logger.info(
             "Confluence is not configured or required environment variables are missing."
@@ -183,5 +212,13 @@ def get_available_services(
         logger.info(
             "Jira is not configured or required environment variables are missing."
         )
+    if not bitbucket_is_setup:
+        logger.info(
+            "Bitbucket is not configured or required environment variables are missing."
+        )
 
-    return {"confluence": confluence_is_setup, "jira": jira_is_setup}
+    return {
+        "confluence": confluence_is_setup,
+        "jira": jira_is_setup,
+        "bitbucket": bitbucket_is_setup,
+    }

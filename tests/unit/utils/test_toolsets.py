@@ -34,12 +34,12 @@ class TestGetEnabledToolsets:
         assert result == expected
 
     def test_all_keyword(self, monkeypatch):
-        """Test 'all' keyword returns all 22 toolset names."""
+        """Test 'all' keyword returns all toolset names."""
         monkeypatch.setenv("TOOLSETS", "all")
         result = get_enabled_toolsets()
         assert result is not None
         assert result == set(ALL_TOOLSETS.keys())
-        assert len(result) == 22
+        assert len(result) == 23
 
     def test_all_keyword_case_insensitive(self, monkeypatch):
         """Test 'ALL' keyword is case-insensitive."""
@@ -47,7 +47,7 @@ class TestGetEnabledToolsets:
         result = get_enabled_toolsets()
         assert result is not None
         assert result == set(ALL_TOOLSETS.keys())
-        assert len(result) == 22
+        assert len(result) == 23
 
     def test_default_keyword(self, monkeypatch):
         """Test 'default' keyword returns 6 default toolset names."""
@@ -91,8 +91,8 @@ class TestGetEnabledToolsets:
         assert DEFAULT_TOOLSETS == expected_defaults
 
     def test_all_toolsets_count(self):
-        """Verify ALL_TOOLSETS has exactly 22 entries."""
-        assert len(ALL_TOOLSETS) == 22
+        """Verify ALL_TOOLSETS has exactly 23 entries."""
+        assert len(ALL_TOOLSETS) == 23
 
     def test_all_toolsets_contains_jira_and_confluence(self):
         """Verify ALL_TOOLSETS has both Jira and Confluence toolsets."""
@@ -100,6 +100,22 @@ class TestGetEnabledToolsets:
         confluence_toolsets = {k for k in ALL_TOOLSETS if k.startswith("confluence_")}
         assert len(jira_toolsets) == 15
         assert len(confluence_toolsets) == 7
+
+    def test_all_toolsets_contains_bitbucket(self):
+        """Verify ALL_TOOLSETS includes the Bitbucket toolset."""
+        bitbucket_toolsets = {k for k in ALL_TOOLSETS if k.startswith("bitbucket_")}
+        assert len(bitbucket_toolsets) == 1
+        assert "bitbucket_projects" in bitbucket_toolsets
+
+    def test_bitbucket_projects_not_default(self):
+        """bitbucket_projects is opt-in, not in the default set."""
+        assert "bitbucket_projects" not in DEFAULT_TOOLSETS
+
+    def test_bitbucket_toolset_enabled_explicitly(self, monkeypatch):
+        """bitbucket_projects can be enabled by name."""
+        monkeypatch.setenv("TOOLSETS", "bitbucket_projects")
+        result = get_enabled_toolsets()
+        assert result == {"bitbucket_projects"}
 
 
 class TestShouldIncludeToolByToolset:
@@ -249,6 +265,20 @@ class TestToolsetTagCompleteness:
                     f"'{toolset_name}' (not in ALL_TOOLSETS)"
                 )
 
+    @pytest.fixture()
+    def bitbucket_tools(self):
+        """Get all registered Bitbucket tools as {name: tool}."""
+        import asyncio
+
+        from mcp_atlassian.servers.bitbucket import bitbucket_mcp
+
+        loop = asyncio.new_event_loop()
+        try:
+            tools = loop.run_until_complete(bitbucket_mcp.list_tools())
+            return {tool.name: tool for tool in tools}
+        finally:
+            loop.close()
+
     def test_jira_tool_count(self, jira_tools):
         """Verify expected number of Jira tools."""
         assert len(jira_tools) == 53, f"Expected 53 Jira tools, got {len(jira_tools)}"
@@ -257,4 +287,31 @@ class TestToolsetTagCompleteness:
         """Verify expected number of Confluence tools."""
         assert len(confluence_tools) == 35, (
             f"Expected 35 Confluence tools, got {len(confluence_tools)}"
+        )
+
+    def test_bitbucket_tools_have_toolset_tag(self, bitbucket_tools):
+        """Every Bitbucket tool must have exactly one toolset:* tag."""
+        for name, tool in bitbucket_tools.items():
+            tags = tool.tags if hasattr(tool, "tags") else set()
+            toolset_tags = [t for t in tags if t.startswith(TOOLSET_TAG_PREFIX)]
+            assert len(toolset_tags) == 1, (
+                f"Bitbucket tool '{name}' has {len(toolset_tags)} toolset tags "
+                f"(expected 1): {toolset_tags}"
+            )
+
+    def test_bitbucket_toolset_tags_are_valid(self, bitbucket_tools):
+        """Every Bitbucket tool's toolset tag must reference a valid toolset."""
+        for name, tool in bitbucket_tools.items():
+            tags = tool.tags if hasattr(tool, "tags") else set()
+            toolset_name = get_toolset_tag(tags)
+            if toolset_name is not None:
+                assert toolset_name in ALL_TOOLSETS, (
+                    f"Bitbucket tool '{name}' has unknown toolset "
+                    f"'{toolset_name}' (not in ALL_TOOLSETS)"
+                )
+
+    def test_bitbucket_tool_count(self, bitbucket_tools):
+        """Verify expected number of Bitbucket tools."""
+        assert len(bitbucket_tools) == 1, (
+            f"Expected 1 Bitbucket tool, got {len(bitbucket_tools)}"
         )

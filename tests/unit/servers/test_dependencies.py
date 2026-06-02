@@ -7,12 +7,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from mcp_atlassian.bitbucket import BitbucketConfig, BitbucketFetcher
 from mcp_atlassian.confluence import ConfluenceConfig, ConfluenceFetcher
 from mcp_atlassian.jira import JiraConfig, JiraFetcher
 from mcp_atlassian.servers.context import MainAppContext
 from mcp_atlassian.servers.dependencies import (
     _create_user_config_for_fetcher,
     _resolve_bearer_auth_type,
+    get_bitbucket_fetcher,
     get_confluence_fetcher,
     get_jira_fetcher,
 )
@@ -79,6 +81,25 @@ def config_factory():
                 defaults["personal_token"] = "test_pat_token"
 
             return ConfluenceConfig(**{**defaults, **overrides})
+
+        @staticmethod
+        def create_bitbucket_config(**overrides):
+            """Create a BitbucketConfig instance (DC OAuth)."""
+            defaults = {
+                "url": "https://bitbucket.dc.example.com",
+                "auth_type": "oauth",
+                "ssl_verify": True,
+                "http_proxy": None,
+                "https_proxy": None,
+                "no_proxy": None,
+                "socks_proxy": None,
+                "projects_filter": "PROJ",
+                "oauth_config": BYOAccessTokenOAuthConfig(
+                    access_token="placeholder-startup-token",
+                    base_url="https://bitbucket.dc.example.com",
+                ),
+            }
+            return BitbucketConfig(**{**defaults, **overrides})
 
         @staticmethod
         def create_oauth_config(**overrides):
@@ -433,6 +454,94 @@ class TestCreateUserConfigForFetcher:
                 auth_type="pat",
                 credentials=credentials,
             )
+
+    def test_bitbucket_oauth_config_from_minimal_global(self, config_factory):
+        """Bitbucket forwards the user token into a per-user DC OAuth config."""
+        base_config = config_factory.create_bitbucket_config()
+        credentials = {"oauth_access_token": "user-access-token"}
+
+        result = _create_user_config_for_fetcher(
+            base_config=base_config,
+            auth_type="oauth",
+            credentials=credentials,
+        )
+
+        assert isinstance(result, BitbucketConfig)
+        assert result.auth_type == "oauth"
+        assert result.oauth_config is not None
+        assert result.oauth_config.access_token == "user-access-token"
+        # DC OAuth: base_url preserved, cloud_id stays unset.
+        assert result.oauth_config.base_url == "https://bitbucket.dc.example.com"
+        assert result.oauth_config.cloud_id is None
+        assert result.projects_filter == "PROJ"
+
+    def test_bitbucket_oauth_with_byo_global_config(self):
+        """Regression: Bitbucket global oauth_config may be a BYO config.
+
+        Mirrors the Jira BYO-global-config fix — a placeholder
+        ``BITBUCKET_OAUTH_ACCESS_TOKEN`` yields a ``BYOAccessTokenOAuthConfig``
+        with no client_id/secret/redirect_uri/scope attributes. Reading those
+        directly would raise AttributeError; they must fall back to "".
+        """
+        base_config = BitbucketConfig(
+            url="https://bitbucket.dc.example.com",
+            auth_type="oauth",
+            oauth_config=BYOAccessTokenOAuthConfig(
+                access_token="placeholder-startup-token",
+                base_url="https://bitbucket.dc.example.com",
+            ),
+        )
+        credentials = {"oauth_access_token": "user-access-token"}
+
+        # Must not raise AttributeError on the BYO global config.
+        result = _create_user_config_for_fetcher(
+            base_config=base_config,
+            auth_type="oauth",
+            credentials=credentials,
+        )
+
+        assert isinstance(result, BitbucketConfig)
+        assert result.oauth_config is not None
+        assert result.oauth_config.access_token == "user-access-token"
+        assert result.oauth_config.client_id == ""
+        assert result.oauth_config.client_secret == ""
+        assert result.oauth_config.redirect_uri == ""
+        assert result.oauth_config.scope == ""
+        assert result.oauth_config.base_url == "https://bitbucket.dc.example.com"
+        assert result.oauth_config.cloud_id is None
+
+    def test_bitbucket_rejects_non_oauth_auth_type(self, config_factory):
+        """Bitbucket DC supports OAuth only; other auth types raise."""
+        base_config = config_factory.create_bitbucket_config()
+        credentials = {"personal_access_token": "user-pat"}
+
+        with pytest.raises(ValueError, match="only OAuth auth_type"):
+            _create_user_config_for_fetcher(
+                base_config=base_config,
+                auth_type="pat",
+                credentials=credentials,
+            )
+
+    def test_bitbucket_multi_tenant_isolation(self, config_factory):
+        """Two Bitbucket user configs are fully isolated from each other."""
+        base_config = config_factory.create_bitbucket_config()
+
+        tenant1 = _create_user_config_for_fetcher(
+            base_config=base_config,
+            auth_type="oauth",
+            credentials={"oauth_access_token": "tenant1-token"},
+        )
+        tenant2 = _create_user_config_for_fetcher(
+            base_config=base_config,
+            auth_type="oauth",
+            credentials={"oauth_access_token": "tenant2-token"},
+        )
+
+        tenant1.oauth_config.access_token = "modified-tenant1-token"
+
+        assert tenant2.oauth_config.access_token == "tenant2-token"
+        # The shared global config is untouched.
+        assert base_config.oauth_config.access_token == "placeholder-startup-token"
 
 
 def _setup_mock_request_state(
@@ -1511,6 +1620,214 @@ class TestResolveBearerAuthType:
         )
         result = _resolve_bearer_auth_type(config, "oauth")
         assert result == "pat"
+
+
+def _setup_bitbucket_request_state(mock_request, token, email="user@example.com"):
+    """Set request state for a Bitbucket OAuth-forwarding request."""
+    mock_request.state.bitbucket_fetcher = None
+    mock_request.state.atlassian_service_headers = {}
+    mock_request.state.user_atlassian_auth_type = "oauth"
+    mock_request.state.user_atlassian_token = token
+    mock_request.state.user_atlassian_email = email
+    mock_request.state.user_atlassian_cloud_id = None
+
+
+def _create_mock_bitbucket_fetcher():
+    """Create a mock BitbucketFetcher with a passing validation call."""
+    mock_fetcher = MagicMock(spec=BitbucketFetcher)
+    mock_fetcher.get_current_user.return_value = {"count": 0}
+    mock_session = MagicMock()
+    mock_session.hooks = {"response": []}
+    mock_fetcher._session = mock_session
+    return mock_fetcher
+
+
+class TestGetBitbucketFetcher:
+    """Tests for get_bitbucket_fetcher (per-request OAuth forwarding)."""
+
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_cached_fetcher_returned(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_context,
+        mock_request,
+    ):
+        """A cached BitbucketFetcher on request.state is returned as-is."""
+        cached = MagicMock(spec=BitbucketFetcher)
+        mock_request.state.bitbucket_fetcher = cached
+        mock_get_http_request.return_value = mock_request
+
+        result = await get_bitbucket_fetcher(mock_context)
+
+        assert result == cached
+        mock_bitbucket_fetcher_class.assert_not_called()
+
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_does_not_use_proxy_minted_token(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+    ):
+        """Confused-deputy guard: the server-wide OAuth proxy is bound to the
+        Jira/Confluence provider. A proxy-minted token (from get_access_token)
+        must NEVER be forwarded to Bitbucket (a separate provider on a separate
+        host). The per-user Bitbucket config must carry only the client-
+        presented request bearer.
+        """
+        _setup_bitbucket_request_state(mock_request, token="client-bitbucket-token")
+        mock_get_http_request.return_value = mock_request
+        # The Jira/Confluence OAuth proxy would mint this token.
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="jira-confluence-proxy-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_bitbucket_fetcher()
+        mock_bitbucket_fetcher_class.return_value = mock_fetcher
+
+        result = await get_bitbucket_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        assert mock_request.state.bitbucket_fetcher == mock_fetcher
+        called_config = mock_bitbucket_fetcher_class.call_args[1]["config"]
+        assert isinstance(called_config, BitbucketConfig)
+        assert called_config.auth_type == "oauth"
+        # The client-presented token is forwarded; the proxy token is NOT.
+        assert called_config.oauth_config.access_token == "client-bitbucket-token"
+        assert called_config.oauth_config.access_token != "jira-confluence-proxy-token"
+        assert called_config.oauth_config.base_url == (
+            "https://bitbucket.dc.example.com"
+        )
+
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_header_pat_attempt_is_rejected_cleanly(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_context,
+        mock_request,
+        config_factory,
+    ):
+        """A header-PAT attempt for Bitbucket must not run header-PAT Branch 1.
+
+        BitbucketConfig has no personal_token field, so the generic header-PAT
+        branch would raise TypeError. With supports_header_pat=False the branch
+        is skipped and the request falls through to the global fallback — a
+        clean result, never a TypeError.
+        """
+        service_headers = {
+            "X-Atlassian-Bitbucket-Url": "https://bitbucket.dc.example.com",
+            "X-Atlassian-Bitbucket-Personal-Token": "a-pat-token",
+        }
+
+        class MockState:
+            def __init__(self):
+                self.bitbucket_fetcher = None
+                self.user_atlassian_auth_type = "pat"
+                self.user_atlassian_email = None
+                self.atlassian_service_headers = service_headers
+
+            def __getattr__(self, name):
+                if name == "user_atlassian_token":
+                    raise AttributeError(name)
+                return None
+
+        mock_request.state = MockState()
+        mock_get_http_request.return_value = mock_request
+
+        global_fetcher = _create_mock_bitbucket_fetcher()
+        mock_bitbucket_fetcher_class.return_value = global_fetcher
+
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        # Must not raise TypeError; falls back to the global fetcher.
+        result = await get_bitbucket_fetcher(mock_context)
+
+        assert result == global_fetcher
+        # Branch 1 (header-PAT) never built a config with personal_token.
+        called_config = mock_bitbucket_fetcher_class.call_args[1]["config"]
+        assert not hasattr(called_config, "personal_token")
+
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    async def test_session_carries_forwarded_token_end_to_end(
+        self,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+    ):
+        """The real per-request fetcher's session carries the forwarded token.
+
+        Builds a real BitbucketFetcher from the resolved config (validation
+        endpoint mocked) and asserts the session Authorization header is the
+        forwarded token, with no cross-tenant bleed into the global config.
+        """
+        _setup_bitbucket_request_state(mock_request, token="tenant-bearer-token")
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.side_effect = RuntimeError("no auth context")
+
+        global_config = config_factory.create_bitbucket_config()
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=global_config
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        # Patch only the validation call so a real session is built.
+        with patch.object(
+            BitbucketFetcher,
+            "get_current_user",
+            return_value={"count": 0},
+        ):
+            fetcher = await get_bitbucket_fetcher(mock_context)
+
+        assert fetcher._session.headers["Authorization"] == "Bearer tenant-bearer-token"
+        # The forwarded token must not leak into the shared global config.
+        assert global_config.oauth_config.access_token == "placeholder-startup-token"
+
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_global_fallback_non_http(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_context,
+        config_factory,
+    ):
+        """Outside an HTTP context, the global Bitbucket config is used."""
+        mock_get_http_request.side_effect = RuntimeError("No HTTP context")
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_bitbucket_fetcher()
+        mock_bitbucket_fetcher_class.return_value = mock_fetcher
+
+        result = await get_bitbucket_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        assert_mock_called_with_partial(
+            mock_bitbucket_fetcher_class,
+            config=app_context.full_bitbucket_config,
+        )
 
 
 class TestSsrfProtection:
