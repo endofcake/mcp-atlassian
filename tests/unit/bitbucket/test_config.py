@@ -111,12 +111,56 @@ class TestBitbucketConfigFromEnv:
             with pytest.raises(ValueError, match="authenticates via OAuth"):
                 BitbucketConfig.from_env()
 
-    def test_from_env_cloud_url_rejected(self):
-        """DC-only: an Atlassian Cloud URL raises a ValueError."""
+    def test_shared_atlassian_client_creds_do_not_satisfy_bitbucket(self):
+        """Shared ATLASSIAN_OAUTH_* client creds must not configure Bitbucket.
+
+        Bitbucket is a distinct OAuth provider on a distinct host; only
+        service-scoped BITBUCKET_OAUTH_* (or ATLASSIAN_OAUTH_ENABLE) may satisfy
+        it, matching the availability gate. Shared creds alone leave it
+        unconfigured rather than borrowing another product's identity.
+        """
         with patch.dict(
             os.environ,
             {
-                "BITBUCKET_URL": "https://mysite.atlassian.net",
+                "BITBUCKET_URL": "https://bitbucket.corp.example.com",
+                "ATLASSIAN_OAUTH_CLIENT_ID": "shared-id",
+                "ATLASSIAN_OAUTH_CLIENT_SECRET": "shared-secret",
+            },
+            clear=True,
+        ):
+            with pytest.raises(ValueError, match="authenticates via OAuth"):
+                BitbucketConfig.from_env()
+
+    def test_shared_atlassian_access_token_does_not_satisfy_bitbucket(self):
+        """A shared ATLASSIAN_OAUTH_ACCESS_TOKEN must not configure Bitbucket."""
+        with patch.dict(
+            os.environ,
+            {
+                "BITBUCKET_URL": "https://bitbucket.corp.example.com",
+                "ATLASSIAN_OAUTH_ACCESS_TOKEN": "shared-token",
+            },
+            clear=True,
+        ):
+            with pytest.raises(ValueError, match="authenticates via OAuth"):
+                BitbucketConfig.from_env()
+
+    @pytest.mark.parametrize(
+        "cloud_url",
+        [
+            # The host a Bitbucket user would actually type, which the
+            # Atlassian Cloud check does not match.
+            "https://bitbucket.org",
+            "https://api.bitbucket.org",
+            # Atlassian Cloud host: nonsensical for BITBUCKET_URL, still rejected.
+            "https://mysite.atlassian.net",
+        ],
+    )
+    def test_from_env_cloud_url_rejected(self, cloud_url):
+        """DC-only: a Cloud URL raises a ValueError."""
+        with patch.dict(
+            os.environ,
+            {
+                "BITBUCKET_URL": cloud_url,
                 "BITBUCKET_OAUTH_ACCESS_TOKEN": "byo-token",
             },
             clear=True,

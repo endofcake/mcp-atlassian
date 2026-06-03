@@ -481,13 +481,22 @@ class OAuthConfig:
         cls,
         service_url: str | None = None,
         service_type: str | None = None,
+        disallow_shared_fallback: bool = False,
     ) -> Optional["OAuthConfig"]:
         """Create an OAuth configuration from environment variables.
 
         Args:
             service_url: The service URL (e.g., JIRA_URL value) for DC detection.
-            service_type: Service type ('jira' or 'confluence') for service-specific
-                env vars.
+            service_type: Service type ('jira', 'confluence', 'bitbucket') for
+                service-specific env vars.
+            disallow_shared_fallback: When True (and a service_type is given), do
+                not fall back to the shared ``ATLASSIAN_OAUTH_*`` credentials.
+                A distinct provider on a distinct host (e.g. Bitbucket Data
+                Center) must not be satisfied by another product's credentials;
+                this keeps the loader's decision aligned with the per-service
+                availability gate. The shared ``ATLASSIAN_OAUTH_ENABLE`` mode
+                flag is unaffected — it selects user-provided-token mode, not a
+                credential.
 
         Returns:
             OAuthConfig instance or None if OAuth is not enabled
@@ -499,20 +508,21 @@ class OAuthConfig:
             "yes",
         )
 
-        # Service-specific env vars take precedence over shared ones
+        # Service-specific env vars take precedence over shared ones. When
+        # disallow_shared_fallback is set, the shared ATLASSIAN_OAUTH_* values
+        # are never consulted for this service.
         prefix = service_type.upper() if service_type else None
-        client_id = (
-            os.getenv(f"{prefix}_OAUTH_CLIENT_ID") if prefix else None
-        ) or os.getenv("ATLASSIAN_OAUTH_CLIENT_ID")
-        client_secret = (
-            os.getenv(f"{prefix}_OAUTH_CLIENT_SECRET") if prefix else None
-        ) or os.getenv("ATLASSIAN_OAUTH_CLIENT_SECRET")
-        redirect_uri = (
-            os.getenv(f"{prefix}_OAUTH_REDIRECT_URI") if prefix else None
-        ) or os.getenv("ATLASSIAN_OAUTH_REDIRECT_URI")
-        scope = (os.getenv(f"{prefix}_OAUTH_SCOPE") if prefix else None) or os.getenv(
-            "ATLASSIAN_OAUTH_SCOPE"
-        )
+
+        def _resolve(suffix: str) -> str | None:
+            service_val = os.getenv(f"{prefix}_{suffix}") if prefix else None
+            if disallow_shared_fallback and prefix:
+                return service_val
+            return service_val or os.getenv(f"ATLASSIAN_{suffix}")
+
+        client_id = _resolve("OAUTH_CLIENT_ID")
+        client_secret = _resolve("OAUTH_CLIENT_SECRET")
+        redirect_uri = _resolve("OAUTH_REDIRECT_URI")
+        scope = _resolve("OAUTH_SCOPE")
 
         # Determine if this is a DC instance
         is_dc = bool(service_url) and not is_atlassian_cloud_url(service_url)
@@ -607,13 +617,18 @@ class BYOAccessTokenOAuthConfig:
         cls,
         service_url: str | None = None,
         service_type: str | None = None,
+        disallow_shared_fallback: bool = False,
     ) -> Optional["BYOAccessTokenOAuthConfig"]:
         """Create a BYOAccessTokenOAuthConfig from environment variables.
 
         Args:
             service_url: The service URL for DC detection.
-            service_type: Service type ('jira' or 'confluence') for service-specific
-                env vars.
+            service_type: Service type ('jira', 'confluence', 'bitbucket') for
+                service-specific env vars.
+            disallow_shared_fallback: When True (and a service_type is given), do
+                not fall back to the shared ``ATLASSIAN_OAUTH_ACCESS_TOKEN``. A
+                distinct provider must not be satisfied by another product's
+                token (see :meth:`OAuthConfig.from_env`).
 
         Returns:
             BYOAccessTokenOAuthConfig instance or None if required
@@ -621,11 +636,14 @@ class BYOAccessTokenOAuthConfig:
         """
         cloud_id = os.getenv("ATLASSIAN_OAUTH_CLOUD_ID")
 
-        # Service-specific access token takes precedence
+        # Service-specific access token takes precedence; the shared token is
+        # only consulted when fallback is allowed.
         prefix = service_type.upper() if service_type else None
-        access_token = (
-            os.getenv(f"{prefix}_OAUTH_ACCESS_TOKEN") if prefix else None
-        ) or os.getenv("ATLASSIAN_OAUTH_ACCESS_TOKEN")
+        service_token = os.getenv(f"{prefix}_OAUTH_ACCESS_TOKEN") if prefix else None
+        if disallow_shared_fallback and prefix:
+            access_token = service_token
+        else:
+            access_token = service_token or os.getenv("ATLASSIAN_OAUTH_ACCESS_TOKEN")
 
         if not access_token:
             return None
@@ -648,6 +666,7 @@ class BYOAccessTokenOAuthConfig:
 def get_oauth_config_from_env(
     service_url: str | None = None,
     service_type: str | None = None,
+    disallow_shared_fallback: bool = False,
 ) -> OAuthConfig | BYOAccessTokenOAuthConfig | None:
     """Get the appropriate OAuth configuration from environment variables.
 
@@ -657,16 +676,25 @@ def get_oauth_config_from_env(
 
     Args:
         service_url: The service URL for DC detection.
-        service_type: Service type ('jira' or 'confluence') for service-specific
-            env vars.
+        service_type: Service type ('jira', 'confluence', 'bitbucket') for
+            service-specific env vars.
+        disallow_shared_fallback: When True, the shared ``ATLASSIAN_OAUTH_*``
+            credentials are not used to satisfy this service (see
+            :meth:`OAuthConfig.from_env`).
 
     Returns:
         An instance of OAuthConfig or BYOAccessTokenOAuthConfig if environment
         variables are set for either, otherwise None.
     """
     return BYOAccessTokenOAuthConfig.from_env(
-        service_url=service_url, service_type=service_type
-    ) or OAuthConfig.from_env(service_url=service_url, service_type=service_type)
+        service_url=service_url,
+        service_type=service_type,
+        disallow_shared_fallback=disallow_shared_fallback,
+    ) or OAuthConfig.from_env(
+        service_url=service_url,
+        service_type=service_type,
+        disallow_shared_fallback=disallow_shared_fallback,
+    )
 
 
 def configure_oauth_session(

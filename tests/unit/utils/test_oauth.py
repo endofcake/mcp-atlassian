@@ -1201,6 +1201,105 @@ class TestDataCenterOAuth:
         assert config.is_data_center is True
         assert config.base_url == "https://jira.corp.com"
 
+    # --- disallow_shared_fallback (distinct provider isolation) ---
+
+    def test_disallow_shared_fallback_ignores_shared_client_creds(self):
+        """With fallback disallowed, shared ATLASSIAN_OAUTH_* creds are ignored."""
+        env = {
+            "ATLASSIAN_OAUTH_CLIENT_ID": "shared-id",
+            "ATLASSIAN_OAUTH_CLIENT_SECRET": "shared-secret",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = OAuthConfig.from_env(
+                service_url="https://bitbucket.corp.com",
+                service_type="bitbucket",
+                disallow_shared_fallback=True,
+            )
+        assert config is None
+
+    def test_disallow_shared_fallback_uses_service_scoped_creds(self):
+        """Service-scoped creds still build a config when fallback is disallowed."""
+        env = {
+            "BITBUCKET_OAUTH_CLIENT_ID": "bb-id",
+            "BITBUCKET_OAUTH_CLIENT_SECRET": "bb-secret",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = OAuthConfig.from_env(
+                service_url="https://bitbucket.corp.com",
+                service_type="bitbucket",
+                disallow_shared_fallback=True,
+            )
+        assert config is not None
+        assert config.client_id == "bb-id"
+        assert config.client_secret == "bb-secret"
+
+    def test_shared_fallback_preserved_for_other_services(self):
+        """The default (fallback allowed) still lets Jira inherit shared creds.
+
+        Regression guard: the Bitbucket isolation must not change Jira/Confluence
+        behaviour, which intentionally falls back to ATLASSIAN_OAUTH_*.
+        """
+        env = {
+            "ATLASSIAN_OAUTH_CLIENT_ID": "shared-id",
+            "ATLASSIAN_OAUTH_CLIENT_SECRET": "shared-secret",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = OAuthConfig.from_env(
+                service_url="https://jira.corp.com",
+                service_type="jira",
+            )
+        assert config is not None
+        assert config.client_id == "shared-id"
+
+    def test_byo_disallow_shared_fallback_ignores_shared_token(self):
+        """With fallback disallowed, a shared ATLASSIAN_OAUTH_ACCESS_TOKEN is ignored."""
+        env = {
+            "ATLASSIAN_OAUTH_ACCESS_TOKEN": "shared-token",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = BYOAccessTokenOAuthConfig.from_env(
+                service_url="https://bitbucket.corp.com",
+                service_type="bitbucket",
+                disallow_shared_fallback=True,
+            )
+        assert config is None
+
+    def test_byo_disallow_shared_fallback_uses_service_scoped_token(self):
+        """A service-scoped token still builds when fallback is disallowed."""
+        env = {
+            "BITBUCKET_OAUTH_ACCESS_TOKEN": "bb-token",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = BYOAccessTokenOAuthConfig.from_env(
+                service_url="https://bitbucket.corp.com",
+                service_type="bitbucket",
+                disallow_shared_fallback=True,
+            )
+        assert config is not None
+        assert config.access_token == "bb-token"
+        assert config.base_url == "https://bitbucket.corp.com"
+
+    def test_disallow_shared_fallback_preserves_oauth_enable_mode(self):
+        """ATLASSIAN_OAUTH_ENABLE still builds a minimal config despite suppression.
+
+        The flag is a mode selector (user-provided tokens via headers), not a
+        credential, so suppression must not disable it — otherwise the documented
+        Bitbucket per-request-token opt-in would silently break.
+        """
+        env = {
+            "ATLASSIAN_OAUTH_ENABLE": "true",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = OAuthConfig.from_env(
+                service_url="https://bitbucket.corp.com",
+                service_type="bitbucket",
+                disallow_shared_fallback=True,
+            )
+        assert config is not None
+        assert config.client_id == ""
+        assert config.client_secret == ""
+        assert config.base_url == "https://bitbucket.corp.com"
+
     # --- configure_oauth_session: no tokens early return (#858) ---
 
     @patch("mcp_atlassian.utils.oauth.logger")

@@ -19,6 +19,7 @@ from mcp_atlassian.bitbucket import BitbucketConfig, BitbucketFetcher
 from mcp_atlassian.confluence import ConfluenceConfig, ConfluenceFetcher
 from mcp_atlassian.jira import JiraConfig, JiraFetcher
 from mcp_atlassian.servers.context import MainAppContext
+from mcp_atlassian.servers.oauth_upstream import proxy_upstream_provider
 from mcp_atlassian.utils.oauth import OAuthConfig
 from mcp_atlassian.utils.urls import validate_url_for_ssrf
 
@@ -60,15 +61,18 @@ class _ServiceSpec:
         [str, Request, Any, str, str | None], None
     ]  # logging + email backfill
     # Whether the service's config_class accepts header-based PAT construction
-    # (url + personal_token). Jira/Confluence DC do; Bitbucket DC is OAuth-only
-    # and has no personal_token field, so header-PAT Branch 1 must not run for
-    # it.
+    # (url + personal_token). Jira/Confluence DC do; our BitbucketConfig has no
+    # personal_token field (OAuth only in this implementation), so header-PAT
+    # Branch 1 must not run for it.
     supports_header_pat: bool = True
     # Whether the per-request OAuth bearer may be sourced from the server-wide
-    # FastMCP OAuth proxy (get_access_token). The proxy is configured for a
-    # single upstream provider (the Jira/Confluence DC host); Bitbucket DC is a
-    # separate provider on a separate host, so its bearer must come ONLY from the
-    # client-presented request token — never a proxy/Jira-Confluence-minted one.
+    # FastMCP OAuth proxy (get_access_token). The proxy fronts exactly one
+    # upstream provider, so a proxy-minted token is only valid for that provider.
+    # A service may use it only when the proxy fronts that service's own
+    # provider; otherwise the bearer must come solely from the client-presented
+    # request token. This is set per provider (see the *_spec builders) and
+    # prevents a token minted for one provider being forwarded to another (a
+    # confused-deputy).
     forward_proxy_oauth_token: bool = True
 
 
@@ -152,6 +156,28 @@ def _bitbucket_on_validated(
     logger.debug(f"{fn_name}: Validated Bitbucket OAuth token. Response present.")
 
 
+def _forward_atlassian_proxy_token() -> bool:
+    """Whether Jira/Confluence may use the proxy-minted bearer token.
+
+    Atlassian services use the proxy-minted token whenever the proxy is not
+    fronting a different provider. When the proxy fronts Bitbucket, its tokens
+    are Bitbucket tokens and must never reach a Jira/Confluence fetcher, so the
+    bearer falls back to the client-presented request token.
+    """
+    return proxy_upstream_provider() != "bitbucket"
+
+
+def _forward_bitbucket_proxy_token() -> bool:
+    """Whether Bitbucket may use the proxy-minted bearer token.
+
+    Bitbucket uses the proxy-minted token only when the proxy fronts Bitbucket
+    (so the token is a Bitbucket token). Otherwise — proxy disabled, or fronting
+    Jira/Confluence — the bearer comes solely from the client-presented request
+    token.
+    """
+    return proxy_upstream_provider() == "bitbucket"
+
+
 def _jira_spec() -> _ServiceSpec:
     """Build Jira service spec.
 
@@ -170,6 +196,7 @@ def _jira_spec() -> _ServiceSpec:
         get_session=lambda f: f.jira._session,
         validate_fn=lambda f: f.get_current_user_account_id(),
         on_validated=_jira_on_validated,
+        forward_proxy_oauth_token=_forward_atlassian_proxy_token(),
     )
 
 
@@ -191,6 +218,7 @@ def _confluence_spec() -> _ServiceSpec:
         get_session=lambda f: f.confluence._session,
         validate_fn=lambda f: f.get_current_user_info(),
         on_validated=_confluence_on_validated,
+        forward_proxy_oauth_token=_forward_atlassian_proxy_token(),
     )
 
 
@@ -214,10 +242,11 @@ def _bitbucket_spec() -> _ServiceSpec:
         get_session=lambda f: f._session,
         validate_fn=lambda f: f.get_current_user(),
         on_validated=_bitbucket_on_validated,
-        # Bitbucket DC is OAuth-only: no header-based PAT, and its bearer must
-        # never come from the Jira/Confluence OAuth proxy.
+        # OAuth bearer only here; no header-based PAT. Its bearer may come
+        # from the proxy only when the proxy fronts Bitbucket (so the minted
+        # token is a Bitbucket token); otherwise it uses the request token.
         supports_header_pat=False,
-        forward_proxy_oauth_token=False,
+        forward_proxy_oauth_token=_forward_bitbucket_proxy_token(),
     )
 
 
@@ -709,10 +738,11 @@ async def _get_fetcher(ctx: Context, spec: _ServiceSpec) -> Any:
                         user_token, spec.name
                     )
                 else:
-                    # Confused-deputy guard: the server-wide OAuth proxy is bound
-                    # to the Jira/Confluence provider. A proxy-minted token must
-                    # never be forwarded to a separate provider (Bitbucket DC), so
-                    # use only the client-presented request bearer here.
+                    # Confused-deputy guard: the OAuth proxy fronts a single
+                    # upstream provider. When that provider is not this service's,
+                    # a proxy-minted token would be for the wrong provider, so use
+                    # only the client-presented request bearer here. (See
+                    # forward_proxy_oauth_token in the *_spec builders.)
                     credentials["oauth_access_token"] = user_token
             else:
                 credentials["personal_access_token"] = user_token

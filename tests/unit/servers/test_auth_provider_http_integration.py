@@ -200,3 +200,52 @@ async def test_callback_route_rejects_missing_code(monkeypatch):
     assert 400 <= resp.status_code < 500, (
         f"callback returned {resp.status_code}: {resp.text}"
     )
+
+
+def _set_bitbucket_oauth_env(monkeypatch) -> None:
+    monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+    monkeypatch.delenv("ATLASSIAN_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("CONFLUENCE_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("JIRA_URL", raising=False)
+    monkeypatch.delenv("CONFLUENCE_URL", raising=False)
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    monkeypatch.delenv("ATLASSIAN_OAUTH_INSTANCE_URL", raising=False)
+    monkeypatch.setenv("BITBUCKET_URL", "https://bitbucket.example.com")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_SECRET", "bb-client-secret")
+    monkeypatch.setenv(
+        "BITBUCKET_OAUTH_REDIRECT_URI",
+        "https://mcp.example.com/mcp-atlassian/callback",
+    )
+    monkeypatch.setenv("BITBUCKET_OAUTH_SCOPE", "PROJECT_READ")
+
+
+@pytest.mark.anyio
+async def test_bitbucket_discovery_endpoint_serves_over_http(monkeypatch):
+    """A Bitbucket-fronting proxy boots and serves authorization-server
+    discovery over HTTP, with its upstream endpoints pointing at the Bitbucket
+    Data Center instance."""
+    _set_bitbucket_oauth_env(monkeypatch)
+    provider = _build_auth_provider()
+    assert provider is not None
+    assert (
+        provider._upstream_authorization_endpoint
+        == "https://bitbucket.example.com/rest/oauth2/latest/authorize"
+    )
+
+    app = _build_asgi_app(provider)
+
+    transport = httpx.ASGITransport(app=app)
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=transport, base_url="http://test") as client,
+    ):
+        resp = await client.get("/.well-known/oauth-authorization-server")
+
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert "issuer" in payload
+    assert "authorization_endpoint" in payload
+    assert "token_endpoint" in payload
+    assert "registration_endpoint" in payload

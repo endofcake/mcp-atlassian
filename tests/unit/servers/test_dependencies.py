@@ -1711,6 +1711,184 @@ class TestGetBitbucketFetcher:
             "https://bitbucket.dc.example.com"
         )
 
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_forwards_proxy_token_when_proxy_fronts_bitbucket(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        monkeypatch,
+    ):
+        """When the proxy fronts Bitbucket, the proxy-minted token is a Bitbucket
+        token, so it is forwarded to the Bitbucket fetcher.
+        """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+        monkeypatch.delenv("ATLASSIAN_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CONFLUENCE_OAUTH_CLIENT_ID", raising=False)
+
+        _setup_bitbucket_request_state(mock_request, token="client-bitbucket-token")
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="bitbucket-proxy-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_bitbucket_fetcher()
+        mock_bitbucket_fetcher_class.return_value = mock_fetcher
+
+        result = await get_bitbucket_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        called_config = mock_bitbucket_fetcher_class.call_args[1]["config"]
+        # Proxy fronts Bitbucket → the minted Bitbucket token IS forwarded.
+        assert called_config.oauth_config.access_token == "bitbucket-proxy-token"
+
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.JiraFetcher")
+    async def test_jira_ignores_proxy_token_when_proxy_fronts_bitbucket(
+        self,
+        mock_jira_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        auth_scenarios,
+        monkeypatch,
+    ):
+        """Reverse confused-deputy: when the proxy fronts Bitbucket, a Jira
+        request must not receive the Bitbucket-minted proxy token. The Jira
+        fetcher uses only the client-presented request bearer.
+        """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+        monkeypatch.delenv("ATLASSIAN_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CONFLUENCE_OAUTH_CLIENT_ID", raising=False)
+
+        scenario = auth_scenarios["oauth"].copy()
+        scenario["token"] = "client-jira-token"
+        _setup_mock_request_state(mock_request, scenario)
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="bitbucket-proxy-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            jira_config=config_factory.create_jira_config(auth_type="oauth")
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_fetcher(JiraFetcher)
+        mock_jira_fetcher_class.return_value = mock_fetcher
+
+        result = await get_jira_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        called_config = mock_jira_fetcher_class.call_args[1]["config"]
+        assert called_config.oauth_config.access_token == "client-jira-token"
+        assert called_config.oauth_config.access_token != "bitbucket-proxy-token"
+
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_bitbucket_ignores_proxy_token_when_proxy_fronts_atlassian(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        monkeypatch,
+    ):
+        """Confused-deputy: when the proxy fronts Jira/Confluence, a Bitbucket
+        request must not receive the Atlassian-minted proxy token. The Bitbucket
+        fetcher uses only the client-presented request bearer.
+        """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("JIRA_OAUTH_CLIENT_ID", "jira-client-id")
+        monkeypatch.delenv("BITBUCKET_OAUTH_CLIENT_ID", raising=False)
+
+        _setup_bitbucket_request_state(mock_request, token="client-bitbucket-token")
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="atlassian-proxy-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_bitbucket_fetcher()
+        mock_bitbucket_fetcher_class.return_value = mock_fetcher
+
+        result = await get_bitbucket_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        called_config = mock_bitbucket_fetcher_class.call_args[1]["config"]
+        assert called_config.oauth_config.access_token == "client-bitbucket-token"
+        assert called_config.oauth_config.access_token != "atlassian-proxy-token"
+
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.ConfluenceFetcher")
+    async def test_confluence_ignores_proxy_token_when_proxy_fronts_bitbucket(
+        self,
+        mock_confluence_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        auth_scenarios,
+        monkeypatch,
+    ):
+        """Reverse confused-deputy (Confluence): when the proxy fronts Bitbucket,
+        a Confluence request must not receive the Bitbucket-minted proxy token.
+        """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+        monkeypatch.delenv("ATLASSIAN_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CONFLUENCE_OAUTH_CLIENT_ID", raising=False)
+
+        scenario = auth_scenarios["oauth"].copy()
+        scenario["token"] = "client-confluence-token"
+        _setup_mock_request_state(mock_request, scenario)
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="bitbucket-proxy-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            confluence_config=config_factory.create_confluence_config(auth_type="oauth")
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_fetcher(ConfluenceFetcher)
+        mock_confluence_fetcher_class.return_value = mock_fetcher
+
+        result = await get_confluence_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        called_config = mock_confluence_fetcher_class.call_args[1]["config"]
+        assert called_config.oauth_config.access_token == "client-confluence-token"
+        assert called_config.oauth_config.access_token != "bitbucket-proxy-token"
+
     @patch("mcp_atlassian.servers.dependencies.get_http_request")
     @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
     async def test_header_pat_attempt_is_rejected_cleanly(

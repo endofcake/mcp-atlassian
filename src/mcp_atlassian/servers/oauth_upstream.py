@@ -21,6 +21,7 @@ import logging
 import os
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlparse
 
 from mcp_atlassian.utils.env import is_env_truthy
 from mcp_atlassian.utils.oauth import (
@@ -29,7 +30,10 @@ from mcp_atlassian.utils.oauth import (
     DC_AUTHORIZE_PATH,
     DC_TOKEN_PATH,
 )
-from mcp_atlassian.utils.urls import is_atlassian_cloud_url
+from mcp_atlassian.utils.urls import (
+    is_atlassian_cloud_url,
+    is_bitbucket_cloud_url,
+)
 
 logger = logging.getLogger("mcp-atlassian.server.oauth-upstream")
 
@@ -78,8 +82,6 @@ def _resolve_dc_endpoints(instance_url: str) -> tuple[str, str]:
 
 def _is_cloud_instance(instance_url: str) -> bool:
     """Return True when the instance URL is an Atlassian Cloud host."""
-    from urllib.parse import urlparse
-
     parsed_host = (urlparse(instance_url).hostname or "").lower()
     return is_atlassian_cloud_url(instance_url) or parsed_host == "auth.atlassian.com"
 
@@ -207,6 +209,21 @@ def _resolve_bitbucket_upstream() -> ProxyUpstream | None:
         logger.warning(
             "OAuth proxy requested for Bitbucket but non-secret configuration "
             "is incomplete."
+        )
+        return None
+
+    # Cloud is not handled yet. A Cloud-looking BITBUCKET_URL would resolve to
+    # Data Center-shaped endpoints on a Cloud host, so reject it rather than
+    # build a broken upstream. is_atlassian_cloud_url covers Jira/Confluence
+    # Cloud hosts; is_bitbucket_cloud_url covers bitbucket.org, the host a
+    # Bitbucket user would actually type (which the Atlassian check misses).
+    if is_atlassian_cloud_url(instance_url) or is_bitbucket_cloud_url(instance_url):
+        logger.warning(
+            "BITBUCKET_URL %s looks like a Cloud URL; this server builds "
+            "Bitbucket Data Center OAuth endpoints and does not front Bitbucket "
+            "Cloud yet, so refusing rather than building DC endpoints against a "
+            "Cloud host.",
+            instance_url,
         )
         return None
 

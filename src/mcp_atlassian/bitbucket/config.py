@@ -11,7 +11,7 @@ from ..utils.oauth import (
     OAuthConfig,
     get_oauth_config_from_env,
 )
-from ..utils.urls import is_atlassian_cloud_url
+from ..utils.urls import is_atlassian_cloud_url, is_bitbucket_cloud_url
 
 
 @dataclass
@@ -39,21 +39,26 @@ class BitbucketConfig:
 
     @property
     def is_cloud(self) -> bool:
-        """Check if this is a cloud instance.
+        """Whether this configuration points at a Cloud host.
+
+        Computed from the URL, mirroring JiraConfig/ConfluenceConfig. In
+        practice this is False for any config built via ``from_env``, which
+        refuses Cloud URLs; computing it keeps the property honest for a
+        directly-constructed config and leaves the door open for Cloud support.
 
         Returns:
-            Always False — this client targets Bitbucket Data Center only.
+            True if the URL is a Cloud host, False otherwise.
         """
-        return False
+        return is_atlassian_cloud_url(self.url) or is_bitbucket_cloud_url(self.url)
 
     @property
     def is_data_center(self) -> bool:
-        """Check if this is a Data Center instance.
+        """Whether this configuration points at a self-hosted Data Center host.
 
         Returns:
-            Always True — this client targets Bitbucket Data Center only.
+            True unless the URL is a Cloud host.
         """
-        return True
+        return not self.is_cloud
 
     @property
     def verify_ssl(self) -> bool:
@@ -84,20 +89,30 @@ class BitbucketConfig:
             )
             raise ValueError(error_msg)
 
-        # Data Center only. Reject a Cloud URL rather than silently treating it
-        # as DC (is_data_center is hardcoded True on this config).
-        if is_atlassian_cloud_url(url):
+        # Cloud is not handled yet, and this config only builds DC-shaped
+        # endpoints. Reject a Cloud URL rather than silently building DC
+        # endpoints against a Cloud host.
+        # is_bitbucket_cloud_url covers bitbucket.org (the host a Bitbucket user
+        # would actually type); is_atlassian_cloud_url covers Jira/Confluence
+        # Cloud hosts, which the Bitbucket check does not match.
+        if is_atlassian_cloud_url(url) or is_bitbucket_cloud_url(url):
             error_msg = (
-                f"BITBUCKET_URL '{url}' looks like a Bitbucket Cloud URL. "
-                "This client supports Bitbucket Data Center (self-hosted) only; "
-                "set BITBUCKET_URL to your Data Center base URL."
+                f"BITBUCKET_URL '{url}' looks like a Cloud URL. "
+                "This client builds Bitbucket Data Center endpoints and does "
+                "not handle Cloud yet; point BITBUCKET_URL at a Data Center "
+                "base URL."
             )
             raise ValueError(error_msg)
 
         # Data Center OAuth only. A BYO access token takes precedence over the
         # full OAuth config (matches get_oauth_config_from_env order).
+        # Bitbucket is a separate OAuth provider on a separate host, so the
+        # shared ATLASSIAN_OAUTH_* credentials must not satisfy it — keep the
+        # loader aligned with the availability gate in utils.environment.
         oauth_config = get_oauth_config_from_env(
-            service_url=url, service_type="bitbucket"
+            service_url=url,
+            service_type="bitbucket",
+            disallow_shared_fallback=True,
         )
         if not oauth_config:
             error_msg = (

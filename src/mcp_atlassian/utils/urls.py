@@ -65,6 +65,31 @@ def is_atlassian_cloud_url(url: str) -> bool:
     )
 
 
+def is_bitbucket_cloud_url(url: str) -> bool:
+    """Determine if a URL belongs to Bitbucket Cloud (``bitbucket.org``).
+
+    Bitbucket Cloud lives on a distinct apex host from Atlassian Cloud and is
+    *not* matched by :func:`is_atlassian_cloud_url`. Use this to reject a Cloud
+    URL where only Bitbucket Data Center (self-hosted) is supported, so a
+    Cloud host never has Data Center-shaped OAuth endpoints built against it.
+
+    The match is exact (not a suffix check): Bitbucket Cloud is path-per-
+    workspace on a single host, so there are no per-tenant subdomains to allow,
+    and an exact match avoids over-matching a self-hosted vanity domain.
+
+    Args:
+        url: The URL to check.
+
+    Returns:
+        True if the URL's host is a Bitbucket Cloud host, False otherwise
+        (including Server/Data Center hosts and empty/``None`` input).
+    """
+    if not url:
+        return False
+    hostname = (urlparse(url).hostname or "").lower()
+    return hostname in {"bitbucket.org", "api.bitbucket.org"}
+
+
 def validate_url_for_ssrf(url: str) -> str | None:
     """Validate a URL to prevent SSRF attacks.
 

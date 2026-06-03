@@ -142,6 +142,40 @@ def test_build_auth_provider_uses_dc_endpoints_for_datacenter_url(monkeypatch):
     )
 
 
+def test_build_auth_provider_uses_bitbucket_dc_endpoints(monkeypatch):
+    """With Bitbucket configured, the proxy fronts Bitbucket DC's OAuth endpoints
+    and forces the configured Bitbucket scopes."""
+    monkeypatch.delenv("ATLASSIAN_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("CONFLUENCE_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+    monkeypatch.setenv("BITBUCKET_URL", "https://bitbucket.example.com")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_SECRET", "bb-client-secret")
+    monkeypatch.setenv(
+        "BITBUCKET_OAUTH_REDIRECT_URI",
+        "https://mcp.example.com/mcp-atlassian/callback",
+    )
+    monkeypatch.setenv("BITBUCKET_OAUTH_SCOPE", "PROJECT_READ")
+
+    provider = _build_auth_provider()
+
+    assert provider is not None
+    assert (
+        provider._upstream_authorization_endpoint
+        == "https://bitbucket.example.com/rest/oauth2/latest/authorize"
+    )
+    assert (
+        provider._upstream_token_endpoint
+        == "https://bitbucket.example.com/rest/oauth2/latest/token"
+    )
+    assert provider._upstream_client_id == "bb-client-id"
+    assert provider._forced_scopes == ["PROJECT_READ"]
+    # Bitbucket DC is not Cloud, so no Cloud audience/prompt authorize params.
+    assert (provider._extra_authorize_params or {}).get("audience") is None
+
+
 def test_build_auth_provider_infers_base_url_from_redirect_uri(monkeypatch):
     monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
     monkeypatch.delenv("ATLASSIAN_OAUTH_INSTANCE_URL", raising=False)
