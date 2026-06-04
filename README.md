@@ -33,6 +33,8 @@
 
 Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira). Supports both Cloud and Server/Data Center deployments.
 
+**Bitbucket Data Center** support is newly added — currently scoped to OAuth 2.0 on Data Center (one read tool, `bitbucket_list_projects`, today; Bitbucket DC also supports PAT/basic, and Cloud is future work). See [Bitbucket Data Center setup](docs/authentication.mdx) and the [OAuth validation runbook](docs/guides/bitbucket-oauth-validation.mdx).
+
 https://github.com/user-attachments/assets/35303504-14c6-4ae4-913b-7c25ea511c3e
 
 <details>
@@ -95,6 +97,7 @@ Documentation is also available in [llms.txt format](https://llmstxt.org/), whic
 |-------|-------------|
 | [Installation](https://mcp-atlassian.soomiles.com/docs/installation) | uvx, Docker, pip, from source |
 | [Authentication](https://mcp-atlassian.soomiles.com/docs/authentication) | API tokens, PAT, OAuth 2.0 |
+| [Bitbucket Data Center](docs/authentication.mdx) | OAuth 2.0 setup + live-validation runbook |
 | [Configuration](https://mcp-atlassian.soomiles.com/docs/configuration) | IDE setup, environment variables |
 | [HTTP Transport](https://mcp-atlassian.soomiles.com/docs/http-transport) | SSE, streamable-http, multi-user |
 | [Tools Reference](https://mcp-atlassian.soomiles.com/docs/tools-reference) | All Jira & Confluence tools |

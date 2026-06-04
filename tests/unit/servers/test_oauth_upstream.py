@@ -151,7 +151,7 @@ class TestResolveBitbucketUpstream:
 
     def test_data_center_endpoints_and_scope(self, monkeypatch):
         self._set_bitbucket_env(monkeypatch)
-        monkeypatch.setenv("BITBUCKET_OAUTH_SCOPE", "PROJECT_READ")
+        monkeypatch.setenv("BITBUCKET_OAUTH_SCOPE", "REPO_READ")
 
         upstream = resolve_proxy_upstream()
 
@@ -166,7 +166,7 @@ class TestResolveBitbucketUpstream:
             upstream.token_endpoint
             == "https://bitbucket.example.com/rest/oauth2/latest/token"
         )
-        assert upstream.scopes == ["PROJECT_READ"]
+        assert upstream.scopes == ["REPO_READ"]
         # Bitbucket Data Center is never Cloud: no Cloud audience/prompt params.
         assert upstream.extra_authorize_params is None
 

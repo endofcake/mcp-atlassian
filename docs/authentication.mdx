@@ -192,3 +192,54 @@ For multi-tenant applications where users provide their own OAuth tokens:
    - `X-Atlassian-Cloud-Id: <user_cloud_id>`
 
 See [HTTP Transport](/docs/http-transport) for more details on multi-user authentication.
+
+## Bitbucket Data Center (OAuth)
+
+This server connects to Bitbucket Data Center using OAuth 2.0. (Bitbucket DC also
+supports PAT and basic auth; this server wires up OAuth only for now.)
+
+The server fronts the Bitbucket instance as the OAuth proxy upstream, so MCP
+clients onboard through the standard discovery/DCR flow (`401` challenge,
+`/.well-known/*`, `/register`, `/authorize`, `/token`, callback) without any
+pre-shared credentials.
+
+<Steps>
+  <Step title="Register an application link">
+    On your Bitbucket Data Center instance, create an incoming OAuth 2.0
+    application link. Set its redirect URI to this server's callback (the
+    `BITBUCKET_OAUTH_REDIRECT_URI` below) and note the client ID and secret.
+  </Step>
+  <Step title="Configure the server">
+    Set the environment variables below.
+  </Step>
+  <Step title="Point your MCP client at the server">
+    Configure the client with the server URL; it completes authorization through
+    the proxy. The available tool is `bitbucket_list_projects`.
+  </Step>
+</Steps>
+
+**Environment variables:**
+```bash
+BITBUCKET_URL=https://bitbucket.your-company.com
+BITBUCKET_OAUTH_CLIENT_ID=your_bitbucket_oauth_client_id
+BITBUCKET_OAUTH_CLIENT_SECRET=your_bitbucket_oauth_client_secret
+BITBUCKET_OAUTH_SCOPE=REPO_READ
+BITBUCKET_OAUTH_REDIRECT_URI=https://mcp.example.com/mcp-atlassian/callback
+ATLASSIAN_OAUTH_PROXY_ENABLE=true
+PUBLIC_BASE_URL=https://mcp.example.com/mcp-atlassian
+```
+
+<Note>
+A proxy instance fronts exactly one provider. Run a Bitbucket deployment as its
+own instance — do not also set Atlassian (Jira/Confluence) OAuth client
+credentials, or the server fails closed and refuses to start.
+</Note>
+
+<Note>
+`BITBUCKET_OAUTH_SCOPE` carries Bitbucket scope names. Valid values are
+`REPO_READ`, `REPO_WRITE`, `REPO_ADMIN`, `PROJECT_ADMIN`, and `PUBLIC_REPOS`;
+`REPO_READ` is the minimal scope for read-only access. Confirm the exact scopes
+your instance grants. `BITBUCKET_OAUTH_REDIRECT_URI` falls back to
+`ATLASSIAN_OAUTH_REDIRECT_URI` when unset. A pre-existing token may be supplied
+via `BITBUCKET_OAUTH_ACCESS_TOKEN` as a test/fallback shortcut.
+</Note>

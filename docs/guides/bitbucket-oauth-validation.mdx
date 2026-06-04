@@ -1,0 +1,79 @@
+---
+title: "Bitbucket OAuth Validation"
+description: "Validate the Bitbucket Data Center OAuth proxy end to end against a live instance"
+---
+
+This runbook validates the Bitbucket Data Center OAuth flow against a real
+instance: discovery, consent, token exchange, and an authenticated API call.
+
+## Prerequisites
+
+- A Bitbucket Data Center instance you can administer.
+- An incoming OAuth 2.0 application link registered on it, with its redirect URI
+  set to this server's callback.
+- The server reachable at a public URL (`PUBLIC_BASE_URL`) that the Bitbucket
+  instance can redirect back to.
+
+## Configure
+
+```bash
+BITBUCKET_URL=https://bitbucket.your-company.com
+BITBUCKET_OAUTH_CLIENT_ID=your_bitbucket_oauth_client_id
+BITBUCKET_OAUTH_CLIENT_SECRET=your_bitbucket_oauth_client_secret
+BITBUCKET_OAUTH_SCOPE=REPO_READ
+BITBUCKET_OAUTH_REDIRECT_URI=https://mcp.example.com/mcp-atlassian/callback
+ATLASSIAN_OAUTH_PROXY_ENABLE=true
+PUBLIC_BASE_URL=https://mcp.example.com/mcp-atlassian
+```
+
+Do not set Atlassian (Jira/Confluence) OAuth client credentials in the same
+deployment — the server fails closed and refuses to start when more than one
+provider is configured.
+
+## Steps
+
+Confirm the discovery document is served, then walk the flow below:
+
+```bash
+curl -s https://mcp.example.com/mcp-atlassian/.well-known/oauth-authorization-server | jq .
+```
+
+Expect a JSON document with `issuer`, `authorization_endpoint`, `token_endpoint`,
+and `registration_endpoint`.
+
+<Steps>
+  <Step title="Server starts">
+    Start the server and confirm the logs report the Bitbucket upstream provider
+    and no startup error.
+  </Step>
+  <Step title="Discovery is served">
+    The discovery endpoint (command above) returns that metadata document.
+  </Step>
+  <Step title="Client onboards via DCR">
+    Point an MCP client (e.g. an IDE) at the server URL. It receives a `401`
+    challenge, registers via `/register`, and is redirected to the Bitbucket
+    instance's consent screen.
+  </Step>
+  <Step title="Consent and token exchange">
+    Approve consent on the Bitbucket instance. The client is redirected back to
+    the callback, and the server exchanges the code for an access token.
+  </Step>
+  <Step title="Authenticated tool call">
+    Run `bitbucket_list_projects` from the client. It returns the projects
+    visible to the authenticated user, confirming the minted token works as
+    `Authorization: Bearer` against `/rest/api/1.0/projects`.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+- **Consent screen rejects the scope** — the scope name differs on your instance.
+  Adjust `BITBUCKET_OAUTH_SCOPE` to the names your Bitbucket Data Center grants
+  (valid values: `REPO_READ`, `REPO_WRITE`, `REPO_ADMIN`, `PROJECT_ADMIN`,
+  `PUBLIC_REPOS`; `REPO_READ` is enough for read-only).
+- **Redirect mismatch** — `BITBUCKET_OAUTH_REDIRECT_URI` must exactly match the
+  redirect URI registered on the Bitbucket application link.
+- **Server refuses to start** — Atlassian and Bitbucket OAuth client credentials
+  are both set; run one provider per instance.
+- **`list_projects` returns an auth error** — the token was minted but rejected
+  downstream; confirm the application link grants project read access.

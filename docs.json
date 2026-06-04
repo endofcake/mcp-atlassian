@@ -65,7 +65,8 @@
             "pages": [
               "docs/guides/jql-guide",
               "docs/guides/cql-guide",
-              "docs/guides/common-workflows"
+              "docs/guides/common-workflows",
+              "docs/guides/bitbucket-oauth-validation"
             ]
           },
           {

@@ -157,7 +157,7 @@ def test_build_auth_provider_uses_bitbucket_dc_endpoints(monkeypatch):
         "BITBUCKET_OAUTH_REDIRECT_URI",
         "https://mcp.example.com/mcp-atlassian/callback",
     )
-    monkeypatch.setenv("BITBUCKET_OAUTH_SCOPE", "PROJECT_READ")
+    monkeypatch.setenv("BITBUCKET_OAUTH_SCOPE", "REPO_READ")
 
     provider = _build_auth_provider()
 
@@ -171,7 +171,7 @@ def test_build_auth_provider_uses_bitbucket_dc_endpoints(monkeypatch):
         == "https://bitbucket.example.com/rest/oauth2/latest/token"
     )
     assert provider._upstream_client_id == "bb-client-id"
-    assert provider._forced_scopes == ["PROJECT_READ"]
+    assert provider._forced_scopes == ["REPO_READ"]
     # Bitbucket DC is not Cloud, so no Cloud audience/prompt authorize params.
     assert (provider._extra_authorize_params or {}).get("audience") is None
 

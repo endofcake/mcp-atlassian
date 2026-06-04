@@ -218,7 +218,7 @@ def _set_bitbucket_oauth_env(monkeypatch) -> None:
         "BITBUCKET_OAUTH_REDIRECT_URI",
         "https://mcp.example.com/mcp-atlassian/callback",
     )
-    monkeypatch.setenv("BITBUCKET_OAUTH_SCOPE", "PROJECT_READ")
+    monkeypatch.setenv("BITBUCKET_OAUTH_SCOPE", "REPO_READ")
 
 
 @pytest.mark.anyio
