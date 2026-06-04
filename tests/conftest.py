@@ -6,6 +6,10 @@ across all test modules. It integrates with the new test utilities framework
 to provide efficient, reusable test fixtures.
 """
 
+from pathlib import Path
+
+import keyring
+import keyring.backends.null
 import pytest
 
 from tests.utils.factories import (
@@ -15,6 +19,14 @@ from tests.utils.factories import (
     JiraIssueFactory,
 )
 from tests.utils.mocks import MockAtlassianClient, MockEnvironment
+
+# Force keyring to its no-op backend for the whole test session. The suite must
+# never touch a real OS credential store: doing so makes tests depend on
+# machine-local state and can trigger interactive keychain-unlock prompts.
+# Installing the null backend at import time guarantees it is active before any
+# test (or collection-time code) runs. Tests that patch ``keyring.*`` directly
+# are unaffected, since patching replaces the module function outright.
+keyring.set_keyring(keyring.backends.null.Keyring())
 
 # Restrict anyio tests to asyncio backend only (FastMCP client requires asyncio)
 pytest_plugins = ("anyio",)
@@ -34,6 +46,25 @@ def pytest_addoption(parser):
         default=False,
         help="Run tests that use real API data (requires env vars)",
     )
+
+
+# ============================================================================
+# Filesystem Isolation
+# ============================================================================
+
+
+@pytest.fixture(autouse=True)
+def isolate_oauth_token_dir(tmp_path, monkeypatch):
+    """Redirect the on-disk OAuth token store to a per-test temp home.
+
+    ``OAuthConfig`` persists tokens under ``~/.mcp-atlassian`` and reads them
+    back from there as a fallback when the keyring misses (which it always
+    does under the null backend installed above). Pointing ``Path.home`` at a
+    fresh temp directory for each test keeps that fallback hermetic: tests
+    never read a real user's tokens, never leave token files behind, and no
+    token written by one test can leak into another.
+    """
+    monkeypatch.setattr(Path, "home", lambda *args, **kwargs: tmp_path)
 
 
 # ============================================================================

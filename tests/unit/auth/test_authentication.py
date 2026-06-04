@@ -529,12 +529,25 @@ class TestJiraConfluenceAuthFlows:
     ):
         """Test that both services can share the same OAuth configuration."""
         with MockEnvironment.oauth_env():
-            # Mock cloud ID retrieval
-            with patch("requests.get") as mock_get:
+            # Mock cloud ID retrieval (GET) and token refresh (POST) so the
+            # test stays offline even if a stored token with a past expiry
+            # surfaces and triggers a refresh during client initialization.
+            with (
+                patch("requests.get") as mock_get,
+                patch("requests.post") as mock_post,
+            ):
                 mock_response = Mock()
                 mock_response.ok = True
                 mock_response.json.return_value = [{"id": "test-cloud-id"}]
                 mock_get.return_value = mock_response
+
+                refresh_response = Mock()
+                refresh_response.ok = True
+                refresh_response.json.return_value = {
+                    "access_token": "refreshed-token",
+                    "expires_in": 3600,
+                }
+                mock_post.return_value = refresh_response
 
                 # Create OAuth config
                 oauth_config = OAuthConfig.from_env()
