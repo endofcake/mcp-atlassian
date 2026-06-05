@@ -154,6 +154,46 @@ jira:
   # Custom headers (comma-separated key=value pairs)
   customHeaders: ""
 
+# Bitbucket Data Center Configuration
+# Bitbucket DC uses OAuth 2.0 exclusively. Set bitbucket.authMode to "oauth"
+# (client credentials) or "byot" (bring-your-own access token).
+bitbucket:
+  enabled: false
+  # Base URL of the Bitbucket Data Center instance
+  url: ""
+
+  # Auth mode for Bitbucket DC: "oauth" or "byot"
+  # "oauth"  — supply oauthClientId + oauthClientSecret
+  # "byot"   — supply a pre-existing oauthAccessToken
+  authMode: "oauth"
+
+  # Full OAuth (authMode: oauth)
+  oauthClientId: ""
+  oauthClientSecret: ""
+
+  # OAuth redirect URI (authMode: oauth). Must match the redirect registered on
+  # the Bitbucket application link. Required when Bitbucket fronts the OAuth
+  # proxy; without it the upstream resolver cannot start the authorization flow
+  # and silently degrades to bearer-forwarding.
+  oauthRedirectUri: "http://localhost:8080/callback"
+
+  # OAuth scope(s) to request (authMode: oauth). Space/comma-separated, e.g.
+  # "REPO_READ". Bitbucket-specific with no shared fallback, so leaving it empty
+  # requests no scope.
+  oauthScope: "REPO_READ"
+
+  # BYO access token (authMode: byot)
+  oauthAccessToken: ""
+
+  # SSL verification (set to "false" for self-signed certs)
+  sslVerify: "true"
+
+  # Comma-separated project keys to restrict tool output
+  projectsFilter: ""
+
+  # Custom headers (comma-separated key=value pairs)
+  customHeaders: ""
+
 # OAuth 2.0 Configuration (Cloud only)
 # Required when authMode: oauth or byot
 oauth:

@@ -19,6 +19,17 @@ data:
   {{- end }}
   {{- end }}
 
+  {{- if .Values.bitbucket.enabled }}
+  bitbucket-url: {{ .Values.bitbucket.url | quote }}
+  {{- if eq .Values.bitbucket.authMode "oauth" }}
+  bitbucket-oauth-redirect-uri: {{ .Values.bitbucket.oauthRedirectUri | quote }}
+  bitbucket-oauth-scope: {{ .Values.bitbucket.oauthScope | quote }}
+  {{- end }}
+  {{- if .Values.bitbucket.projectsFilter }}
+  bitbucket-projects-filter: {{ .Values.bitbucket.projectsFilter | quote }}
+  {{- end }}
+  {{- end }}
+
   {{- if eq .Values.authMode "oauth" }}
   oauth-redirect-uri: {{ .Values.oauth.redirectUri | quote }}
   oauth-scope: {{ .Values.oauth.scope | quote }}

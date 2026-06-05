@@ -1,3 +1,11 @@
+{{- if .Values.bitbucket.enabled }}
+{{- if not .Values.bitbucket.url }}
+{{- fail "bitbucket.url is required when bitbucket.enabled is true; without it the server cannot resolve BITBUCKET_URL and the pod crashloops." }}
+{{- end }}
+{{- if not (has .Values.bitbucket.authMode (list "oauth" "byot")) }}
+{{- fail (printf "bitbucket.authMode must be one of \"oauth\" or \"byot\" when bitbucket.enabled is true, got %q. An unrecognised value silently disables Bitbucket." .Values.bitbucket.authMode) }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -149,6 +157,61 @@ spec:
             secretKeyRef:
               name: {{ include "mcp-atlassian.fullname" . }}
               key: jira-custom-headers
+        {{- end }}
+        {{- end }}
+
+        # Bitbucket Data Center Configuration
+        {{- if .Values.bitbucket.enabled }}
+        - name: BITBUCKET_URL
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-url
+        {{- if eq .Values.bitbucket.authMode "oauth" }}
+        - name: BITBUCKET_OAUTH_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-client-id
+        - name: BITBUCKET_OAUTH_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-client-secret
+        - name: BITBUCKET_OAUTH_REDIRECT_URI
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-redirect-uri
+        - name: BITBUCKET_OAUTH_SCOPE
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-scope
+        {{- else if eq .Values.bitbucket.authMode "byot" }}
+        - name: BITBUCKET_OAUTH_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-access-token
+        {{- end }}
+        # Always emit so a boolean `false` (not just the string "false") reaches
+        # the server; gating on truthiness makes the opt-out unreachable.
+        - name: BITBUCKET_SSL_VERIFY
+          value: {{ .Values.bitbucket.sslVerify | quote }}
+        {{- if .Values.bitbucket.projectsFilter }}
+        - name: BITBUCKET_PROJECTS_FILTER
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-projects-filter
+        {{- end }}
+        {{- if .Values.bitbucket.customHeaders }}
+        - name: BITBUCKET_CUSTOM_HEADERS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-custom-headers
         {{- end }}
         {{- end }}
 
