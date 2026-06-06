@@ -142,12 +142,17 @@ CONFLUENCE_TOOLSETS: dict[str, ToolsetDefinition] = {
     ),
 }
 
-# --- Bitbucket toolsets (1) ---
+# --- Bitbucket toolsets (2) ---
 
 BITBUCKET_TOOLSETS: dict[str, ToolsetDefinition] = {
     "bitbucket_projects": ToolsetDefinition(
         name="bitbucket_projects",
         description="Bitbucket Data Center project listing",
+        default=False,
+    ),
+    "bitbucket_repositories": ToolsetDefinition(
+        name="bitbucket_repositories",
+        description="Bitbucket Data Center repository listing",
         default=False,
     ),
 }

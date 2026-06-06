@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,6 +41,26 @@ _MAX_PROJECT_PAGES = 50
 
 
 @dataclass
+class BitbucketPage:
+    """A bounded, possibly-truncated page of items from a paged DC endpoint.
+
+    The domain-agnostic result of :meth:`BitbucketClient._paginate`. See
+    :class:`BitbucketProjectsPage` for the full meaning of the ``is_last_page`` /
+    ``truncated`` combinations; the semantics are identical, only the field name
+    of the collected items differs.
+
+    Attributes:
+        values: The collected raw item dicts (at most the requested ``limit``).
+        is_last_page: Whether the scan reached the end of the upstream list.
+        truncated: Whether the returned ``values`` omits items that exist.
+    """
+
+    values: list[dict[str, Any]]
+    is_last_page: bool
+    truncated: bool
+
+
+@dataclass
 class BitbucketProjectsPage:
     """A bounded, possibly-truncated view of Bitbucket projects.
 
@@ -71,13 +92,17 @@ class BitbucketProjectsPage:
     truncated: bool
 
 
-class BitbucketFetcher:
-    """Bitbucket Data Center REST client.
+class BitbucketClient:
+    """Bitbucket Data Center REST base client.
 
     Holds a ``requests.Session`` that carries the user's OAuth 2.0 ``Bearer``
     token and issues read calls against the Data Center core REST API
-    (``/rest/api/1.0``). The bearer is supplied per request, so one fetcher is
-    built per authenticated user.
+    (``/rest/api/1.0``). The bearer is supplied per request, so one client is
+    built per authenticated user. Domain operations live in mixins
+    (:class:`~mcp_atlassian.bitbucket.projects.ProjectsMixin`,
+    :class:`~mcp_atlassian.bitbucket.repositories.ReposMixin`) composed into
+    ``BitbucketFetcher``; this base provides the session, the ``_get`` error
+    taxonomy, and the shared pagination helper.
     """
 
     config: BitbucketConfig
@@ -268,10 +293,10 @@ class BitbucketFetcher:
 
         Raises:
             ValueError: If the body is not a paged object carrying a ``values``
-                list of project objects. A missing/misshaped body must surface
-                as an error rather than masquerade as an empty (successful)
-                result, and must do so identically whether or not a filter is
-                applied (a non-dict entry would otherwise crash the filter).
+                list of objects. A missing/misshaped body must surface as an
+                error rather than masquerade as an empty (successful) result, and
+                must do so identically whether or not a per-page transform is
+                applied (a non-dict entry would otherwise crash the transform).
         """
         if not isinstance(page, dict) or not isinstance(page.get("values"), list):
             raise ValueError(
@@ -282,67 +307,59 @@ class BitbucketFetcher:
         if not all(isinstance(item, dict) for item in values):
             raise ValueError(
                 f"Bitbucket returned an unexpected response shape for {path}; "
-                "expected every 'values' entry to be a project object."
+                "expected every 'values' entry to be an object."
             )
         return values
 
-    def _projects_filter_keys(self) -> set[str] | None:
-        """Parse ``projects_filter`` into an allowlist of upper-cased keys.
+    def _paginate(
+        self,
+        path: str,
+        *,
+        limit: int,
+        page_size: int,
+        max_pages: int,
+        params: dict[str, Any] | None = None,
+        transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+    ) -> BitbucketPage:
+        """Walk a Bitbucket DC paged endpoint and collect up to ``limit`` items.
 
-        Bitbucket has no list-level key filter, so the configured allowlist is
-        applied client-side. Keys are upper-cased on both sides because Bitbucket
-        Data Center project keys are canonically upper case, so a lower-case
-        filter entry should still match.
-
-        Returns:
-            The set of allowed project keys (upper-cased), or ``None`` when no
-            filter is configured.
-        """
-        raw = self.config.projects_filter
-        if not raw:
-            return None
-        keys = {key.strip().upper() for key in raw.split(",") if key.strip()}
-        return keys or None
-
-    def list_projects(
-        self, limit: int = DEFAULT_PROJECTS_LIMIT
-    ) -> BitbucketProjectsPage:
-        """List Bitbucket projects visible to the authenticated user.
-
-        Bitbucket Data Center paginates the projects endpoint, so a single page
-        can silently omit projects. This walks pages (``start``/``nextPageStart``)
-        bounded by ``limit`` and a hard safety cap, and reports whether the
-        result is complete. When ``config.projects_filter`` is set, each page is
-        narrowed to that allowlist before the bound is applied.
+        Bitbucket DC paginates with ``start``/``limit`` query params and answers
+        with a ``{values, isLastPage, nextPageStart, ...}`` envelope. This
+        requests pages of ``page_size`` from ``start=0``, following
+        ``nextPageStart`` until the upstream list ends (``isLastPage``), the
+        collected count reaches ``limit``, or the ``max_pages`` safety cap is hit.
+        ``transform`` is applied to each page's ``values`` before they are
+        collected (e.g. a client-side allowlist filter), so it is bounded by the
+        same page cap as the raw walk.
 
         Args:
-            limit: Maximum number of projects to return. Clamped to
-                ``[1, MAX_PROJECTS_LIMIT]``.
+            path: API path relative to ``/rest/api/1.0`` (e.g. ``"/projects"``).
+            limit: Stop once this many items are collected; the result is sliced
+                to it. Callers clamp this to their own domain ceiling first.
+            page_size: Per-request page size sent as the ``limit`` query param.
+            max_pages: Hard bound on the number of page requests.
+            params: Extra query params merged into every page request.
+            transform: Optional per-page mapping of the ``values`` list.
 
         Returns:
-            A :class:`BitbucketProjectsPage` carrying the collected projects,
+            A :class:`BitbucketPage` with the collected items (at most ``limit``),
             whether the upstream list was fully consumed (``is_last_page``), and
-            whether projects were omitted because a bound was hit (``truncated``).
+            whether items were omitted because a bound was hit (``truncated``).
 
         Raises:
-            ValueError: If a page response is not a paged object with a
-                ``values`` list, or if the request fails (see :meth:`_get`).
+            ValueError: If a page is not a paged object with a ``values`` list, or
+                if the request fails (see :meth:`_get`).
             MCPAtlassianAuthenticationError: If the bearer token is rejected.
         """
-        limit = max(1, min(limit, MAX_PROJECTS_LIMIT))
-        filter_keys = self._projects_filter_keys()
         collected: list[dict[str, Any]] = []
         start = 0
         is_last_page = True
-        for _ in range(_MAX_PROJECT_PAGES):
-            page = self._get(
-                "/projects", params={"start": start, "limit": _PROJECTS_PAGE_SIZE}
-            )
-            values = self._page_values(page, "/projects")
-            if filter_keys is not None:
-                values = [
-                    p for p in values if str(p.get("key", "")).upper() in filter_keys
-                ]
+        for _ in range(max_pages):
+            page_params = {**(params or {}), "start": start, "limit": page_size}
+            page = self._get(path, params=page_params)
+            values = self._page_values(page, path)
+            if transform is not None:
+                values = transform(values)
             collected.extend(values)
             is_last_page = bool(page.get("isLastPage", True))
             next_start = page.get("nextPageStart")
@@ -353,8 +370,8 @@ class BitbucketFetcher:
         # truncated if we trimmed an overshooting page, or stopped (limit/cap
         # reached) while the upstream list still had more pages.
         truncated = len(collected) > limit or not is_last_page
-        return BitbucketProjectsPage(
-            projects=collected[:limit],
+        return BitbucketPage(
+            values=collected[:limit],
             is_last_page=is_last_page,
             truncated=truncated,
         )
