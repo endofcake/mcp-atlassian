@@ -12,6 +12,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import RequestException, SSLError, Timeout
 
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
+from mcp_atlassian.models.bitbucket import BitbucketProject
 from mcp_atlassian.utils.logging import log_config_param
 from mcp_atlassian.utils.oauth import configure_oauth_session
 from mcp_atlassian.utils.ssl import configure_ssl_verification
@@ -22,6 +23,18 @@ logger = logging.getLogger("mcp-atlassian.bitbucket")
 
 # Bitbucket Data Center core REST API base path.
 API_BASE_PATH = "/rest/api/1.0"
+
+
+class BitbucketResourceNotFoundError(ValueError):
+    """A Bitbucket resource (project/repository/pull request) was not found.
+
+    Raised by :meth:`BitbucketClient._get` on an HTTP 404 so callers can tell a
+    missing/no-access resource apart from a generic network or API failure and
+    surface an actionable message. Subclasses :class:`ValueError` so existing
+    ``except ValueError`` handlers still catch it (degrading to a network-error
+    classification) when a caller does not handle it specifically.
+    """
+
 
 # Default number of projects a single list_projects call returns.
 DEFAULT_PROJECTS_LIMIT = 25
@@ -82,12 +95,12 @@ class BitbucketProjectsPage:
     ``is_last_page=False, truncated=False`` cannot occur.
 
     Attributes:
-        projects: The collected project objects (at most ``MAX_PROJECTS_LIMIT``).
+        projects: The collected project models (at most ``MAX_PROJECTS_LIMIT``).
         is_last_page: Whether the scan reached the end of the upstream list.
         truncated: Whether the returned ``projects`` omits projects that exist.
     """
 
-    projects: list[dict[str, Any]]
+    projects: list[BitbucketProject]
     is_last_page: bool
     truncated: bool
 
@@ -234,6 +247,16 @@ class BitbucketClient:
                 )
                 logger.error(error_msg)
                 raise MCPAtlassianAuthenticationError(error_msg) from e
+            if status == 404:
+                # The path is caller-derived and already percent-encoded; the
+                # upstream body is never echoed, so this stays leak-free.
+                error_msg = (
+                    f"Bitbucket resource not found (HTTP 404) for {path}. The "
+                    "project, repository, or pull request does not exist, or the "
+                    "authenticated user lacks permission to view it."
+                )
+                logger.error(error_msg)
+                raise BitbucketResourceNotFoundError(error_msg) from e
             error_msg = (
                 f"Bitbucket API request to {path} failed with HTTP "
                 f"{status if status is not None else 'unknown'}."

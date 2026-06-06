@@ -39,7 +39,7 @@ class TestGetEnabledToolsets:
         result = get_enabled_toolsets()
         assert result is not None
         assert result == set(ALL_TOOLSETS.keys())
-        assert len(result) == 24
+        assert len(result) == 25
 
     def test_all_keyword_case_insensitive(self, monkeypatch):
         """Test 'ALL' keyword is case-insensitive."""
@@ -47,7 +47,7 @@ class TestGetEnabledToolsets:
         result = get_enabled_toolsets()
         assert result is not None
         assert result == set(ALL_TOOLSETS.keys())
-        assert len(result) == 24
+        assert len(result) == 25
 
     def test_default_keyword(self, monkeypatch):
         """Test 'default' keyword returns 6 default toolset names."""
@@ -91,8 +91,8 @@ class TestGetEnabledToolsets:
         assert DEFAULT_TOOLSETS == expected_defaults
 
     def test_all_toolsets_count(self):
-        """Verify ALL_TOOLSETS has exactly 24 entries."""
-        assert len(ALL_TOOLSETS) == 24
+        """Verify ALL_TOOLSETS has exactly 25 entries."""
+        assert len(ALL_TOOLSETS) == 25
 
     def test_all_toolsets_contains_jira_and_confluence(self):
         """Verify ALL_TOOLSETS has both Jira and Confluence toolsets."""
@@ -104,9 +104,10 @@ class TestGetEnabledToolsets:
     def test_all_toolsets_contains_bitbucket(self):
         """Verify ALL_TOOLSETS includes the Bitbucket toolsets."""
         bitbucket_toolsets = {k for k in ALL_TOOLSETS if k.startswith("bitbucket_")}
-        assert len(bitbucket_toolsets) == 2
+        assert len(bitbucket_toolsets) == 3
         assert "bitbucket_projects" in bitbucket_toolsets
         assert "bitbucket_repositories" in bitbucket_toolsets
+        assert "bitbucket_pull_requests" in bitbucket_toolsets
 
     def test_bitbucket_projects_not_default(self):
         """bitbucket_projects is opt-in, not in the default set."""
@@ -127,6 +128,16 @@ class TestGetEnabledToolsets:
         monkeypatch.setenv("TOOLSETS", "bitbucket_repositories")
         result = get_enabled_toolsets()
         assert result == {"bitbucket_repositories"}
+
+    def test_bitbucket_pull_requests_not_default(self):
+        """bitbucket_pull_requests is opt-in, not in the default set."""
+        assert "bitbucket_pull_requests" not in DEFAULT_TOOLSETS
+
+    def test_bitbucket_pull_requests_toolset_enabled_explicitly(self, monkeypatch):
+        """bitbucket_pull_requests can be enabled by name."""
+        monkeypatch.setenv("TOOLSETS", "bitbucket_pull_requests")
+        result = get_enabled_toolsets()
+        assert result == {"bitbucket_pull_requests"}
 
 
 class TestShouldIncludeToolByToolset:
@@ -323,6 +334,6 @@ class TestToolsetTagCompleteness:
 
     def test_bitbucket_tool_count(self, bitbucket_tools):
         """Verify expected number of Bitbucket tools."""
-        assert len(bitbucket_tools) == 2, (
-            f"Expected 2 Bitbucket tools, got {len(bitbucket_tools)}"
+        assert len(bitbucket_tools) == 7, (
+            f"Expected 7 Bitbucket tools, got {len(bitbucket_tools)}"
         )

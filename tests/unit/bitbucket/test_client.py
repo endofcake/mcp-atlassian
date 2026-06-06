@@ -9,7 +9,10 @@ from requests.exceptions import ChunkedEncodingError, ReadTimeout, SSLError
 from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from mcp_atlassian.bitbucket import BitbucketConfig, BitbucketFetcher
-from mcp_atlassian.bitbucket.client import MAX_PROJECTS_LIMIT
+from mcp_atlassian.bitbucket.client import (
+    MAX_PROJECTS_LIMIT,
+    BitbucketResourceNotFoundError,
+)
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.utils.oauth import BYOAccessTokenOAuthConfig
 
@@ -101,7 +104,8 @@ class TestBitbucketFetcherCalls:
         ) as mock_get:
             page = fetcher.list_projects(limit=10)
 
-        assert page.projects == [{"key": "PROJ"}, {"key": "TEAM"}]
+        # list_projects returns BitbucketProject models (see migration note).
+        assert [p.key for p in page.projects] == ["PROJ", "TEAM"]
         assert page.is_last_page is True
         assert page.truncated is False
         called_url = mock_get.call_args[0][0]
@@ -125,7 +129,7 @@ class TestListProjectsPagination:
         with patch.object(fetcher._session, "get", side_effect=pages) as mock_get:
             page = fetcher.list_projects(limit=25)
 
-        assert page.projects == [{"key": "A"}, {"key": "B"}, {"key": "C"}]
+        assert [p.key for p in page.projects] == ["A", "B", "C"]
         assert page.is_last_page is True
         assert page.truncated is False
         # Second request used the advertised cursor.
@@ -250,7 +254,7 @@ class TestListProjectsFilter:
         with patch.object(fetcher._session, "get", return_value=body):
             page = fetcher.list_projects()
 
-        assert [p["key"] for p in page.projects] == ["PROJ", "TEAM"]
+        assert [p.key for p in page.projects] == ["PROJ", "TEAM"]
         assert page.is_last_page is True
         assert page.truncated is False
 
@@ -261,7 +265,7 @@ class TestListProjectsFilter:
         with patch.object(fetcher._session, "get", return_value=body):
             page = fetcher.list_projects()
 
-        assert [p["key"] for p in page.projects] == ["PROJ"]
+        assert [p.key for p in page.projects] == ["PROJ"]
 
     def test_filter_matches_are_collected_across_pages(self):
         """Pagination continues past non-matching pages to find filtered keys."""
@@ -275,7 +279,7 @@ class TestListProjectsFilter:
         with patch.object(fetcher._session, "get", side_effect=pages):
             page = fetcher.list_projects()
 
-        assert [p["key"] for p in page.projects] == ["C"]
+        assert [p.key for p in page.projects] == ["C"]
         assert page.is_last_page is True
         assert page.truncated is False
 
@@ -286,7 +290,7 @@ class TestListProjectsFilter:
         with patch.object(fetcher._session, "get", return_value=body):
             page = fetcher.list_projects()
 
-        assert [p["key"] for p in page.projects] == ["PROJ", "OTHER"]
+        assert [p.key for p in page.projects] == ["PROJ", "OTHER"]
 
 
 def _http_error_response(status: int) -> MagicMock:
@@ -320,6 +324,25 @@ class TestBitbucketFetcherErrorHandling:
         ):
             with pytest.raises(ValueError, match="HTTP 503"):
                 fetcher.list_projects()
+
+    def test_not_found_status_raises_resource_not_found_error(self):
+        """A 404 surfaces as the typed not-found error (a ValueError subclass).
+
+        The typed exception lets tools render an actionable 'not found' message
+        while staying caught by any generic ``except ValueError`` handler.
+        """
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "get", return_value=_http_error_response(404)
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError) as excinfo:
+                fetcher.list_projects()
+
+        assert isinstance(excinfo.value, ValueError)
+        message = str(excinfo.value)
+        assert "not found" in message.lower()
+        # Leak-free: cites the API path and an explanation, not the upstream body.
+        assert "/projects" in message
 
     def test_html_body_on_200_raises_value_error(self):
         """A 200 with a non-JSON body (proxy login page) is a clear ValueError."""

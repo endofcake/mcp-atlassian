@@ -11,8 +11,19 @@ from .base import ApiModel, TimestampMixin
 
 # Bitbucket models
 from .bitbucket import (
+    BitbucketActivity,
+    BitbucketComment,
+    BitbucketDiffHunk,
+    BitbucketDiffLine,
+    BitbucketDiffSegment,
+    BitbucketFileDiff,
+    BitbucketParticipant,
     BitbucketProject,
+    BitbucketPullRequest,
+    BitbucketPullRequestDiff,
+    BitbucketRef,
     BitbucketRepository,
+    BitbucketUser,
 )
 
 # Confluence models (Import from the new structure)
@@ -111,6 +122,17 @@ __all__ = [
     "ConfluenceSearchResult",
     "ConfluenceAttachment",
     # Bitbucket models
+    "BitbucketActivity",
+    "BitbucketComment",
+    "BitbucketDiffHunk",
+    "BitbucketDiffLine",
+    "BitbucketDiffSegment",
+    "BitbucketFileDiff",
+    "BitbucketParticipant",
     "BitbucketProject",
+    "BitbucketPullRequest",
+    "BitbucketPullRequestDiff",
+    "BitbucketRef",
     "BitbucketRepository",
+    "BitbucketUser",
 ]

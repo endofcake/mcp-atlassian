@@ -4,6 +4,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
+from ..models.bitbucket import BitbucketProject
 from .client import (
     _MAX_PROJECT_PAGES,
     _PROJECTS_PAGE_SIZE,
@@ -53,9 +54,10 @@ class ProjectsMixin(BitbucketClient):
                 ``[1, MAX_PROJECTS_LIMIT]``.
 
         Returns:
-            A :class:`BitbucketProjectsPage` carrying the collected projects,
-            whether the upstream list was fully consumed (``is_last_page``), and
-            whether projects were omitted because a bound was hit (``truncated``).
+            A :class:`BitbucketProjectsPage` carrying the collected project
+            models, whether the upstream list was fully consumed
+            (``is_last_page``), and whether projects were omitted because a bound
+            was hit (``truncated``).
 
         Raises:
             ValueError: If a page response is not a paged object with a
@@ -71,6 +73,8 @@ class ProjectsMixin(BitbucketClient):
         transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = (
             _filter if filter_keys is not None else None
         )
+        # Filtering runs on raw dicts mid-walk; model conversion happens once the
+        # page is collected (parallel to ReposMixin.list_repositories).
         page = self._paginate(
             "/projects",
             limit=limit,
@@ -78,8 +82,9 @@ class ProjectsMixin(BitbucketClient):
             max_pages=_MAX_PROJECT_PAGES,
             transform=transform,
         )
+        projects = [BitbucketProject.from_api_response(value) for value in page.values]
         return BitbucketProjectsPage(
-            projects=page.values,
+            projects=projects,
             is_last_page=page.is_last_page,
             truncated=page.truncated,
         )
