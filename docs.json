@@ -92,6 +92,12 @@
             ]
           },
           {
+            "group": "Bitbucket Tools",
+            "pages": [
+              "docs/tools/bitbucket"
+            ]
+          },
+          {
             "group": "Advanced",
             "pages": [
               "docs/http-transport",

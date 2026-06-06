@@ -1,0 +1,148 @@
+---
+title: "Bitbucket Data Center Tools"
+description: "Read-only Bitbucket Data Center tools — projects, repositories, and the pull-request review loop"
+---
+
+MCP Atlassian provides read-only tools for **Bitbucket Data Center** (self-hosted),
+authenticated with OAuth 2.0. See [Bitbucket Data Center setup](/docs/authentication) for
+configuration and the [OAuth validation runbook](/docs/guides/bitbucket-oauth-validation).
+
+All Bitbucket tools are **read-only** and live in **opt-in** toolsets (off by default).
+Enable them explicitly:
+
+```bash
+# Enable a Bitbucket toolset (or several, comma-separated)
+TOOLSETS=default,bitbucket_pull_requests
+# ...or everything
+TOOLSETS=all
+```
+
+| Toolset | Tools |
+| --- | --- |
+| `bitbucket_projects` | `bitbucket_list_projects` |
+| `bitbucket_repositories` | `bitbucket_list_repositories` |
+| `bitbucket_pull_requests` | `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_get_pull_request_diff`, `bitbucket_get_pull_request_activities`, `bitbucket_get_pull_request_comments` |
+
+## Pagination & completeness
+
+List tools page through Bitbucket Data Center and return, alongside the results, three
+flags: `count` (items returned), `is_last_page`, and **`truncated`**. `truncated` is the
+authoritative completeness signal — when it is `true`, more items exist than were
+returned; raise `limit` (when `is_last_page` is `true`) or narrow the query, and do not
+treat the list as exhaustive.
+
+## Projects
+
+### `bitbucket_list_projects`
+
+Lists Bitbucket Data Center projects visible to the authenticated user.
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `limit` | int | `25` | Max projects to return (1–1000). |
+
+If `BITBUCKET_PROJECTS_FILTER` is configured, the result is restricted to those project
+keys (case-insensitive). A `truncated` *empty* result under a filter means the scan did
+not reach the matching project, not that none exists.
+
+## Repositories
+
+### `bitbucket_list_repositories`
+
+Lists repositories in a project.
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `project_key` | str | — | Project key (e.g. `PROJ`). Use `bitbucket_list_projects` to discover keys. |
+| `limit` | int | `25` | Max repositories to return (1–1000). |
+
+## Pull requests
+
+### `bitbucket_list_pull_requests`
+
+Lists pull requests in a repository.
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `project_key` | str | — | Project key. |
+| `repository_slug` | str | — | Repository slug (e.g. `my-repo`). Use `bitbucket_list_repositories` to discover slugs. |
+| `state` | str | `OPEN` | `OPEN`, `DECLINED`, `MERGED`, or `ALL`. |
+| `direction` | str | `INCOMING` | `INCOMING` or `OUTGOING`. |
+| `at` | str | — | Optional fully-qualified branch ref (e.g. `refs/heads/main`). |
+| `order` | str | `NEWEST` | `NEWEST` or `OLDEST`. |
+| `limit` | int | `25` | Max pull requests to return (1–100). |
+
+### `bitbucket_get_pull_request`
+
+Gets one pull request's metadata (title/state, source/target refs, reviewer and approval
+state).
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `project_key` | str | — | Project key. |
+| `repository_slug` | str | — | Repository slug. |
+| `pull_request_id` | int | — | Pull-request id (positive integer). |
+
+### `bitbucket_get_pull_request_diff`
+
+Returns the pull request's diff as a **structured hunk model** (files → hunks → segments →
+lines), not raw unified-diff text. The diff is bounded for token control.
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `project_key` | str | — | Project key. |
+| `repository_slug` | str | — | Repository slug. |
+| `pull_request_id` | int | — | Pull-request id. |
+| `max_lines_per_file` | int | `500` | Per-file line cap (1–5000). Over-budget files are flagged `line_truncated` with the dropped count in `omitted_lines`. |
+| `max_files` | int | `100` | Max changed files (1–1000). Excess files are omitted; `total_files` reports the full count and `truncated` is set. |
+
+Server-side truncation flags from Bitbucket (e.g. a binary or server-truncated file) are
+preserved separately from these client-side budgets.
+
+### `bitbucket_get_pull_request_activities`
+
+The activity timeline — comments, approvals, merges, rescopes, and other actions in
+chronological order.
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `project_key` | str | — | Project key. |
+| `repository_slug` | str | — | Repository slug. |
+| `pull_request_id` | int | — | Pull-request id. |
+| `limit` | int | `25` | Max activity entries to return (1–200). |
+
+### `bitbucket_get_pull_request_comments`
+
+A focused view over the timeline — only comment actions, with the comment payload (text,
+author, thread state) surfaced. Backed by the same endpoint as the activities tool.
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `project_key` | str | — | Project key. |
+| `repository_slug` | str | — | Repository slug. |
+| `pull_request_id` | int | — | Pull-request id. |
+| `limit` | int | `25` | Max comments to return (1–200). |
+
+## A pull-request review pass
+
+```text
+bitbucket_list_projects                 → find the project key
+bitbucket_list_repositories(project)    → find the repository slug
+bitbucket_list_pull_requests(repo)      → find the open PR and its id
+bitbucket_get_pull_request(id)          → title, refs, approval state
+bitbucket_get_pull_request_diff(id)     → the changes (bounded for token budget)
+bitbucket_get_pull_request_comments(id) → existing review discussion
+```
+
+## Errors
+
+Failures return a sanitised JSON error object (`success: false`, `error: "…"`) — never raw
+upstream detail. A missing/no-access project, repository, or PR returns a `Not Found:`
+error; token rejection returns an `Authentication/Permission Error:`; transport/API issues
+return a `Network or API Error:`.
+
+## Writes
+
+Write operations (approve, comment, merge, branch management) are **not implemented yet** —
+the current Bitbucket surface is read-only. When added, they will respect
+[`READ_ONLY_MODE`](/docs/tools-reference#read-only-mode).
