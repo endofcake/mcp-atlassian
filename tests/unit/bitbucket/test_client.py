@@ -428,3 +428,168 @@ class TestBitbucketFetcherErrorHandling:
         assert "network error" in message
         assert "HTTPSConnectionPool" not in message
         assert "Response ended prematurely" not in message
+
+
+def _http_error_with_body(status: int, body) -> MagicMock:
+    """Build a mock error response that raises and whose .json() returns body."""
+    response = MagicMock()
+    response.status_code = status
+    response.json.return_value = body
+    error = HTTPError(f"{status} error")
+    error.response = response
+    response.raise_for_status.side_effect = error
+    return response
+
+
+class TestRequestWriteTaxonomy:
+    """The shared _request taxonomy as exercised through the _post wrapper.
+
+    _get is proven byte-identical by the suite above; these pin the write-side
+    behaviour _request newly carries: the JSON body is sent, and a 400/409
+    surfaces the instance's own errors[].message (and nothing else) while the
+    rest of the taxonomy (auth, not-found, timeout) is shared with _get.
+    """
+
+    def test_post_sends_json_body_to_the_path(self):
+        """_post issues a POST with the JSON body to the API-root-joined URL."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        ok = MagicMock()
+        ok.raise_for_status.return_value = None
+        ok.json.return_value = {"id": 1}
+        with patch.object(fetcher._session, "post", return_value=ok) as mock_post:
+            result = fetcher._post(
+                "/projects/PROJ/repos/r/pull-requests/1/comments",
+                json_body={"text": "hi"},
+            )
+
+        assert result == {"id": 1}
+        called_url = mock_post.call_args[0][0]
+        assert called_url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/r/pull-requests/1/comments"
+        )
+        assert mock_post.call_args[1]["json"] == {"text": "hi"}
+
+    def test_post_400_surfaces_envelope_messages(self):
+        """A 400 with the documented envelope appends errors[].message text."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "Anchor 'path' is required."}]}
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(400, body)
+        ):
+            with pytest.raises(ValueError) as excinfo:
+                fetcher._post("/x", json_body={"text": "hi"})
+
+        message = str(excinfo.value)
+        assert "HTTP 400" in message
+        assert "Anchor 'path' is required." in message
+
+    def test_post_409_joins_multiple_messages(self):
+        """Multiple envelope messages are joined into one actionable string."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "first"}, {"message": "second"}]}
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError) as excinfo:
+                fetcher._post("/x", json_body={"text": "hi"})
+
+        message = str(excinfo.value)
+        assert "HTTP 409" in message
+        assert "first; second" in message
+
+    def test_post_400_malformed_body_falls_back_to_generic(self):
+        """A 400 whose body is not the documented envelope never echoes it."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_http_error_with_body(400, {"unexpected": "shape"}),
+        ):
+            with pytest.raises(ValueError) as excinfo:
+                fetcher._post("/x", json_body={"text": "hi"})
+
+        message = str(excinfo.value)
+        assert "HTTP 400" in message
+        # The body is not the documented shape, so nothing from it is surfaced.
+        assert "unexpected" not in message
+
+    def test_post_400_non_json_body_falls_back_to_generic(self):
+        """A 400 whose body fails to parse falls back without leaking it."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.json.side_effect = json.JSONDecodeError("err", "<html>", 0)
+        error = HTTPError("400 error")
+        error.response = resp
+        resp.raise_for_status.side_effect = error
+        with patch.object(fetcher._session, "post", return_value=resp):
+            with pytest.raises(ValueError) as excinfo:
+                fetcher._post("/x", json_body={"text": "hi"})
+
+        message = str(excinfo.value)
+        assert "HTTP 400" in message
+        assert "<html>" not in message
+
+    def test_post_400_empty_errors_list_falls_back_to_generic(self):
+        """A well-formed envelope with no messages yields the generic message."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_http_error_with_body(400, {"errors": []}),
+        ):
+            with pytest.raises(ValueError) as excinfo:
+                fetcher._post("/x", json_body={"text": "hi"})
+
+        message = str(excinfo.value)
+        # No detail to surface, so the status-only generic message is used.
+        assert message.rstrip().endswith("HTTP 400.")
+
+    def test_post_400_message_is_length_capped(self):
+        """An over-long upstream message is bounded, not echoed in full."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "x" * 2000}]}
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(400, body)
+        ):
+            with pytest.raises(ValueError) as excinfo:
+                fetcher._post("/x", json_body={"text": "hi"})
+
+        message = str(excinfo.value)
+        # The surfaced detail is capped (500 chars), so the full body is bounded.
+        assert "x" * 500 in message
+        assert "x" * 501 not in message
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_post_auth_status_raises_authentication_error(self, status):
+        """401/403 surface as the shared auth error for writes too."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_response(status)
+        ):
+            with pytest.raises(MCPAtlassianAuthenticationError, match=str(status)):
+                fetcher._post("/x", json_body={"text": "hi"})
+
+    def test_post_404_raises_resource_not_found(self):
+        """404 surfaces as the typed not-found error for writes too."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_response(404)
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError):
+                fetcher._post("/x", json_body={"text": "hi"})
+
+    def test_post_timeout_is_leak_free(self):
+        """The timeout branch strips the urllib3 pool repr for POST too."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        leaky = ReadTimeout(
+            "HTTPSConnectionPool(host='bitbucket.corp.example.com', port=443): "
+            "Read timed out. (read timeout=75)"
+        )
+        with patch.object(fetcher._session, "post", side_effect=leaky):
+            with pytest.raises(ValueError) as excinfo:
+                fetcher._post("/x", json_body={"text": "hi"})
+
+        message = str(excinfo.value)
+        assert "timed out" in message
+        assert "HTTPSConnectionPool" not in message

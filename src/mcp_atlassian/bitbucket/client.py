@@ -24,6 +24,12 @@ logger = logging.getLogger("mcp-atlassian.bitbucket")
 # Bitbucket Data Center core REST API base path.
 API_BASE_PATH = "/rest/api/1.0"
 
+# Max characters of upstream error text surfaced from a 400/409 write
+# rejection. The instance's own ``errors[].message`` is actionable, but it must
+# be bounded so a pathological upstream body cannot bloat the client-facing
+# error message.
+_ERROR_MESSAGE_MAX_CHARS = 500
+
 
 class BitbucketResourceNotFoundError(ValueError):
     """A Bitbucket resource (project/repository/pull request) was not found.
@@ -182,12 +188,31 @@ class BitbucketClient:
         """
         return f"{self.config.url.rstrip('/')}{API_BASE_PATH}"
 
-    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
-        """Issue a GET against the Bitbucket DC core REST API.
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: Any | None = None,
+    ) -> Any:
+        """Issue a request against the Bitbucket DC core REST API.
+
+        Carries the leak-free error taxonomy shared by every verb:
+        :meth:`_get`/:meth:`_post`/:meth:`_put` are thin wrappers. Connection,
+        TLS, timeout, auth (401/403), not-found (404), client/conflict
+        (400/409), non-JSON-body, and any other transport failure map to a
+        crafted message that never embeds the raw transport error — so internal
+        host/pool details are not leaked to the client. The sole exception is a
+        400/409, where the instance's own ``errors[].message`` text (and nothing
+        else from the body) is appended so a write rejection is actionable.
 
         Args:
+            method: HTTP method (``"GET"``, ``"POST"``, ``"PUT"``).
             path: API path relative to ``/rest/api/1.0`` (e.g. ``"/projects"``).
             params: Optional query parameters.
+            json_body: Optional JSON request body (writes only). When None no
+                body is attached, so a GET issues the exact original call.
 
         Returns:
             The parsed JSON response.
@@ -195,17 +220,26 @@ class BitbucketClient:
         Raises:
             MCPAtlassianAuthenticationError: If the bearer token is rejected
                 (HTTP 401/403).
+            BitbucketResourceNotFoundError: On HTTP 404 (a ValueError subclass).
             ValueError: If the request fails to connect, the TLS handshake
-                fails, the request times out, returns a non-auth error status,
-                or returns a non-JSON body (e.g. an HTML proxy login page on a
+                fails, the request times out, returns another error status, or
+                returns a non-JSON body (e.g. an HTML proxy login page on a
                 200). The crafted message never embeds the raw transport error,
                 so internal host/pool details are not leaked to the client.
         """
         url = f"{self._api_root}{path}"
+        # A GET must call the session with the exact original kwargs (no
+        # ``json=``) so existing behaviour — and the tests that pin it — stay
+        # byte-identical; only a write attaches a body.
+        request_kwargs: dict[str, Any] = {
+            "params": params,
+            "timeout": self.config.timeout,
+        }
+        if json_body is not None:
+            request_kwargs["json"] = json_body
+        http_method: Callable[..., Any] = getattr(self._session, method.lower())
         try:
-            response = self._session.get(
-                url, params=params, timeout=self.config.timeout
-            )
+            response = http_method(url, **request_kwargs)
             response.raise_for_status()
             return response.json()
         except SSLError as e:
@@ -257,6 +291,17 @@ class BitbucketClient:
                 )
                 logger.error(error_msg)
                 raise BitbucketResourceNotFoundError(error_msg) from e
+            if status in (400, 409):
+                # A write rejection (bad anchor, author-self-approve, stale
+                # version). Surface only the instance's own errors[].message —
+                # nothing else from the body — so the caller can act on it.
+                detail = self._extract_error_messages(e.response)
+                error_msg = (
+                    f"Bitbucket API request to {path} failed with HTTP {status}"
+                    + (f": {detail}" if detail else ".")
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg) from e
             error_msg = (
                 f"Bitbucket API request to {path} failed with HTTP "
                 f"{status if status is not None else 'unknown'}."
@@ -282,6 +327,75 @@ class BitbucketClient:
             logger.error("Bitbucket request to %s failed: %s", path, e)
             error_msg = f"Bitbucket API request to {path} failed (network error)."
             raise ValueError(error_msg) from e
+
+    @staticmethod
+    def _extract_error_messages(response: Any) -> str | None:
+        """Extract the joined ``errors[].message`` text from an error body.
+
+        Bitbucket DC reports request errors with a documented envelope —
+        ``{"errors": [{"message": ...}, ...]}``. Only the human-readable
+        ``message`` strings are surfaced (never ``exceptionName``, ``context``,
+        the raw body, or transport internals), joined and length-capped, so a
+        400/409 is actionable without leaking instance internals.
+
+        Args:
+            response: The error response object.
+
+        Returns:
+            The joined, capped messages, or None if the body is not a JSON
+            object of the documented shape — in which case the caller falls back
+            to a generic status-only message.
+        """
+        try:
+            body = response.json()
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(body, dict):
+            return None
+        errors = body.get("errors")
+        if not isinstance(errors, list):
+            return None
+        messages = [
+            item["message"].strip()
+            for item in errors
+            if isinstance(item, dict)
+            and isinstance(item.get("message"), str)
+            and item["message"].strip()
+        ]
+        if not messages:
+            return None
+        return "; ".join(messages)[:_ERROR_MESSAGE_MAX_CHARS]
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """Issue a GET against the Bitbucket DC core REST API.
+
+        Thin wrapper over :meth:`_request`; see it for the shared error
+        taxonomy.
+
+        Args:
+            path: API path relative to ``/rest/api/1.0`` (e.g. ``"/projects"``).
+            params: Optional query parameters.
+
+        Returns:
+            The parsed JSON response.
+        """
+        return self._request("GET", path, params=params)
+
+    def _post(self, path: str, *, json_body: Any) -> Any:
+        """Issue a POST against the Bitbucket DC core REST API.
+
+        Thin wrapper over :meth:`_request`; see it for the shared error
+        taxonomy. On a 400/409 the raised ValueError carries the instance's own
+        ``errors[].message`` text, so a write rejection is actionable.
+
+        Args:
+            path: API path relative to ``/rest/api/1.0``.
+            json_body: The JSON request body.
+
+        Returns:
+            The parsed JSON response.
+        """
+        return self._request("POST", path, json_body=json_body)
 
     def get_current_user(self) -> dict[str, Any]:
         """Validate the session by querying the inbox pull-request count.
