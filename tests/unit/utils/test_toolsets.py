@@ -333,19 +333,20 @@ class TestToolsetTagCompleteness:
                 )
 
     def test_bitbucket_tool_count(self, bitbucket_tools):
-        """Verify expected number of Bitbucket tools (7 read + 1 write)."""
-        assert len(bitbucket_tools) == 8, (
-            f"Expected 8 Bitbucket tools, got {len(bitbucket_tools)}"
+        """Verify expected number of Bitbucket tools (7 read + 2 write)."""
+        assert len(bitbucket_tools) == 9, (
+            f"Expected 9 Bitbucket tools, got {len(bitbucket_tools)}"
         )
 
-    def test_bitbucket_add_comment_registered_as_write(self, bitbucket_tools):
-        """The comment write tool is registered under the pull-requests toolset.
+    @pytest.mark.parametrize("tool_name", ["add_comment", "set_review_status"])
+    def test_bitbucket_write_tools_registered(self, bitbucket_tools, tool_name):
+        """The PR write tools register under the pull-requests toolset.
 
         Guards the regression where a Bitbucket tool silently failed to register
-        (bitbucket_projects, once) and pins the write tagging: the tool carries
+        (bitbucket_projects, once) and pins the write tagging: each tool carries
         the 'write' tag and lives in the bitbucket_pull_requests toolset.
         """
-        assert "add_comment" in bitbucket_tools
-        tags = bitbucket_tools["add_comment"].tags
+        assert tool_name in bitbucket_tools
+        tags = bitbucket_tools[tool_name].tags
         assert "write" in tags
         assert "toolset:bitbucket_pull_requests" in tags

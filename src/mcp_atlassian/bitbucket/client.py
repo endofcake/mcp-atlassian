@@ -30,6 +30,13 @@ API_BASE_PATH = "/rest/api/1.0"
 # error message.
 _ERROR_MESSAGE_MAX_CHARS = 500
 
+# Page size and page cap for the user-slug lookup that resolves the caller's
+# X-AUSERNAME to a slug. The ``filter`` query is a substring match, so the exact
+# name match can fall on a later page in a large directory; the cap bounds the
+# scan so a pathological filter cannot walk the whole user base.
+_USERS_PAGE_SIZE = 100
+_MAX_USER_LOOKUP_PAGES = 10
+
 
 class BitbucketResourceNotFoundError(ValueError):
     """A Bitbucket resource (project/repository/pull request) was not found.
@@ -138,6 +145,13 @@ class BitbucketClient:
         """
         self.config = config or BitbucketConfig.from_env()
 
+        # Per-user identity cache for write paths that need the caller's slug
+        # (review status). X-AUSERNAME is captured opportunistically from
+        # authenticated responses; the resolved slug is memoised — the client
+        # is built per authenticated user, so the cache is per-user.
+        self._auth_username: str | None = None
+        self._current_user_slug: str | None = None
+
         # auth_type is a Literal["oauth"], so OAuth is the only valid value;
         # the only thing that can be missing is the oauth_config itself.
         if not self.config.oauth_config:
@@ -240,6 +254,7 @@ class BitbucketClient:
         http_method: Callable[..., Any] = getattr(self._session, method.lower())
         try:
             response = http_method(url, **request_kwargs)
+            self._capture_auth_username(response)
             response.raise_for_status()
             return response.json()
         except SSLError as e:
@@ -366,6 +381,20 @@ class BitbucketClient:
             return None
         return "; ".join(messages)[:_ERROR_MESSAGE_MAX_CHARS]
 
+    def _capture_auth_username(self, response: Any) -> None:
+        """Record the authenticated username from the ``X-AUSERNAME`` header.
+
+        Bitbucket DC sets ``X-AUSERNAME`` on authenticated REST responses. It is
+        the only way this REST surface exposes the caller's identity (there is
+        no self/whoami endpoint), so it is captured opportunistically on every
+        response and later resolved to a user slug. It is *not* part of the
+        OpenAPI spec — documented-in-practice — so it is read defensively and an
+        absent or non-string header simply leaves the cache untouched.
+        """
+        username = response.headers.get("X-AUSERNAME")
+        if isinstance(username, str) and username:
+            self._auth_username = username
+
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Issue a GET against the Bitbucket DC core REST API.
 
@@ -397,6 +426,22 @@ class BitbucketClient:
         """
         return self._request("POST", path, json_body=json_body)
 
+    def _put(self, path: str, *, json_body: Any) -> Any:
+        """Issue a PUT against the Bitbucket DC core REST API.
+
+        Thin wrapper over :meth:`_request`; see it for the shared error
+        taxonomy. On a 400/409 the raised ValueError carries the instance's own
+        ``errors[].message`` text, so a write rejection is actionable.
+
+        Args:
+            path: API path relative to ``/rest/api/1.0``.
+            json_body: The JSON request body.
+
+        Returns:
+            The parsed JSON response.
+        """
+        return self._request("PUT", path, json_body=json_body)
+
     def get_current_user(self) -> dict[str, Any]:
         """Validate the session by querying the inbox pull-request count.
 
@@ -416,6 +461,73 @@ class BitbucketClient:
                 f"Unexpected Bitbucket validation response: {result!r}"
             )
         return result
+
+    def _resolve_current_user_slug(self) -> str:
+        """Resolve the authenticated caller's user slug, memoised per client.
+
+        Bitbucket DC's REST surface has no self/whoami endpoint, so the caller's
+        identity is learned in two steps: the username comes from the
+        ``X-AUSERNAME`` header (primed here with a cheap authenticated call if no
+        prior response has set it), then the *slug* the participant path needs is
+        resolved from ``GET /users?filter=<username>`` by exact-matching the
+        ``name`` field. The slug is cached for the life of this (per-user) client.
+
+        Returns:
+            The authenticated user's slug.
+
+        Raises:
+            ValueError: If the instance does not expose ``X-AUSERNAME`` (the
+                caller identity is unknown) or no user exactly matches it — the
+                caller's slug is never guessed.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        if self._current_user_slug is not None:
+            return self._current_user_slug
+
+        # Prime X-AUSERNAME if no prior response has set it: any authenticated
+        # response carries it, and the inbox count is the cheapest such call.
+        if self._auth_username is None:
+            self._get("/inbox/pull-requests/count")
+
+        username = self._auth_username
+        if not username:
+            raise ValueError(
+                "Could not determine the authenticated user: the Bitbucket "
+                "instance did not return an X-AUSERNAME header, so review status "
+                "cannot be set without the caller's identity."
+            )
+
+        # The filter is a substring match, so several users can come back and the
+        # exact match may fall on a later page; walk pages until it is found or
+        # the list is exhausted, taking only the exact name match (never a
+        # near-match). The page cap bounds a pathological filter.
+        start = 0
+        for _ in range(_MAX_USER_LOOKUP_PAGES):
+            result = self._get(
+                "/users",
+                params={
+                    "filter": username,
+                    "start": start,
+                    "limit": _USERS_PAGE_SIZE,
+                },
+            )
+            for user in self._page_values(result, "/users"):
+                if user.get("name") == username:
+                    slug = user.get("slug")
+                    if isinstance(slug, str) and slug:
+                        self._current_user_slug = slug
+                        return slug
+            if bool(result.get("isLastPage", True)):
+                break
+            next_start = result.get("nextPageStart")
+            if next_start is None:
+                break
+            start = next_start
+
+        raise ValueError(
+            f"Could not resolve a user slug for the authenticated user "
+            f"'{username}'; the users endpoint returned no exact name match."
+        )
 
     @staticmethod
     def _page_values(page: Any, path: str) -> list[dict[str, Any]]:

@@ -861,3 +861,92 @@ async def add_comment(
             "error": "An unexpected error occurred while adding the comment.",
         }
     return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Set Bitbucket Pull Request Review Status",
+        "readOnlyHint": False,
+    },
+)
+@check_write_access
+async def set_review_status(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    status: Annotated[
+        str,
+        Field(
+            description=(
+                "The review status to set as the authenticated user: "
+                "'APPROVED', 'NEEDS_WORK' (the UI's 'Request changes'), or "
+                "'UNAPPROVED' (withdraw a prior approval)."
+            ),
+        ),
+    ],
+) -> str:
+    """Set the authenticated user's review status on a pull request.
+
+    Sets the caller's own participant status — 'APPROVED', 'NEEDS_WORK'
+    (request changes), or 'UNAPPROVED' (withdraw approval). On Data Center this
+    needs only REPO_READ. Bitbucket forbids the pull-request **author** from
+    setting a status; that attempt returns a clear error. Blocked when the
+    server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        status: APPROVED, NEEDS_WORK, or UNAPPROVED.
+
+    Returns:
+        JSON string with the confirmed review status, or a sanitised error
+        object on failure.
+
+    Raises:
+        ValueError: If in read-only mode (surfaced as a ToolError).
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        participant = bitbucket.set_review_status(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            pull_request_id=pull_request_id,
+            status=status,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "participant": participant,
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"set_review_status failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        logger.error(f"set_review_status failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"set_review_status failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in set_review_status:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while setting the review status.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)

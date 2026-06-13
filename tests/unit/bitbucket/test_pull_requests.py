@@ -599,3 +599,105 @@ class TestAddComment:
             with pytest.raises(ValueError, match="project_key"):
                 fetcher.add_comment("  ", "r", 5, "hello")
         mock_post.assert_not_called()
+
+
+def _http_error_with_body(status: int, body) -> MagicMock:
+    """Build a mock error response that raises and whose .json() returns body."""
+    response = MagicMock()
+    response.status_code = status
+    response.json.return_value = body
+    error = HTTPError(f"{status} error")
+    error.response = response
+    response.raise_for_status.side_effect = error
+    return response
+
+
+class TestSetReviewStatus:
+    """set_review_status: enum validation, slug-anchored PUT, error surfacing.
+
+    The username→slug resolution itself is covered in test_client.py; here it is
+    stubbed so the mixin's own behaviour (path, body, projection, errors) is the
+    unit under test.
+    """
+
+    def test_put_path_uses_resolved_slug_and_status_body(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher, "_resolve_current_user_slug", return_value="me-slug"
+        ):
+            with patch.object(
+                fetcher._session,
+                "put",
+                return_value=_json_response(
+                    {"status": "APPROVED", "user": {"name": "me"}}
+                ),
+            ) as mock_put:
+                result = fetcher.set_review_status("PROJ", "my-repo", 5, "approved")
+
+        url = mock_put.call_args[0][0]
+        assert url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/5/"
+            "participants/me-slug"
+        )
+        assert mock_put.call_args[1]["json"] == {"status": "APPROVED"}
+        assert result["status"] == "APPROVED"
+        assert result["user"]["name"] == "me"
+
+    def test_status_is_normalized(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher, "_resolve_current_user_slug", return_value="me"):
+            with patch.object(
+                fetcher._session,
+                "put",
+                return_value=_json_response({"status": "NEEDS_WORK"}),
+            ) as mock_put:
+                fetcher.set_review_status("P", "r", 5, "needs_work")
+
+        assert mock_put.call_args[1]["json"] == {"status": "NEEDS_WORK"}
+
+    def test_bad_status_rejected_before_resolution(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with (
+            patch.object(fetcher, "_resolve_current_user_slug") as mock_resolve,
+            patch.object(fetcher._session, "put") as mock_put,
+        ):
+            with pytest.raises(ValueError, match="status must be"):
+                fetcher.set_review_status("P", "r", 5, "LGTM")
+        mock_resolve.assert_not_called()
+        mock_put.assert_not_called()
+
+    def test_author_cannot_set_status_surfaces_server_message(self):
+        """A 409 (author self-approve) surfaces the instance's own message."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [
+                {"message": "The author of a pull request may not change status."}
+            ]
+        }
+        with patch.object(fetcher, "_resolve_current_user_slug", return_value="me"):
+            with patch.object(
+                fetcher._session, "put", return_value=_http_error_with_body(409, body)
+            ):
+                with pytest.raises(ValueError, match="may not change status"):
+                    fetcher.set_review_status("P", "r", 5, "APPROVED")
+
+    def test_slug_resolution_failure_propagates_without_put(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher,
+            "_resolve_current_user_slug",
+            side_effect=ValueError("no X-AUSERNAME header"),
+        ):
+            with patch.object(fetcher._session, "put") as mock_put:
+                with pytest.raises(ValueError, match="X-AUSERNAME"):
+                    fetcher.set_review_status("P", "r", 5, "APPROVED")
+            mock_put.assert_not_called()
+
+    def test_non_dict_response_raises(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher, "_resolve_current_user_slug", return_value="me"):
+            with patch.object(
+                fetcher._session, "put", return_value=_json_response(["nope"])
+            ):
+                with pytest.raises(ValueError, match="unexpected response shape"):
+                    fetcher.set_review_status("P", "r", 5, "APPROVED")

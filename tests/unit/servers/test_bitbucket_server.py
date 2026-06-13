@@ -35,6 +35,7 @@ from mcp_atlassian.servers.bitbucket import (
     list_projects,
     list_pull_requests,
     list_repositories,
+    set_review_status,
 )
 
 pytestmark = pytest.mark.anyio
@@ -686,6 +687,86 @@ class TestAddCommentTool:
                 repository_slug="r",
                 pull_request_id=5,
                 text="x",
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")
+
+
+class TestSetReviewStatusTool:
+    """The set_review_status write tool: success, gate, and error mapping."""
+
+    async def test_success_returns_confirmed_status(self):
+        fetcher = MagicMock()
+        fetcher.set_review_status.return_value = {
+            "status": "APPROVED",
+            "user": {"name": "me"},
+        }
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await set_review_status(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                pull_request_id=5,
+                status="APPROVED",
+            )
+
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["participant"]["status"] == "APPROVED"
+        fetcher.set_review_status.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            status="APPROVED",
+        )
+
+    async def test_read_only_mode_blocks_and_makes_no_call(self):
+        fetcher = MagicMock()
+        with _patched_fetcher(fetcher):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await set_review_status(
+                    _read_only_ctx(),
+                    project_key="P",
+                    repository_slug="r",
+                    pull_request_id=5,
+                    status="APPROVED",
+                )
+        fetcher.set_review_status.assert_not_called()
+
+    async def test_author_rejection_is_network_error(self):
+        """The author-cannot-set-status rejection surfaces as a sanitised error."""
+        fetcher = MagicMock()
+        fetcher.set_review_status.side_effect = ValueError(
+            "Bitbucket API request to ... failed with HTTP 409: "
+            "The author of a pull request may not change status."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await set_review_status(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                status="APPROVED",
+            )
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_auth_error_message(self):
+        fetcher = MagicMock()
+        fetcher.set_review_status.side_effect = MCPAtlassianAuthenticationError(
+            "rejected"
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await set_review_status(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                status="NEEDS_WORK",
             )
         payload = json.loads(result)
         assert payload["error"].startswith("Authentication/Permission Error:")

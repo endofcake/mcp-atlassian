@@ -33,7 +33,7 @@
 
 Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira). Supports both Cloud and Server/Data Center deployments.
 
-**Bitbucket Data Center** support is newly added — currently scoped to OAuth 2.0 on Data Center (eight tools today: seven read-only — projects, repositories, and the pull-request review loop (list/get/diff/activities/comments) — plus pull-request commenting (`bitbucket_add_comment`, a write gated by `READ_ONLY_MODE`); further writes, PAT/basic, and Cloud are future work). See [Bitbucket Data Center setup](docs/authentication.mdx), the [Bitbucket tools reference](docs/tools/bitbucket.mdx), and the [OAuth validation runbook](docs/guides/bitbucket-oauth-validation.mdx).
+**Bitbucket Data Center** support is newly added — currently scoped to OAuth 2.0 on Data Center (nine tools today: seven read-only — projects, repositories, and the pull-request review loop (list/get/diff/activities/comments) — plus two pull-request writes, commenting and review status (`bitbucket_add_comment`, `bitbucket_set_review_status`, both gated by `READ_ONLY_MODE`); merge/decline, PAT/basic, and Cloud are future work). See [Bitbucket Data Center setup](docs/authentication.mdx), the [Bitbucket tools reference](docs/tools/bitbucket.mdx), and the [OAuth validation runbook](docs/guides/bitbucket-oauth-validation.mdx).
 
 https://github.com/user-attachments/assets/35303504-14c6-4ae4-913b-7c25ea511c3e
 

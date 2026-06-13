@@ -22,7 +22,7 @@ TOOLSETS=all
 | --- | --- |
 | `bitbucket_projects` | `bitbucket_list_projects` |
 | `bitbucket_repositories` | `bitbucket_list_repositories` |
-| `bitbucket_pull_requests` | `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_get_pull_request_diff`, `bitbucket_get_pull_request_activities`, `bitbucket_get_pull_request_comments`, `bitbucket_add_comment` (write) |
+| `bitbucket_pull_requests` | `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_get_pull_request_diff`, `bitbucket_get_pull_request_activities`, `bitbucket_get_pull_request_comments`, `bitbucket_add_comment` (write), `bitbucket_set_review_status` (write) |
 
 ## Pagination & completeness
 
@@ -115,7 +115,7 @@ chronological order.
 ### `bitbucket_get_pull_request_comments`
 
 A focused view over the timeline — only comment actions, with the comment payload (text,
-author, thread state) surfaced. Backed by the same endpoint as the activities tool.
+author, thread state) surfaced.
 
 | Parameter | Type | Default | Notes |
 | --- | --- | --- | --- |
@@ -162,6 +162,29 @@ request can comment on it; `REPO_WRITE` is not needed. The tool is still gated b
 blocked server-side and no request is made.
 </Note>
 
+### `bitbucket_set_review_status` (write)
+
+Sets **your own** review status on a pull request — the equivalent of clicking Approve,
+Request changes, or withdrawing in the UI.
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `project_key` | str | — | Project key. |
+| `repository_slug` | str | — | Repository slug. |
+| `pull_request_id` | int | — | Pull-request id. |
+| `status` | str | — | `APPROVED`, `NEEDS_WORK` (the UI's "Request changes"), or `UNAPPROVED` (withdraw a prior approval). |
+
+The status is always set for the **authenticated caller** — there is no parameter to act on
+another user. Bitbucket forbids the pull-request **author** from setting a status; that
+attempt returns a clear error.
+
+<Note>
+Like commenting, this needs only `REPO_READ` on Data Center and is gated by
+[`READ_ONLY_MODE`](/docs/tools-reference#read-only-mode). It resolves the caller's identity
+from the instance's `X-AUSERNAME` response header; if a proxy strips that header, the tool
+reports that the caller could not be identified rather than guessing.
+</Note>
+
 ## A pull-request review pass
 
 ```text
@@ -172,6 +195,7 @@ bitbucket_get_pull_request(id)          → title, refs, approval state
 bitbucket_get_pull_request_diff(id)     → the changes (bounded for token budget)
 bitbucket_get_pull_request_comments(id) → existing review discussion
 bitbucket_add_comment(id, …)            → leave review feedback (general or on a line)
+bitbucket_set_review_status(id, status) → approve / request changes / withdraw
 ```
 
 ## Errors
@@ -180,11 +204,3 @@ Failures return a sanitised JSON error object (`success: false`, `error: "…"`)
 upstream detail. A missing/no-access project, repository, or PR returns a `Not Found:`
 error; token rejection returns an `Authentication/Permission Error:`; transport/API issues
 return a `Network or API Error:`.
-
-## Writes
-
-Pull-request **commenting** (`bitbucket_add_comment`, above) is the first write tool. Like
-every write tool, it is blocked when the server runs with
-[`READ_ONLY_MODE`](/docs/tools-reference#read-only-mode) — the call is rejected server-side
-before any request is made. Further writes (review status, merge, branch management) are
-future work.

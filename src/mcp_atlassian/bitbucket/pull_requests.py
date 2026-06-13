@@ -11,6 +11,7 @@ from ..models.bitbucket import (
     BitbucketComment,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
+    BitbucketUser,
 )
 from .client import BitbucketClient
 
@@ -544,3 +545,67 @@ class PullRequestsMixin(BitbucketClient):
                 f"{base}/{pr_id}/comments; expected a comment object."
             )
         return BitbucketComment.from_api_response(data)
+
+    def set_review_status(
+        self,
+        project_key: str,
+        repository_slug: str,
+        pull_request_id: int | str,
+        status: str,
+    ) -> dict[str, Any]:
+        """Set the authenticated user's review status on a pull request.
+
+        Calls ``PUT .../pull-requests/{id}/participants/{userSlug}`` with
+        ``{"status": ...}``, where the slug is the authenticated caller's
+        (resolved via :meth:`_resolve_current_user_slug`). ``NEEDS_WORK`` is the
+        API name for the UI's "Request changes"; ``UNAPPROVED`` withdraws a prior
+        approval. Bitbucket forbids the pull request **author** from setting a
+        status — that rejection surfaces with the server's own message. On Data
+        Center this needs only ``REPO_READ``.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+            status: ``APPROVED``, ``NEEDS_WORK``, or ``UNAPPROVED``.
+
+        Returns:
+            A simplified dict with the confirmed ``status`` (plus ``approved``
+            and the participant ``user`` when present).
+
+        Raises:
+            ValueError: If a segment is blank, the id is not a positive integer,
+                the status is not a valid enum, the caller's identity/slug cannot
+                be resolved, or the request fails (a 400/409 — e.g. the author
+                setting a status — surfaces the instance's own message).
+            BitbucketResourceNotFoundError: If the pull request does not exist or
+                is not accessible.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        normalized = status.strip().upper()
+        if normalized not in ("APPROVED", "NEEDS_WORK", "UNAPPROVED"):
+            raise ValueError(
+                "status must be 'APPROVED', 'NEEDS_WORK', or 'UNAPPROVED'."
+            )
+
+        user_slug = self._resolve_current_user_slug()
+        path = f"{base}/{pr_id}/participants/{quote(user_slug, safe='')}"
+        data = self._put(path, json_body={"status": normalized})
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Bitbucket returned an unexpected response shape for "
+                f"{path}; expected a participant object."
+            )
+
+        # Project explicitly — never echo the raw participant body.
+        participant: dict[str, Any] = {"status": data.get("status")}
+        if "approved" in data:
+            participant["approved"] = data.get("approved")
+        user_data = data.get("user")
+        if isinstance(user_data, dict):
+            participant["user"] = BitbucketUser.from_api_response(
+                user_data
+            ).to_simplified_dict()
+        return participant

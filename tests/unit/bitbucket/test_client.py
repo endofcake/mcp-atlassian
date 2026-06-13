@@ -593,3 +593,149 @@ class TestRequestWriteTaxonomy:
         message = str(excinfo.value)
         assert "timed out" in message
         assert "HTTPSConnectionPool" not in message
+
+    def test_put_sends_json_body(self):
+        """_put issues a PUT with the JSON body to the API-root-joined URL."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        ok = MagicMock()
+        ok.raise_for_status.return_value = None
+        ok.json.return_value = {"status": "APPROVED"}
+        with patch.object(fetcher._session, "put", return_value=ok) as mock_put:
+            result = fetcher._put(
+                "/x/participants/me", json_body={"status": "APPROVED"}
+            )
+
+        assert result == {"status": "APPROVED"}
+        assert mock_put.call_args[1]["json"] == {"status": "APPROVED"}
+
+
+def _response_with_header(body, username):
+    """A successful response carrying an X-AUSERNAME header and JSON body."""
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.headers = {"X-AUSERNAME": username} if username else {}
+    response.json.return_value = body
+    return response
+
+
+class TestCurrentUserResolution:
+    """X-AUSERNAME capture and username→slug resolution for the write path."""
+
+    def test_request_captures_ausername_header(self):
+        """Any authenticated response populates the username cache."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_response_with_header({"count": 0}, "jdoe"),
+        ):
+            fetcher._get("/inbox/pull-requests/count")
+
+        assert fetcher._auth_username == "jdoe"
+
+    def test_absent_header_leaves_cache_untouched(self):
+        """A response without the header does not corrupt the cache."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_response_with_header({"count": 0}, None),
+        ):
+            fetcher._get("/inbox/pull-requests/count")
+
+        assert fetcher._auth_username is None
+
+    @staticmethod
+    def _directory(username, users):
+        """A session.get that primes X-AUSERNAME then serves /users?filter."""
+
+        def _get(url, params=None, timeout=None):
+            if url.endswith("/inbox/pull-requests/count"):
+                return _response_with_header({"count": 0}, username)
+            if url.endswith("/users"):
+                return _response_with_header(
+                    {"values": users, "isLastPage": True}, username
+                )
+            return _response_with_header({}, username)
+
+        return _get
+
+    def test_resolves_slug_by_exact_name_match(self):
+        """The username resolves to the user whose name matches exactly."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        users = [{"name": "jdoe", "slug": "jdoe-slug"}]
+        with patch.object(
+            fetcher._session, "get", side_effect=self._directory("jdoe", users)
+        ):
+            assert fetcher._resolve_current_user_slug() == "jdoe-slug"
+
+    def test_multi_result_picks_exact_name_not_prefix_sibling(self):
+        """A prefix-matching sibling in the result set is never selected."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        users = [
+            {"name": "jdoe2", "slug": "jdoe2-slug"},
+            {"name": "jdoe", "slug": "jdoe-slug"},
+        ]
+        with patch.object(
+            fetcher._session, "get", side_effect=self._directory("jdoe", users)
+        ):
+            assert fetcher._resolve_current_user_slug() == "jdoe-slug"
+
+    def test_no_exact_match_raises(self):
+        """No exact name match raises rather than guessing a slug."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        users = [{"name": "jdoeX", "slug": "x"}]
+        with patch.object(
+            fetcher._session, "get", side_effect=self._directory("jdoe", users)
+        ):
+            with pytest.raises(ValueError, match="no exact name match"):
+                fetcher._resolve_current_user_slug()
+
+    def test_missing_ausername_raises_before_lookup(self):
+        """Without X-AUSERNAME the caller identity is unknown — raise clearly."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "get", side_effect=self._directory(None, [])
+        ):
+            with pytest.raises(ValueError, match="X-AUSERNAME"):
+                fetcher._resolve_current_user_slug()
+
+    def test_slug_is_cached_after_first_resolution(self):
+        """The resolved slug is memoised; a second call makes no request."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        users = [{"name": "jdoe", "slug": "jdoe-slug"}]
+        with patch.object(
+            fetcher._session, "get", side_effect=self._directory("jdoe", users)
+        ) as mock_get:
+            fetcher._resolve_current_user_slug()
+            mock_get.reset_mock()
+            assert fetcher._resolve_current_user_slug() == "jdoe-slug"
+            mock_get.assert_not_called()
+
+    def test_resolves_slug_on_a_later_page(self):
+        """The exact match is found even when a prefix sibling fills page one."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+
+        def _paged(url, params=None, timeout=None):
+            if url.endswith("/inbox/pull-requests/count"):
+                return _response_with_header({"count": 0}, "jdoe")
+            # Page 1 carries only a prefix sibling; the exact match is on page 2.
+            if (params or {}).get("start", 0) == 0:
+                return _response_with_header(
+                    {
+                        "values": [{"name": "jdoer", "slug": "jdoer-slug"}],
+                        "isLastPage": False,
+                        "nextPageStart": 1,
+                    },
+                    "jdoe",
+                )
+            return _response_with_header(
+                {
+                    "values": [{"name": "jdoe", "slug": "jdoe-slug"}],
+                    "isLastPage": True,
+                },
+                "jdoe",
+            )
+
+        with patch.object(fetcher._session, "get", side_effect=_paged):
+            assert fetcher._resolve_current_user_slug() == "jdoe-slug"
