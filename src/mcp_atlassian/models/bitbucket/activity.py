@@ -13,13 +13,16 @@ logger = logging.getLogger(__name__)
 class BitbucketComment(ApiModel):
     """A Bitbucket pull-request comment (``RestComment``).
 
-    Models the read-relevant fields of a comment: its id, text, author, creation
-    timestamp, and thread state. Nested replies (the ``comments`` array) are not
-    recursed here; ``reply_count`` signals their presence so a reviewer knows a
-    thread exists without inflating the payload.
+    Models the read-relevant fields of a comment: its id, version, text, author,
+    creation timestamp, and thread state. Nested replies (the ``comments``
+    array) are not recursed here; ``reply_count`` signals their presence so a
+    reviewer knows a thread exists without inflating the payload. ``version`` is
+    the optimistic-lock token a subsequent edit/delete must echo, so it is
+    surfaced on the comment returned by a write.
     """
 
     id: int = 0
+    version: int | None = None
     text: str = EMPTY_STRING
     author: BitbucketUser | None = None
     created_date: int | None = None
@@ -44,6 +47,7 @@ class BitbucketComment(ApiModel):
             return cls()
 
         comment_id = data.get("id")
+        version = data.get("version")
         author_data = data.get("author")
         author = (
             BitbucketUser.from_api_response(author_data)
@@ -54,6 +58,7 @@ class BitbucketComment(ApiModel):
         reply_count = len(replies) if isinstance(replies, list) else 0
         return cls(
             id=int(comment_id) if isinstance(comment_id, int) else 0,
+            version=version if isinstance(version, int) else None,
             text=str(data.get("text") or EMPTY_STRING),
             author=author,
             created_date=data.get("createdDate"),
@@ -65,6 +70,10 @@ class BitbucketComment(ApiModel):
     def to_simplified_dict(self) -> dict[str, Any]:
         """Convert to a simplified dictionary for API responses."""
         result: dict[str, Any] = {"id": self.id, "text": self.text}
+        # version can legitimately be 0 (a freshly created comment), so test
+        # for presence, not truthiness.
+        if self.version is not None:
+            result["version"] = self.version
         if self.author is not None:
             result["author"] = self.author.to_simplified_dict()
         if self.created_date is not None:

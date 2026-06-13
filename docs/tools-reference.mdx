@@ -96,13 +96,14 @@ Toolsets group related tools for easier management via `TOOLSETS` env var or `--
 | `confluence_analytics` | No | `confluence_get_page_views` |
 | `confluence_attachments` | No | `confluence_upload_attachment`, `confluence_upload_attachments`, `confluence_get_attachments`, `confluence_download_attachment`, `confluence_download_content_attachments`, `confluence_delete_attachment`, `confluence_get_page_images` |
 
-**Bitbucket Data Center Toolsets (3):** read-only, all off by default.
+**Bitbucket Data Center Toolsets (3):** all off by default; the `bitbucket_pull_requests`
+toolset includes a write tool (`bitbucket_add_comment`, gated by `READ_ONLY_MODE`).
 
 | Toolset | Core | Tools |
 |---------|:----:|-------|
 | `bitbucket_projects` | No | `bitbucket_list_projects` |
 | `bitbucket_repositories` | No | `bitbucket_list_repositories` |
-| `bitbucket_pull_requests` | No | `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_get_pull_request_diff`, `bitbucket_get_pull_request_activities`, `bitbucket_get_pull_request_comments` |
+| `bitbucket_pull_requests` | No | `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_get_pull_request_diff`, `bitbucket_get_pull_request_activities`, `bitbucket_get_pull_request_comments`, `bitbucket_add_comment` |
 
 ```bash
 # All toolsets are enabled when TOOLSETS is not set.

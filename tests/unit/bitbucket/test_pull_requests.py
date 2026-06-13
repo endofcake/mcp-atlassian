@@ -337,3 +337,265 @@ class TestGetActivities:
         assert len(page.activities) == 1
         assert page.activities[0].action == "COMMENTED"
         assert page.activities[0].comment is None
+
+
+class TestAddComment:
+    """add_comment: validation matrix, request shapes, EFFECTIVE anchor, return."""
+
+    @staticmethod
+    def _post_ok(body=None):
+        """A successful POST response carrying the given (or a default) comment."""
+        return _json_response(body or {"id": 100, "version": 0, "text": "ok"})
+
+    def test_general_comment_request_shape(self):
+        """text only → a bare general comment to the comments endpoint."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment("PROJ", "my-repo", 5, "hello")
+
+        url = mock_post.call_args[0][0]
+        assert url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/5/comments"
+        )
+        assert mock_post.call_args[1]["json"] == {"text": "hello"}
+
+    def test_reply_request_shape(self):
+        """parent_id → a reply that carries the parent id and no anchor."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment("P", "r", 5, "reply", parent_id=7)
+
+        assert mock_post.call_args[1]["json"] == {
+            "text": "reply",
+            "parent": {"id": 7},
+        }
+
+    def test_reply_rejects_anchor_params(self):
+        """A reply combined with any anchor param is rejected before any POST."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="reply"):
+                fetcher.add_comment("P", "r", 5, "x", parent_id=7, file_path="a.py")
+        mock_post.assert_not_called()
+
+    def test_reply_with_blocker_severity(self):
+        """A reply can also be a BLOCKER task; both fields are emitted."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment(
+                "P", "r", 5, "blocking reply", parent_id=7, severity="BLOCKER"
+            )
+
+        assert mock_post.call_args[1]["json"] == {
+            "text": "blocking reply",
+            "severity": "BLOCKER",
+            "parent": {"id": 7},
+        }
+
+    def test_blank_file_path_rejected(self):
+        """A whitespace-only file_path is rejected before any POST."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="file_path must be a non-blank"):
+                fetcher.add_comment("P", "r", 5, "x", file_path="   ")
+        mock_post.assert_not_called()
+
+    def test_whole_file_comment_request_shape(self):
+        """file_path only → a whole-file anchor (path, no line)."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment("P", "r", 5, "fc", file_path="src/a.py")
+
+        assert mock_post.call_args[1]["json"] == {
+            "text": "fc",
+            "anchor": {"path": "src/a.py"},
+        }
+
+    def test_line_comment_added_defaults_file_type_to(self):
+        """An ADDED line defaults to the destination side (TO)."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment(
+                "P", "r", 5, "lc", file_path="a.py", line=3, line_type="added"
+            )
+
+        assert mock_post.call_args[1]["json"]["anchor"] == {
+            "path": "a.py",
+            "line": 3,
+            "lineType": "ADDED",
+            "fileType": "TO",
+        }
+
+    def test_line_comment_removed_defaults_file_type_from(self):
+        """A REMOVED line defaults to the source side (FROM)."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment(
+                "P", "r", 5, "lc", file_path="a.py", line=3, line_type="REMOVED"
+            )
+
+        assert mock_post.call_args[1]["json"]["anchor"]["fileType"] == "FROM"
+
+    def test_line_comment_context_defaults_file_type_to(self):
+        """A CONTEXT line defaults to the destination side (TO)."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment(
+                "P", "r", 5, "lc", file_path="a.py", line=3, line_type="CONTEXT"
+            )
+
+        assert mock_post.call_args[1]["json"]["anchor"]["fileType"] == "TO"
+
+    def test_line_comment_explicit_file_type_respected(self):
+        """An explicit file_type overrides the line_type-derived default."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment(
+                "P",
+                "r",
+                5,
+                "lc",
+                file_path="a.py",
+                line=3,
+                line_type="ADDED",
+                file_type="from",
+            )
+
+        assert mock_post.call_args[1]["json"]["anchor"]["fileType"] == "FROM"
+
+    def test_blocker_severity_emitted_in_line_mode(self):
+        """BLOCKER is valid in any mode and emitted as a top-level severity."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment(
+                "P",
+                "r",
+                5,
+                "task",
+                file_path="a.py",
+                line=3,
+                line_type="ADDED",
+                severity="blocker",
+            )
+
+        body = mock_post.call_args[1]["json"]
+        assert body["severity"] == "BLOCKER"
+        assert body["anchor"]["line"] == 3
+
+    def test_no_difftype_or_hashes_emitted(self):
+        """A line anchor omits diffType/fromHash/toHash (server resolves EFFECTIVE)."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=self._post_ok()
+        ) as mock_post:
+            fetcher.add_comment(
+                "P", "r", 5, "lc", file_path="a.py", line=3, line_type="ADDED"
+            )
+
+        anchor = mock_post.call_args[1]["json"]["anchor"]
+        assert set(anchor) == {"path", "line", "lineType", "fileType"}
+
+    def test_line_without_file_path_rejected(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="line requires file_path"):
+                fetcher.add_comment("P", "r", 5, "x", line=3, line_type="ADDED")
+        mock_post.assert_not_called()
+
+    def test_file_type_without_line_rejected(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with pytest.raises(ValueError, match="only valid together with line"):
+            fetcher.add_comment("P", "r", 5, "x", file_path="a.py", file_type="TO")
+
+    def test_blank_text_rejected(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="non-blank"):
+                fetcher.add_comment("P", "r", 5, "   ")
+        mock_post.assert_not_called()
+
+    def test_bad_severity_rejected(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with pytest.raises(ValueError, match="severity"):
+            fetcher.add_comment("P", "r", 5, "x", severity="CRITICAL")
+
+    def test_bad_line_type_rejected(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with pytest.raises(ValueError, match="line_type"):
+            fetcher.add_comment(
+                "P", "r", 5, "x", file_path="a.py", line=3, line_type="X"
+            )
+
+    def test_bad_file_type_rejected(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with pytest.raises(ValueError, match="file_type"):
+            fetcher.add_comment(
+                "P",
+                "r",
+                5,
+                "x",
+                file_path="a.py",
+                line=3,
+                line_type="ADDED",
+                file_type="X",
+            )
+
+    def test_line_zero_rejected(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with pytest.raises(ValueError, match="positive integer"):
+            fetcher.add_comment(
+                "P", "r", 5, "x", file_path="a.py", line=0, line_type="ADDED"
+            )
+
+    def test_returns_created_comment_with_version(self):
+        """The 201 RestComment body is parsed, exposing id and version."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "id": 101,
+            "version": 0,
+            "text": "hello",
+            "author": {"name": "me", "displayName": "Me"},
+        }
+        with patch.object(fetcher._session, "post", return_value=self._post_ok(body)):
+            comment = fetcher.add_comment("P", "r", 5, "hello")
+
+        assert comment.id == 101
+        assert comment.version == 0
+        assert comment.text == "hello"
+
+    def test_non_dict_response_raises(self):
+        """A non-object body is an error, not a silent empty comment."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(["not", "an", "object"]),
+        ):
+            with pytest.raises(ValueError, match="unexpected response shape"):
+                fetcher.add_comment("P", "r", 5, "hello")
+
+    def test_blank_project_key_rejected_before_post(self):
+        """A blank path segment is rejected before any HTTP call."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="project_key"):
+                fetcher.add_comment("  ", "r", 5, "hello")
+        mock_post.assert_not_called()

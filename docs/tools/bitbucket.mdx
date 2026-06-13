@@ -1,14 +1,15 @@
 ---
 title: "Bitbucket Data Center Tools"
-description: "Read-only Bitbucket Data Center tools — projects, repositories, and the pull-request review loop"
+description: "Bitbucket Data Center tools — projects, repositories, the pull-request review loop, and PR commenting"
 ---
 
-MCP Atlassian provides read-only tools for **Bitbucket Data Center** (self-hosted),
+MCP Atlassian provides tools for **Bitbucket Data Center** (self-hosted),
 authenticated with OAuth 2.0. See [Bitbucket Data Center setup](/docs/authentication) for
 configuration and the [OAuth validation runbook](/docs/guides/bitbucket-oauth-validation).
 
-All Bitbucket tools are **read-only** and live in **opt-in** toolsets (off by default).
-Enable them explicitly:
+Bitbucket tools live in **opt-in** toolsets (off by default). Most are read-only; the
+pull-request **write** tools additionally honour
+[`READ_ONLY_MODE`](/docs/tools-reference#read-only-mode). Enable a toolset explicitly:
 
 ```bash
 # Enable a Bitbucket toolset (or several, comma-separated)
@@ -21,7 +22,7 @@ TOOLSETS=all
 | --- | --- |
 | `bitbucket_projects` | `bitbucket_list_projects` |
 | `bitbucket_repositories` | `bitbucket_list_repositories` |
-| `bitbucket_pull_requests` | `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_get_pull_request_diff`, `bitbucket_get_pull_request_activities`, `bitbucket_get_pull_request_comments` |
+| `bitbucket_pull_requests` | `bitbucket_list_pull_requests`, `bitbucket_get_pull_request`, `bitbucket_get_pull_request_diff`, `bitbucket_get_pull_request_activities`, `bitbucket_get_pull_request_comments`, `bitbucket_add_comment` (write) |
 
 ## Pagination & completeness
 
@@ -123,6 +124,44 @@ author, thread state) surfaced. Backed by the same endpoint as the activities to
 | `pull_request_id` | int | — | Pull-request id. |
 | `limit` | int | `25` | Max comments to return (1–200). |
 
+### `bitbucket_add_comment` (write)
+
+Adds a comment to a pull request. The comment mode follows which optional parameters are
+supplied:
+
+| Inputs | Result |
+| --- | --- |
+| `text` only | A general pull-request comment. |
+| `parent_id` | A reply to that comment (cannot be combined with any anchor parameter). |
+| `file_path` | A whole-file comment. |
+| `file_path` + `line` + `line_type` | A comment on a specific diff line. |
+| `severity="BLOCKER"` | Raises a **task** (a must-resolve item); valid in any mode. |
+
+| Parameter | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `project_key` | str | — | Project key. |
+| `repository_slug` | str | — | Repository slug. |
+| `pull_request_id` | int | — | Pull-request id. |
+| `text` | str | — | Comment text (Markdown); must be non-blank. |
+| `parent_id` | int | — | Reply to this comment id. |
+| `file_path` | str | — | File to anchor the comment to. |
+| `line` | int | — | 1-based diff line to anchor to (requires `file_path` and `line_type`). |
+| `line_type` | str | — | `ADDED`, `REMOVED`, or `CONTEXT` (an unchanged nearby line). |
+| `file_type` | str | derived | `FROM` (source) or `TO` (destination). Defaults from `line_type` (`REMOVED`→`FROM`, `ADDED`/`CONTEXT`→`TO`). |
+| `severity` | str | `NORMAL` | `NORMAL` or `BLOCKER` (a task). |
+
+Line and whole-file anchors land on the pull request's **current effective diff** — the
+same diff `bitbucket_get_pull_request_diff` returns — so anchor against the diff you just
+read; no commit hashes are required. The tool returns the created comment's `id` and
+`version` (the version is the optimistic-lock token a later edit or delete must echo).
+
+<Note>
+On Data Center, **commenting requires only `REPO_READ`** — a reviewer who can read a pull
+request can comment on it; `REPO_WRITE` is not needed. The tool is still gated by
+[`READ_ONLY_MODE`](/docs/tools-reference#read-only-mode): when that is set, the tool is
+blocked server-side and no request is made.
+</Note>
+
 ## A pull-request review pass
 
 ```text
@@ -132,6 +171,7 @@ bitbucket_list_pull_requests(repo)      → find the open PR and its id
 bitbucket_get_pull_request(id)          → title, refs, approval state
 bitbucket_get_pull_request_diff(id)     → the changes (bounded for token budget)
 bitbucket_get_pull_request_comments(id) → existing review discussion
+bitbucket_add_comment(id, …)            → leave review feedback (general or on a line)
 ```
 
 ## Errors
@@ -143,6 +183,8 @@ return a `Network or API Error:`.
 
 ## Writes
 
-Write operations (approve, comment, merge, branch management) are **not implemented yet** —
-the current Bitbucket surface is read-only. When added, they will respect
-[`READ_ONLY_MODE`](/docs/tools-reference#read-only-mode).
+Pull-request **commenting** (`bitbucket_add_comment`, above) is the first write tool. Like
+every write tool, it is blocked when the server runs with
+[`READ_ONLY_MODE`](/docs/tools-reference#read-only-mode) — the call is rejected server-side
+before any request is made. Further writes (review status, merge, branch management) are
+future work.

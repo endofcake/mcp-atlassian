@@ -6,6 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastmcp.exceptions import ToolError
 
 from mcp_atlassian.bitbucket.client import (
     BitbucketProjectsPage,
@@ -19,12 +20,14 @@ from mcp_atlassian.bitbucket.repositories import BitbucketRepositoriesPage
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.models.bitbucket import (
     BitbucketActivity,
+    BitbucketComment,
     BitbucketProject,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
     BitbucketRepository,
 )
 from mcp_atlassian.servers.bitbucket import (
+    add_comment,
     get_pull_request,
     get_pull_request_activities,
     get_pull_request_comments,
@@ -580,3 +583,109 @@ class TestGetPullRequestActivitiesTool:
         assert payload["count"] == 1
         assert payload["truncated"] is True
         assert payload["is_last_page"] is False
+
+
+def _read_only_ctx() -> MagicMock:
+    """A context whose lifespan reports READ_ONLY_MODE, for the write gate."""
+    ctx = MagicMock()
+    ctx.request_context.lifespan_context = {
+        "app_lifespan_context": MagicMock(read_only=True)
+    }
+    return ctx
+
+
+class TestAddCommentTool:
+    """The add_comment write tool: success, the read-only gate, error mapping."""
+
+    async def test_success_returns_created_comment(self):
+        fetcher = MagicMock()
+        fetcher.add_comment.return_value = BitbucketComment.from_api_response(
+            {"id": 101, "version": 0, "text": "hello"}
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await add_comment(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                pull_request_id=5,
+                text="hello",
+            )
+
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["comment"]["id"] == 101
+        assert payload["comment"]["version"] == 0
+        fetcher.add_comment.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            text="hello",
+            parent_id=None,
+            file_path=None,
+            line=None,
+            line_type=None,
+            file_type=None,
+            severity="NORMAL",
+        )
+
+    async def test_read_only_mode_blocks_and_makes_no_call(self):
+        """READ_ONLY_MODE raises a ToolError before any fetcher/HTTP call."""
+        fetcher = MagicMock()
+        with _patched_fetcher(fetcher):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await add_comment(
+                    _read_only_ctx(),
+                    project_key="P",
+                    repository_slug="r",
+                    pull_request_id=5,
+                    text="x",
+                )
+        fetcher.add_comment.assert_not_called()
+
+    async def test_validation_error_is_network_error(self):
+        """A client-side ValueError surfaces as the sanitised network error."""
+        fetcher = MagicMock()
+        fetcher.add_comment.side_effect = ValueError("text must be a non-blank string.")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await add_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                text="  ",
+            )
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.add_comment.side_effect = BitbucketResourceNotFoundError("nope")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await add_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=999,
+                text="x",
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_auth_error_message(self):
+        fetcher = MagicMock()
+        fetcher.add_comment.side_effect = MCPAtlassianAuthenticationError("rejected")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await add_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                text="x",
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")

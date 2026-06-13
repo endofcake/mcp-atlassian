@@ -4,6 +4,7 @@ import logging
 
 from mcp_atlassian.models.bitbucket import (
     BitbucketActivity,
+    BitbucketComment,
     BitbucketFileDiff,
     BitbucketProject,
     BitbucketPullRequest,
@@ -577,3 +578,30 @@ class TestBitbucketActivity:
         activity = BitbucketActivity.from_api_response({})
         assert activity.id == 0
         assert activity.comment is None
+
+
+class TestBitbucketComment:
+    """RestComment parsing, including the version optimistic-lock token."""
+
+    def test_parses_version_and_surfaces_it(self):
+        """version is read and surfaced (needed for a later edit/delete)."""
+        comment = BitbucketComment.from_api_response(
+            {"id": 9, "version": 3, "text": "note", "severity": "BLOCKER"}
+        )
+        assert comment.id == 9
+        assert comment.version == 3
+        result = comment.to_simplified_dict()
+        assert result["version"] == 3
+        assert result["severity"] == "BLOCKER"
+
+    def test_version_zero_is_surfaced_not_dropped(self):
+        """A freshly created comment has version 0, which must not be dropped."""
+        comment = BitbucketComment.from_api_response({"id": 9, "version": 0})
+        assert comment.version == 0
+        assert comment.to_simplified_dict()["version"] == 0
+
+    def test_missing_version_is_omitted(self):
+        """A comment without a version omits the key rather than emitting null."""
+        comment = BitbucketComment.from_api_response({"id": 9, "text": "x"})
+        assert comment.version is None
+        assert "version" not in comment.to_simplified_dict()

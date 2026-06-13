@@ -33,7 +33,7 @@
 
 Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira). Supports both Cloud and Server/Data Center deployments.
 
-**Bitbucket Data Center** support is newly added — currently scoped to OAuth 2.0 on Data Center (seven read-only tools today: projects, repositories, and the pull-request review loop — list/get/diff/activities/comments; writes, PAT/basic, and Cloud are future work). See [Bitbucket Data Center setup](docs/authentication.mdx), the [Bitbucket tools reference](docs/tools/bitbucket.mdx), and the [OAuth validation runbook](docs/guides/bitbucket-oauth-validation.mdx).
+**Bitbucket Data Center** support is newly added — currently scoped to OAuth 2.0 on Data Center (eight tools today: seven read-only — projects, repositories, and the pull-request review loop (list/get/diff/activities/comments) — plus pull-request commenting (`bitbucket_add_comment`, a write gated by `READ_ONLY_MODE`); further writes, PAT/basic, and Cloud are future work). See [Bitbucket Data Center setup](docs/authentication.mdx), the [Bitbucket tools reference](docs/tools/bitbucket.mdx), and the [OAuth validation runbook](docs/guides/bitbucket-oauth-validation.mdx).
 
 https://github.com/user-attachments/assets/35303504-14c6-4ae4-913b-7c25ea511c3e
 
@@ -97,7 +97,7 @@ Documentation is also available in [llms.txt format](https://llmstxt.org/), whic
 |-------|-------------|
 | [Installation](https://mcp-atlassian.soomiles.com/docs/installation) | uvx, Docker, pip, from source |
 | [Authentication](https://mcp-atlassian.soomiles.com/docs/authentication) | API tokens, PAT, OAuth 2.0 |
-| [Bitbucket Data Center](docs/authentication.mdx) | OAuth 2.0 setup, [read-only tools](docs/tools/bitbucket.mdx), live-validation runbook |
+| [Bitbucket Data Center](docs/authentication.mdx) | OAuth 2.0 setup, [tools reference](docs/tools/bitbucket.mdx), live-validation runbook |
 | [Configuration](https://mcp-atlassian.soomiles.com/docs/configuration) | IDE setup, environment variables |
 | [HTTP Transport](https://mcp-atlassian.soomiles.com/docs/http-transport) | SSE, streamable-http, multi-user |
 | [Tools Reference](https://mcp-atlassian.soomiles.com/docs/tools-reference) | All Jira & Confluence tools |

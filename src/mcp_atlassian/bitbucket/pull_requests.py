@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from ..models.bitbucket import (
     BitbucketActivity,
+    BitbucketComment,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
 )
@@ -370,3 +371,176 @@ class PullRequestsMixin(BitbucketClient):
             is_last_page=page.is_last_page,
             truncated=page.truncated,
         )
+
+    @staticmethod
+    def _build_comment_body(
+        text: str,
+        *,
+        parent_id: int | None,
+        file_path: str | None,
+        line: int | None,
+        line_type: str | None,
+        file_type: str | None,
+        severity: str,
+    ) -> dict[str, Any]:
+        """Validate the comment-mode inputs and build the POST request body.
+
+        The comment mode is selected by which optional params are present,
+        mirroring the operation description's request examples: a general
+        comment, a reply (``parent``), a whole-file or line ``anchor``, and a
+        BLOCKER task. Invalid combinations are rejected client-side with a clear
+        ValueError; the server stays authoritative for everything else (e.g.
+        whether the anchor actually lands on the diff).
+
+        No ``diffType``/``fromHash``/``toHash`` is ever emitted, so the server
+        resolves an anchor against the PR's **EFFECTIVE** diff — the same frame
+        ``get_pull_request_diff`` reads, so no commit-hash bookkeeping is needed.
+
+        Args:
+            text: The comment text; must be non-blank.
+            parent_id: When set, a reply to that comment (no anchor allowed).
+            file_path: The file to anchor on (whole-file, or with ``line``).
+            line: The 1-based diff line to anchor on (requires ``file_path``).
+            line_type: ``ADDED``/``REMOVED``/``CONTEXT`` (required with ``line``).
+            file_type: ``FROM``/``TO``; defaults from ``line_type`` when omitted.
+            severity: ``NORMAL`` or ``BLOCKER`` (a must-resolve task).
+
+        Returns:
+            The JSON request body for the comment POST.
+
+        Raises:
+            ValueError: If ``text`` is blank, an enum is invalid, or the
+                mode params are combined illegally (see the design's validation
+                matrix).
+        """
+        if not text or not text.strip():
+            raise ValueError("text must be a non-blank comment string.")
+
+        normalized_severity = severity.strip().upper()
+        if normalized_severity not in ("NORMAL", "BLOCKER"):
+            raise ValueError("severity must be 'NORMAL' or 'BLOCKER'.")
+
+        anchor_params_present = any(
+            param is not None for param in (file_path, line, line_type, file_type)
+        )
+
+        # A reply inherits its parent thread's anchor, so it carries none itself.
+        if parent_id is not None:
+            if anchor_params_present:
+                raise ValueError(
+                    "parent_id (a reply) cannot be combined with anchor params "
+                    "(file_path/line/line_type/file_type)."
+                )
+            if parent_id <= 0:
+                raise ValueError("parent_id must be a positive integer.")
+
+        if file_path is not None and not file_path.strip():
+            raise ValueError("file_path must be a non-blank file path.")
+        if line is not None and file_path is None:
+            raise ValueError(
+                "line requires file_path (a line comment anchors to a file)."
+            )
+        if (line_type is not None or file_type is not None) and line is None:
+            raise ValueError("line_type/file_type are only valid together with line.")
+
+        body: dict[str, Any] = {"text": text}
+        if normalized_severity == "BLOCKER":
+            body["severity"] = "BLOCKER"
+
+        if parent_id is not None:
+            body["parent"] = {"id": parent_id}
+            return body
+
+        if file_path is None:
+            return body  # general comment (optionally a task)
+
+        anchor: dict[str, Any] = {"path": file_path}
+        if line is not None:
+            if line < 1:
+                raise ValueError("line must be a positive integer (1-based).")
+            if line_type is None:
+                raise ValueError("line_type is required for a line comment.")
+            normalized_line_type = line_type.strip().upper()
+            if normalized_line_type not in ("ADDED", "REMOVED", "CONTEXT"):
+                raise ValueError("line_type must be 'ADDED', 'REMOVED', or 'CONTEXT'.")
+            if file_type is not None:
+                normalized_file_type = file_type.strip().upper()
+                if normalized_file_type not in ("FROM", "TO"):
+                    raise ValueError("file_type must be 'FROM' or 'TO'.")
+            else:
+                # Default to the side the structured diff reader presents the
+                # line on: source side for a removed line, destination side for
+                # an added or context line.
+                normalized_file_type = (
+                    "FROM" if normalized_line_type == "REMOVED" else "TO"
+                )
+            anchor["line"] = line
+            anchor["lineType"] = normalized_line_type
+            anchor["fileType"] = normalized_file_type
+        body["anchor"] = anchor
+        return body
+
+    def add_comment(
+        self,
+        project_key: str,
+        repository_slug: str,
+        pull_request_id: int | str,
+        text: str,
+        *,
+        parent_id: int | None = None,
+        file_path: str | None = None,
+        line: int | None = None,
+        line_type: str | None = None,
+        file_type: str | None = None,
+        severity: str = "NORMAL",
+    ) -> BitbucketComment:
+        """Add a comment to a Bitbucket Data Center pull request.
+
+        Calls ``POST .../pull-requests/{pullRequestId}/comments``. The comment
+        mode follows which optional params are supplied (general / reply /
+        whole-file / line / BLOCKER task); see :meth:`_build_comment_body` for
+        the validation matrix and the EFFECTIVE-anchor behaviour. Despite being
+        a write, the endpoint only requires ``REPO_READ`` on Data Center.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+            text: The comment text; must be non-blank.
+            parent_id: When set, reply to that comment id.
+            file_path: When set, anchor the comment to this file.
+            line: When set (with ``file_path``), anchor to this 1-based diff line.
+            line_type: ``ADDED``/``REMOVED``/``CONTEXT`` (required with ``line``).
+            file_type: ``FROM``/``TO``; derived from ``line_type`` when omitted.
+            severity: ``NORMAL`` (default) or ``BLOCKER`` (a must-resolve task).
+
+        Returns:
+            The created :class:`~mcp_atlassian.models.bitbucket.BitbucketComment`
+            (carrying its ``id`` and ``version`` for later edit/delete).
+
+        Raises:
+            ValueError: If a segment is blank, the id is not a positive integer,
+                the mode params are combined illegally, or the request fails
+                (a 400/409 surfaces the instance's own message).
+            BitbucketResourceNotFoundError: If the pull request does not exist or
+                is not accessible.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        body = self._build_comment_body(
+            text,
+            parent_id=parent_id,
+            file_path=file_path,
+            line=line,
+            line_type=line_type,
+            file_type=file_type,
+            severity=severity,
+        )
+        data = self._post(f"{base}/{pr_id}/comments", json_body=body)
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Bitbucket returned an unexpected response shape for "
+                f"{base}/{pr_id}/comments; expected a comment object."
+            )
+        return BitbucketComment.from_api_response(data)

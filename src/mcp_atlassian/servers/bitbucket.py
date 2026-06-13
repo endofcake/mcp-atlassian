@@ -33,6 +33,7 @@ from mcp_atlassian.bitbucket.repositories import (
 )
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.servers.dependencies import get_bitbucket_fetcher
+from mcp_atlassian.utils.decorators import check_write_access
 
 logger = logging.getLogger(__name__)
 
@@ -696,5 +697,167 @@ async def get_pull_request_comments(
             "error": (
                 "An unexpected error occurred while getting pull request comments."
             ),
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Add Bitbucket Pull Request Comment",
+        "readOnlyHint": False,
+    },
+)
+@check_write_access
+async def add_comment(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    text: Annotated[
+        str,
+        Field(description="The comment text (Markdown). Must be non-blank."),
+    ],
+    parent_id: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Reply to this comment id. A reply inherits the parent thread's "
+                "anchor, so it cannot be combined with any file/line parameter."
+            ),
+            default=None,
+            ge=1,
+        ),
+    ] = None,
+    file_path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Anchor the comment to this file path (a whole-file comment, or "
+                "a line comment when 'line' is also given). Omit for a general "
+                "pull-request comment."
+            ),
+            default=None,
+        ),
+    ] = None,
+    line: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Anchor to this 1-based line in the diff. Requires 'file_path' "
+                "and 'line_type'. The comment lands on the PR's current "
+                "effective diff (the same diff get_pull_request_diff returns)."
+            ),
+            default=None,
+            ge=1,
+        ),
+    ] = None,
+    line_type: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Diff line kind for a line comment: 'ADDED', 'REMOVED', or "
+                "'CONTEXT' (an unchanged line near the change). Required with "
+                "'line'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    file_type: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Diff side a line comment attaches to: 'FROM' (source) or 'TO' "
+                "(destination). Defaults from 'line_type' (REMOVED→FROM, "
+                "ADDED/CONTEXT→TO) when omitted."
+            ),
+            default=None,
+        ),
+    ] = None,
+    severity: Annotated[
+        str,
+        Field(
+            description=(
+                "'NORMAL' (default) for a comment, or 'BLOCKER' to raise a task "
+                "(a must-resolve item) — valid in any comment mode."
+            ),
+            default="NORMAL",
+        ),
+    ] = "NORMAL",
+) -> str:
+    """Add a comment to a Bitbucket Data Center pull request.
+
+    The comment mode follows which optional parameters are supplied: a general
+    comment (text only), a reply ('parent_id'), a whole-file comment
+    ('file_path'), a line comment ('file_path' + 'line' + 'line_type'), or a
+    BLOCKER task ('severity'). Line/file anchors land on the pull request's
+    current effective diff. On Data Center this write needs only REPO_READ
+    permission. Blocked when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        text: The comment text (Markdown); must be non-blank.
+        parent_id: When set, reply to that comment id.
+        file_path: When set, anchor the comment to this file.
+        line: When set (with file_path), anchor to this 1-based diff line.
+        line_type: ADDED/REMOVED/CONTEXT (required with line).
+        file_type: FROM/TO; derived from line_type when omitted.
+        severity: NORMAL (default) or BLOCKER (a must-resolve task).
+
+    Returns:
+        JSON string with the created comment (its 'id' and 'version', plus
+        author/text/thread state), or a sanitised error object on failure.
+
+    Raises:
+        ValueError: If in read-only mode (surfaced as a ToolError).
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        comment = bitbucket.add_comment(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            pull_request_id=pull_request_id,
+            text=text,
+            parent_id=parent_id,
+            file_path=file_path,
+            line=line,
+            line_type=line_type,
+            file_type=file_type,
+            severity=severity,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "comment": comment.to_simplified_dict(),
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"add_comment failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        logger.error(f"add_comment failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"add_comment failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in add_comment:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while adding the comment.",
         }
     return json.dumps(response_data, indent=2, ensure_ascii=False)
