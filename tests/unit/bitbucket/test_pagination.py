@@ -197,6 +197,34 @@ class TestPaginateParams:
             "limit": 50,
         }
 
+    def test_additive_envelope_keys_are_tolerated(self):
+        """9.x adds Cloud-style keys (page/pagelen/previous/next) to the DC envelope.
+
+        The walker reads only values/isLastPage/nextPageStart, so the additive
+        keys are ignored and the page resolves exactly as on the 8.x envelope.
+        """
+        client = _client()
+        body = {
+            "values": [{"id": 1}, {"id": 2}],
+            "isLastPage": True,
+            "size": 2,
+            "start": 0,
+            "limit": 25,
+            "page": 1,
+            "pagelen": 25,
+            "previous": None,
+            "next": None,
+        }
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = body
+        with patch.object(client._session, "get", return_value=response):
+            page = client._paginate("/x", limit=25, page_size=100, max_pages=10)
+
+        assert page.values == [{"id": 1}, {"id": 2}]
+        assert page.is_last_page is True
+        assert page.truncated is False
+
     def test_non_dict_response_raises_value_error(self):
         """A non-paged body (a bare list) is an error, not a silent empty result."""
         client = _client()

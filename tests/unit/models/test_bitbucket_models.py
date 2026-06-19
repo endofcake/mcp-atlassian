@@ -2,6 +2,8 @@
 
 import logging
 
+import pytest
+
 from mcp_atlassian.models.bitbucket import (
     BitbucketActivity,
     BitbucketComment,
@@ -605,3 +607,119 @@ class TestBitbucketComment:
         comment = BitbucketComment.from_api_response({"id": 9, "text": "x"})
         assert comment.version is None
         assert "version" not in comment.to_simplified_dict()
+
+
+# Version-portability guards. The shapes below are synthetic but mirror the
+# *structure* of Bitbucket DC 8.x and 9.x runtime responses (not captured data):
+# the same tool surface must parse both editions. They lock the structural deltas
+# observed between the two lines so a future version bump that drifts the wire
+# shape fails loudly here instead of degrading silently in production.
+_V8_DIFF_ENVELOPE = {
+    # 8.x returns the file diffs under `diffs` while *also* emitting a vestigial
+    # empty `values: []` and a pagination envelope describing that empty array.
+    # Reading `values` yields a silently-empty diff even though `diffs` is full.
+    "diffs": _DIFF_API["diffs"],
+    "values": [],
+    "size": 0,
+    "isLastPage": True,
+    "start": 0,
+    "limit": 25,
+    "page": 1,
+    "pagelen": 25,
+    "next": 0,
+}
+_V9_DIFF_ENVELOPE = {
+    # 9.x returns the minimal RestDiffResponse with no `values`/pagination keys.
+    "diffs": _DIFF_API["diffs"],
+    "truncated": False,
+}
+
+
+def _pr_with_top_level_author(name: str, status: str) -> dict:
+    """A PR body carrying a top-level author and a non-author participant only.
+
+    The author is never present in `participants` here, so a participant-derived
+    lookup would drop it; the value must come from the top-level `author`.
+    """
+    return {
+        **{k: v for k, v in _PR_API.items() if k != "author"},
+        "author": {
+            "user": {"name": name, "slug": name, "displayName": name.title()},
+            "role": "AUTHOR",
+            "status": status,
+            "approved": status == "APPROVED",
+        },
+        "participants": [
+            {
+                "user": {"name": "part1", "slug": "part1"},
+                "role": "PARTICIPANT",
+                "status": "UNAPPROVED",
+                "approved": False,
+            }
+        ],
+    }
+
+
+class TestBitbucketVersionPortability:
+    """The read models parse both DC 8.x and 9.x runtime shapes."""
+
+    def test_v8_diff_envelope_reads_diffs_not_vestigial_values(self):
+        """8.x carries a populated `diffs` beside an empty `values: []`.
+
+        Regression guard: a `values`-reader returns an empty diff here even
+        though the file diffs are present under `diffs`.
+        """
+        diff = BitbucketPullRequestDiff.from_api_response(_V8_DIFF_ENVELOPE)
+        assert diff.total_files == 1
+        assert len(diff.files) == 1
+        assert diff.files[0].destination_path == "src/app.py"
+
+    def test_v9_diff_envelope_reads_diffs(self):
+        """9.x carries the minimal `{diffs, truncated}` shape (no `values`)."""
+        diff = BitbucketPullRequestDiff.from_api_response(_V9_DIFF_ENVELOPE)
+        assert diff.total_files == 1
+        assert len(diff.files) == 1
+        assert diff.files[0].destination_path == "src/app.py"
+
+    @pytest.mark.parametrize(
+        ("label", "data"),
+        [
+            # 8.x and 9.x `get` both carry a top-level author; the 9.x `list`
+            # carries it too (the 8.x `list` author is unobserved, so it is not
+            # asserted here — the absent-author path is covered separately).
+            ("v8_get", _pr_with_top_level_author("auth8", "UNAPPROVED")),
+            ("v9_get", _pr_with_top_level_author("auth9", "APPROVED")),
+            ("v9_list", _pr_with_top_level_author("auth9l", "UNAPPROVED")),
+        ],
+    )
+    def test_top_level_author_surfaced_across_versions(self, label, data):
+        pr = BitbucketPullRequest.from_api_response(data)
+        assert all(p.role != "AUTHOR" for p in pr.participants)
+        assert pr.author is not None
+        assert pr.author.role == "AUTHOR"
+        assert pr.author.user is not None
+        assert pr.author.user.name == data["author"]["user"]["name"]
+        assert pr.to_simplified_dict()["author"]["role"] == "AUTHOR"
+
+    def test_additive_and_unknown_wire_fields_are_ignored(self):
+        """9.x adds fields (repo `scalable`; PR `pullRequestLinks`).
+
+        Models build via explicit field-picks, so additive/unknown wire keys are
+        dropped rather than breaking deserialization.
+        """
+        repo = BitbucketRepository.from_api_response(
+            {**_REPO_API, "scalable": True, "futureField": {"nested": 1}}
+        )
+        assert repo.slug == "my-repo"
+        assert repo.default_branch == "refs/heads/main"
+        assert "scalable" not in repo.to_simplified_dict()
+
+        pr = BitbucketPullRequest.from_api_response(
+            {
+                **_PR_API,
+                "pullRequestLinks": {"self": [{"href": "https://bb/pr/42"}]},
+                "futureField": [1, 2],
+            }
+        )
+        assert pr.id == 42
+        assert "pullRequestLinks" not in pr.to_simplified_dict()
