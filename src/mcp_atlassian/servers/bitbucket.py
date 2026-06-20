@@ -87,6 +87,17 @@ async def list_projects(
             le=MAX_PROJECTS_LIMIT,
         ),
     ] = DEFAULT_PROJECTS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each project's identity fields (key, "
+                "name) instead of the full record — for scanning a large list to "
+                "pick one before fetching its full detail."
+            ),
+            default=False,
+        ),
+    ] = False,
 ) -> str:
     """List Bitbucket Data Center projects visible to the authenticated user.
 
@@ -123,7 +134,10 @@ async def list_projects(
         page = bitbucket.list_projects(name=name, start=start, limit=limit)
         response_data: dict[str, object] = {
             "success": True,
-            "projects": [project.to_simplified_dict() for project in page.projects],
+            "projects": [
+                project.to_summary_dict() if summary else project.to_simplified_dict()
+                for project in page.projects
+            ],
             "count": len(page.projects),
             "is_last_page": page.is_last_page,
             "truncated": page.truncated,
@@ -212,6 +226,17 @@ async def list_repositories(
             le=MAX_REPOS_LIMIT,
         ),
     ] = DEFAULT_REPOS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each repository's identity fields (slug, "
+                "name) instead of the full record — for scanning a large list to "
+                "pick one before fetching its full detail."
+            ),
+            default=False,
+        ),
+    ] = False,
 ) -> str:
     """List repositories in a Bitbucket Data Center project.
 
@@ -247,7 +272,10 @@ async def list_repositories(
         )
         response_data: dict[str, object] = {
             "success": True,
-            "repositories": [repo.to_simplified_dict() for repo in page.repositories],
+            "repositories": [
+                repo.to_summary_dict() if summary else repo.to_simplified_dict()
+                for repo in page.repositories
+            ],
             "count": len(page.repositories),
             "is_last_page": page.is_last_page,
             "truncated": page.truncated,
@@ -381,6 +409,17 @@ async def list_pull_requests(
             le=MAX_PRS_LIMIT,
         ),
     ] = DEFAULT_PRS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each pull request's triage fields (id, "
+                "title, state, author) instead of the full record — for scanning "
+                "a large list to pick one before fetching its full detail."
+            ),
+            default=False,
+        ),
+    ] = False,
 ) -> str:
     """List pull requests in a Bitbucket Data Center repository.
 
@@ -424,7 +463,10 @@ async def list_pull_requests(
         )
         response_data: dict[str, object] = {
             "success": True,
-            "pull_requests": [pr.to_simplified_dict() for pr in page.pull_requests],
+            "pull_requests": [
+                pr.to_summary_dict() if summary else pr.to_simplified_dict()
+                for pr in page.pull_requests
+            ],
             "count": len(page.pull_requests),
             "is_last_page": page.is_last_page,
             "truncated": page.truncated,

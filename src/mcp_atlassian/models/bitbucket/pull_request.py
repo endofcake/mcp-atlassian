@@ -238,3 +238,19 @@ class BitbucketPullRequest(ApiModel):
         if self.version is not None:
             result["version"] = self.version
         return result
+
+    def to_summary_dict(self) -> dict[str, Any]:
+        """Minimal projection for list triage.
+
+        Carries the fields needed to choose a pull request (``id``, ``title``,
+        ``state``, ``author``) before fetching its full detail with
+        ``get_pull_request``. Used by ``list_pull_requests(summary=True)``.
+        """
+        result: dict[str, Any] = {"id": self.id, "title": self.title}
+        if self.state:
+            result["state"] = self.state
+        if self.author is not None:
+            author = self.author.to_simplified_dict()
+            if author:
+                result["author"] = author
+        return result

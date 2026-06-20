@@ -70,6 +70,29 @@ class TestListProjectsTool:
         assert payload["next_page_start"] is None
         fetcher.list_projects.assert_called_once_with(name=None, start=0, limit=10)
 
+    async def test_summary_returns_identity_only(self):
+        """summary=True projects each item to its identity fields only."""
+        fetcher = MagicMock()
+        project = BitbucketProject.from_api_response(
+            {"key": "PROJ", "name": "Proj", "description": "d", "type": "NORMAL"}
+        )
+        fetcher.list_projects.return_value = BitbucketProjectsPage(
+            projects=[project], is_last_page=True, truncated=False, next_page_start=None
+        )
+        ctx = MagicMock()
+
+        with patch(
+            "mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            AsyncMock(return_value=fetcher),
+        ):
+            result = await list_projects(ctx, summary=True)
+
+        payload = json.loads(result)
+        assert payload["projects"] == [{"key": "PROJ", "name": "Proj"}]
+        assert "description" not in payload["projects"][0]
+        # Projection is a tool-layer concern; the mixin call carries no summary.
+        assert "summary" not in fetcher.list_projects.call_args.kwargs
+
     async def test_start_cursor_is_passed_and_surfaced(self):
         """The start cursor is forwarded and next_page_start is surfaced."""
         fetcher = MagicMock()
@@ -262,6 +285,36 @@ class TestListRepositoriesTool:
         fetcher.list_repositories.assert_called_once_with(
             project_key="PROJ", name=None, start=0, limit=10
         )
+
+    async def test_summary_returns_identity_only(self):
+        """summary=True projects each repository to slug + name only."""
+        fetcher = MagicMock()
+        repo = BitbucketRepository.from_api_response(
+            {
+                "slug": "api",
+                "name": "api",
+                "description": "d",
+                "project": {"key": "PROJ", "name": "PROJ"},
+            }
+        )
+        fetcher.list_repositories.return_value = BitbucketRepositoriesPage(
+            repositories=[repo],
+            is_last_page=True,
+            truncated=False,
+            next_page_start=None,
+        )
+        ctx = MagicMock()
+
+        with patch(
+            "mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            AsyncMock(return_value=fetcher),
+        ):
+            result = await list_repositories(ctx, project_key="PROJ", summary=True)
+
+        payload = json.loads(result)
+        assert payload["repositories"] == [{"slug": "api", "name": "api"}]
+        assert "project" not in payload["repositories"][0]
+        assert "summary" not in fetcher.list_repositories.call_args.kwargs
 
     async def test_start_cursor_is_passed_and_surfaced(self):
         """The start cursor is forwarded and next_page_start is surfaced."""
@@ -463,6 +516,34 @@ class TestListPullRequestsTool:
             start=0,
             limit=25,
         )
+
+    async def test_summary_returns_triage_fields(self):
+        """summary=True projects each PR to its triage fields only."""
+        fetcher = MagicMock()
+        pr = BitbucketPullRequest.from_api_response(_PR_API)
+        fetcher.list_pull_requests.return_value = BitbucketPullRequestsPage(
+            pull_requests=[pr],
+            is_last_page=True,
+            truncated=False,
+            next_page_start=None,
+        )
+        ctx = MagicMock()
+
+        with _patched_fetcher(fetcher):
+            result = await list_pull_requests(
+                ctx, project_key="PROJ", repository_slug="my-repo", summary=True
+            )
+
+        payload = json.loads(result)
+        assert payload["pull_requests"] == [
+            {
+                "id": 5,
+                "title": "Add X",
+                "state": "OPEN",
+                "author": {"user": {"name": "a"}, "role": "AUTHOR"},
+            }
+        ]
+        assert "summary" not in fetcher.list_pull_requests.call_args.kwargs
 
     async def test_start_cursor_is_passed_and_surfaced(self):
         """The start cursor is forwarded and next_page_start is surfaced."""

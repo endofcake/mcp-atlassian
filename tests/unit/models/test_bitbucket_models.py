@@ -723,3 +723,32 @@ class TestBitbucketVersionPortability:
         )
         assert pr.id == 42
         assert "pullRequestLinks" not in pr.to_simplified_dict()
+
+
+class TestSummaryProjections:
+    """to_summary_dict — the minimal identity projection for list triage."""
+
+    def test_project_summary_is_identity_only(self):
+        result = BitbucketProject.from_api_response(_PROJECT_API).to_summary_dict()
+        assert result == {"key": "PROJ", "name": "My Project"}
+
+    def test_repository_summary_is_identity_only(self):
+        result = BitbucketRepository.from_api_response(_REPO_API).to_summary_dict()
+        assert result == {"slug": "my-repo", "name": "My Repo"}
+
+    def test_pull_request_summary_carries_triage_fields(self):
+        result = BitbucketPullRequest.from_api_response(_PR_API).to_summary_dict()
+        assert result["id"] == 42
+        assert result["title"] == "Add feature X"
+        assert result["state"] == "OPEN"
+        assert result["author"]["user"]["name"] == "auth1"
+        # The bulk fields of the full projection are absent.
+        for absent in ("reviewers", "description", "from_ref", "to_ref", "version"):
+            assert absent not in result
+
+    def test_pull_request_summary_omits_absent_author(self):
+        data = {k: v for k, v in _PR_API.items() if k != "author"}
+        data["participants"] = []
+        result = BitbucketPullRequest.from_api_response(data).to_summary_dict()
+        assert result["id"] == 42
+        assert "author" not in result

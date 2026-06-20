@@ -90,3 +90,11 @@ class BitbucketRepository(ApiModel):
         if self.project is not None:
             result["project"] = self.project.to_simplified_dict()
         return result
+
+    def to_summary_dict(self) -> dict[str, Any]:
+        """Minimal projection for list triage: the identity fields only.
+
+        Used by ``list_repositories(summary=True)`` so a caller can scan many
+        repositories to choose one (by ``slug``), then fetch full detail.
+        """
+        return {"slug": self.slug, "name": self.name}

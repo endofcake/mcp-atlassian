@@ -61,3 +61,11 @@ class BitbucketProject(ApiModel):
         if self.public is not None:
             result["public"] = self.public
         return result
+
+    def to_summary_dict(self) -> dict[str, Any]:
+        """Minimal projection for list triage: the identity fields only.
+
+        Used by ``list_projects(summary=True)`` so a caller can scan many
+        projects to choose one (by ``key``), then fetch full detail separately.
+        """
+        return {"key": self.key, "name": self.name}
