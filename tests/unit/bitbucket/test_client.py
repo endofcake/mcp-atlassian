@@ -10,6 +10,7 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 
 from mcp_atlassian.bitbucket import BitbucketConfig, BitbucketFetcher
 from mcp_atlassian.bitbucket.client import (
+    _MAX_PROJECT_PAGES,
     MAX_PROJECTS_LIMIT,
     BitbucketResourceNotFoundError,
 )
@@ -92,7 +93,7 @@ class TestBitbucketFetcherCalls:
         )
 
     def test_list_projects_returns_values(self):
-        """list_projects unwraps the paged 'values' field on a single page."""
+        """list_projects unwraps the paged 'values' field on a single window."""
         fetcher = BitbucketFetcher(config=_byo_config())
 
         with patch.object(
@@ -108,41 +109,60 @@ class TestBitbucketFetcherCalls:
         assert [p.key for p in page.projects] == ["PROJ", "TEAM"]
         assert page.is_last_page is True
         assert page.truncated is False
+        assert page.next_page_start is None
         called_url = mock_get.call_args[0][0]
         assert called_url.endswith("/rest/api/1.0/projects")
-        # The endpoint is paged with start/limit, not a single bare limit.
-        assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 100}
+        # Unfiltered: single window — page size sent upstream is the limit.
+        assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 10}
 
 
 class TestListProjectsPagination:
-    """list_projects pagination, truncation, and response-shape validation."""
+    """list_projects single-window pagination and response-shape validation.
 
-    def test_walks_pages_until_last_page(self):
-        """Pages are followed via nextPageStart and concatenated."""
+    Unfiltered, list_projects fetches one window per call and surfaces the
+    upstream cursor; the multi-page capped walk is exercised under
+    TestListProjectsFilter (where a client-side filter is configured).
+    """
+
+    def test_single_window_issues_one_request_and_surfaces_cursor(self):
+        """One upstream GET; a non-last window returns the upstream cursor."""
         fetcher = BitbucketFetcher(config=_byo_config())
-        pages = [
-            _page_response(
-                [{"key": "A"}, {"key": "B"}], is_last_page=False, next_page_start=2
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response(
+                [{"key": "A"}, {"key": "B"}], is_last_page=False, next_page_start=25
             ),
-            _page_response([{"key": "C"}], is_last_page=True),
-        ]
-        with patch.object(fetcher._session, "get", side_effect=pages) as mock_get:
+        ) as mock_get:
             page = fetcher.list_projects(limit=25)
 
-        assert [p.key for p in page.projects] == ["A", "B", "C"]
+        assert [p.key for p in page.projects] == ["A", "B"]
+        assert page.is_last_page is False
+        assert page.truncated is True
+        assert page.next_page_start == 25
+        assert mock_get.call_count == 1
+
+    def test_start_resumes_from_cursor(self):
+        """A start offset is sent as the upstream start param."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([{"key": "C"}], is_last_page=True),
+        ) as mock_get:
+            page = fetcher.list_projects(start=25, limit=25)
+
+        assert mock_get.call_args[1]["params"] == {"start": 25, "limit": 25}
         assert page.is_last_page is True
-        assert page.truncated is False
-        # Second request used the advertised cursor.
-        assert mock_get.call_args_list[0][1]["params"]["start"] == 0
-        assert mock_get.call_args_list[1][1]["params"]["start"] == 2
+        assert page.next_page_start is None
 
     def test_truncates_at_limit_without_overfetching(self):
-        """A small limit against a large org stops after one page, flags truncation."""
+        """A full window with more upstream stops after one request, flags truncation."""
         fetcher = BitbucketFetcher(config=_byo_config())
         big_page = _page_response(
-            [{"key": f"P{i}"} for i in range(100)],
+            [{"key": f"P{i}"} for i in range(25)],
             is_last_page=False,
-            next_page_start=100,
+            next_page_start=25,
         )
         with patch.object(fetcher._session, "get", return_value=big_page) as mock_get:
             page = fetcher.list_projects(limit=25)
@@ -150,29 +170,7 @@ class TestListProjectsPagination:
         assert len(page.projects) == 25
         assert page.truncated is True
         assert page.is_last_page is False
-        # Collected 100 >= limit on the first page, so no second request.
-        assert mock_get.call_count == 1
-
-    def test_last_page_overshooting_limit_is_truncated(self):
-        """A complete final page larger than limit trims and flags truncation.
-
-        The common default-limit case (small org, one page of >limit projects):
-        is_last_page stays True (no more pages to fetch) while truncated is True
-        (the result was trimmed), telling the caller to raise the limit.
-        """
-        fetcher = BitbucketFetcher(config=_byo_config())
-        single_page = _page_response(
-            [{"key": f"P{i}"} for i in range(60)], is_last_page=True
-        )
-        with patch.object(
-            fetcher._session, "get", return_value=single_page
-        ) as mock_get:
-            page = fetcher.list_projects(limit=25)
-
-        assert len(page.projects) == 25
-        assert page.is_last_page is True
-        assert page.truncated is True
-        # No nextPageStart was followed; the single page was upstream-final.
+        assert page.next_page_start == 25
         assert mock_get.call_count == 1
 
     def test_empty_last_page_is_not_truncated(self):
@@ -186,25 +184,19 @@ class TestListProjectsPagination:
         assert page.projects == []
         assert page.is_last_page is True
         assert page.truncated is False
+        assert page.next_page_start is None
 
-    def test_limit_clamped_to_max_and_capped(self):
-        """A limit above the cap is clamped; a huge org truncates at MAX_PROJECTS_LIMIT."""
+    def test_limit_clamped_to_max(self):
+        """A limit above the cap is clamped to MAX_PROJECTS_LIMIT for the window."""
         fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([{"key": "A"}], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_projects(limit=10_000)
 
-        def endless(url, params=None, timeout=None):
-            start = params["start"]
-            return _page_response(
-                [{"key": f"P{start + i}"} for i in range(100)],
-                is_last_page=False,
-                next_page_start=start + 100,
-            )
-
-        with patch.object(fetcher._session, "get", side_effect=endless):
-            page = fetcher.list_projects(limit=10_000)
-
-        assert len(page.projects) == MAX_PROJECTS_LIMIT
-        assert page.truncated is True
-        assert page.is_last_page is False
+        assert mock_get.call_args[1]["params"]["limit"] == MAX_PROJECTS_LIMIT
 
     def test_non_dict_response_raises_value_error(self):
         """A non-paged body (a bare list) is an error, not a silent empty result."""
@@ -268,7 +260,12 @@ class TestListProjectsFilter:
         assert [p.key for p in page.projects] == ["PROJ"]
 
     def test_filter_matches_are_collected_across_pages(self):
-        """Pagination continues past non-matching pages to find filtered keys."""
+        """Pagination continues past non-matching pages to find filtered keys.
+
+        The configured filter keeps the multi-page capped walk (not the
+        single-window mode), so a match on a later page is still found and the
+        completed walk surfaces no resume cursor.
+        """
         fetcher = BitbucketFetcher(config=_byo_config(projects_filter="C"))
         pages = [
             _page_response(
@@ -276,12 +273,42 @@ class TestListProjectsFilter:
             ),
             _page_response([{"key": "C"}], is_last_page=True),
         ]
-        with patch.object(fetcher._session, "get", side_effect=pages):
+        with patch.object(fetcher._session, "get", side_effect=pages) as mock_get:
             page = fetcher.list_projects()
 
         assert [p.key for p in page.projects] == ["C"]
         assert page.is_last_page is True
         assert page.truncated is False
+        assert page.next_page_start is None
+        # The capped walk really followed the cursor across pages.
+        assert mock_get.call_count == 2
+
+    def test_filtered_walk_stays_bounded_by_page_cap(self):
+        """A never-matching filter stops at the page cap (the DOS guard).
+
+        The filtered path must keep its bounded multi-page walk: an endless
+        upstream with no match scans exactly _MAX_PROJECT_PAGES pages, then
+        reports an incomplete (truncated, not last page) result with a resume
+        cursor — never an unbounded scan.
+        """
+        fetcher = BitbucketFetcher(config=_byo_config(projects_filter="ZZZ"))
+
+        def endless(url, params=None, timeout=None):
+            start = params["start"]
+            return _page_response(
+                [{"key": f"P{start + i}"} for i in range(100)],
+                is_last_page=False,
+                next_page_start=start + 100,
+            )
+
+        with patch.object(fetcher._session, "get", side_effect=endless) as mock_get:
+            page = fetcher.list_projects()
+
+        assert mock_get.call_count == _MAX_PROJECT_PAGES
+        assert page.projects == []
+        assert page.is_last_page is False
+        assert page.truncated is True
+        assert page.next_page_start == _MAX_PROJECT_PAGES * 100
 
     def test_blank_filter_returns_all_projects(self):
         """An empty/whitespace filter is treated as no filter."""

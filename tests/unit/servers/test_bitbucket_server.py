@@ -51,7 +51,7 @@ class TestListProjectsTool:
         # id/links), consistent with list_repositories — see the migration.
         project = BitbucketProject.from_api_response({"key": "PROJ", "name": "Proj"})
         fetcher.list_projects.return_value = BitbucketProjectsPage(
-            projects=[project], is_last_page=True, truncated=False
+            projects=[project], is_last_page=True, truncated=False, next_page_start=None
         )
         ctx = MagicMock()
 
@@ -67,7 +67,27 @@ class TestListProjectsTool:
         assert payload["count"] == 1
         assert payload["is_last_page"] is True
         assert payload["truncated"] is False
-        fetcher.list_projects.assert_called_once_with(limit=10)
+        assert payload["next_page_start"] is None
+        fetcher.list_projects.assert_called_once_with(start=0, limit=10)
+
+    async def test_start_cursor_is_passed_and_surfaced(self):
+        """The start cursor is forwarded and next_page_start is surfaced."""
+        fetcher = MagicMock()
+        project = BitbucketProject.from_api_response({"key": "PROJ", "name": "Proj"})
+        fetcher.list_projects.return_value = BitbucketProjectsPage(
+            projects=[project], is_last_page=False, truncated=True, next_page_start=25
+        )
+        ctx = MagicMock()
+
+        with patch(
+            "mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            AsyncMock(return_value=fetcher),
+        ):
+            result = await list_projects(ctx, start=10, limit=25)
+
+        payload = json.loads(result)
+        assert payload["next_page_start"] == 25
+        fetcher.list_projects.assert_called_once_with(start=10, limit=25)
 
     async def test_truncated_result_surfaces_flag(self):
         """When the client truncates, the tool reports truncated=true to the caller."""
@@ -203,7 +223,10 @@ class TestListRepositoriesTool:
             {"slug": "api", "name": "api", "project": {"key": "PROJ", "name": "PROJ"}}
         )
         fetcher.list_repositories.return_value = BitbucketRepositoriesPage(
-            repositories=[repo], is_last_page=True, truncated=False
+            repositories=[repo],
+            is_last_page=True,
+            truncated=False,
+            next_page_start=None,
         )
         ctx = MagicMock()
 
@@ -219,7 +242,38 @@ class TestListRepositoriesTool:
         assert payload["count"] == 1
         assert payload["is_last_page"] is True
         assert payload["truncated"] is False
-        fetcher.list_repositories.assert_called_once_with(project_key="PROJ", limit=10)
+        assert payload["next_page_start"] is None
+        fetcher.list_repositories.assert_called_once_with(
+            project_key="PROJ", start=0, limit=10
+        )
+
+    async def test_start_cursor_is_passed_and_surfaced(self):
+        """The start cursor is forwarded and next_page_start is surfaced."""
+        fetcher = MagicMock()
+        repo = BitbucketRepository.from_api_response(
+            {"slug": "api", "name": "api", "project": {"key": "PROJ", "name": "PROJ"}}
+        )
+        fetcher.list_repositories.return_value = BitbucketRepositoriesPage(
+            repositories=[repo],
+            is_last_page=False,
+            truncated=True,
+            next_page_start=25,
+        )
+        ctx = MagicMock()
+
+        with patch(
+            "mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            AsyncMock(return_value=fetcher),
+        ):
+            result = await list_repositories(
+                ctx, project_key="PROJ", start=10, limit=25
+            )
+
+        payload = json.loads(result)
+        assert payload["next_page_start"] == 25
+        fetcher.list_repositories.assert_called_once_with(
+            project_key="PROJ", start=10, limit=25
+        )
 
     async def test_truncated_result_surfaces_flag(self):
         """When the client truncates, the tool reports truncated=true."""
@@ -347,7 +401,10 @@ class TestListPullRequestsTool:
         fetcher = MagicMock()
         pr = BitbucketPullRequest.from_api_response(_PR_API)
         fetcher.list_pull_requests.return_value = BitbucketPullRequestsPage(
-            pull_requests=[pr], is_last_page=True, truncated=False
+            pull_requests=[pr],
+            is_last_page=True,
+            truncated=False,
+            next_page_start=None,
         )
         ctx = MagicMock()
 
@@ -361,6 +418,7 @@ class TestListPullRequestsTool:
         assert payload["pull_requests"] == [pr.to_simplified_dict()]
         assert payload["count"] == 1
         assert payload["is_last_page"] is True
+        assert payload["next_page_start"] is None
         fetcher.list_pull_requests.assert_called_once_with(
             project_key="PROJ",
             repository_slug="my-repo",
@@ -368,8 +426,34 @@ class TestListPullRequestsTool:
             direction=None,
             at=None,
             order=None,
+            start=0,
             limit=25,
         )
+
+    async def test_start_cursor_is_passed_and_surfaced(self):
+        """The start cursor is forwarded and next_page_start is surfaced."""
+        fetcher = MagicMock()
+        pr = BitbucketPullRequest.from_api_response(_PR_API)
+        fetcher.list_pull_requests.return_value = BitbucketPullRequestsPage(
+            pull_requests=[pr],
+            is_last_page=False,
+            truncated=True,
+            next_page_start=25,
+        )
+        ctx = MagicMock()
+
+        with _patched_fetcher(fetcher):
+            result = await list_pull_requests(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                start=10,
+                limit=25,
+            )
+
+        payload = json.loads(result)
+        assert payload["next_page_start"] == 25
+        assert fetcher.list_pull_requests.call_args[1]["start"] == 10
 
     async def test_auth_error_message(self):
         fetcher = MagicMock()
@@ -490,7 +574,10 @@ class TestGetPullRequestActivitiesTool:
             {"id": 1, "action": "APPROVED", "user": {"name": "r"}}
         )
         fetcher.get_activities.return_value = BitbucketActivitiesPage(
-            activities=[activity], is_last_page=True, truncated=False
+            activities=[activity],
+            is_last_page=True,
+            truncated=False,
+            next_page_start=None,
         )
         ctx = MagicMock()
         with _patched_fetcher(fetcher):
@@ -500,8 +587,35 @@ class TestGetPullRequestActivitiesTool:
         payload = json.loads(result)
         assert payload["success"] is True
         assert payload["activities"][0]["action"] == "APPROVED"
-        # The activities tool does not filter by action.
+        assert payload["next_page_start"] is None
+        # The activities tool does not filter by action and starts at 0.
         assert fetcher.get_activities.call_args[1].get("action") is None
+        assert fetcher.get_activities.call_args[1]["start"] == 0
+
+    async def test_activities_start_cursor_is_passed_and_surfaced(self):
+        """The start cursor is forwarded and next_page_start is surfaced."""
+        fetcher = MagicMock()
+        activity = BitbucketActivity.from_api_response(
+            {"id": 1, "action": "APPROVED", "user": {"name": "r"}}
+        )
+        fetcher.get_activities.return_value = BitbucketActivitiesPage(
+            activities=[activity],
+            is_last_page=False,
+            truncated=True,
+            next_page_start=25,
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_pull_request_activities(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                start=10,
+            )
+        payload = json.loads(result)
+        assert payload["next_page_start"] == 25
+        assert fetcher.get_activities.call_args[1]["start"] == 10
 
     async def test_comments_filters_to_commented_and_extracts_comment(self):
         fetcher = MagicMock()
@@ -574,16 +688,20 @@ class TestGetPullRequestActivitiesTool:
             activities=[with_payload, without_payload],
             is_last_page=False,
             truncated=True,
+            next_page_start=25,
         )
         ctx = MagicMock()
         with _patched_fetcher(fetcher):
             result = await get_pull_request_comments(
-                ctx, project_key="P", repository_slug="r", pull_request_id=5
+                ctx, project_key="P", repository_slug="r", pull_request_id=5, start=10
             )
         payload = json.loads(result)
         assert payload["count"] == 1
         assert payload["truncated"] is True
         assert payload["is_last_page"] is False
+        # The blind-paging cursor is surfaced and start is forwarded.
+        assert payload["next_page_start"] == 25
+        assert fetcher.get_activities.call_args[1]["start"] == 10
 
 
 def _read_only_ctx() -> MagicMock:

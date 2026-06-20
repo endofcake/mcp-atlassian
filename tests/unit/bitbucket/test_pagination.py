@@ -50,6 +50,7 @@ class TestPaginateWalk:
         assert page.values == [{"id": 1}, {"id": 2}]
         assert page.is_last_page is True
         assert page.truncated is False
+        assert page.next_page_start is None
         assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 100}
 
     def test_walks_pages_until_last_page(self):
@@ -93,6 +94,9 @@ class TestPaginateWalk:
         assert page.is_last_page is True
         assert page.truncated is True
         assert mock_get.call_count == 1
+        # The overshot tail lives on the (last) page already returned; no forward
+        # cursor can reach it, so none is advertised — the caller raises limit.
+        assert page.next_page_start is None
 
     def test_max_pages_cap_truncates(self):
         """The page cap bounds the walk; an endless list truncates, not last page."""
@@ -113,6 +117,8 @@ class TestPaginateWalk:
         assert len(page.values) == 300
         assert page.is_last_page is False
         assert page.truncated is True
+        # The cap stopped a non-last list with an advertised cursor: resume there.
+        assert page.next_page_start == 300
 
     def test_non_last_page_without_cursor_stops_and_truncates(self):
         """isLastPage false but no nextPageStart: stop and report incomplete.
@@ -133,6 +139,8 @@ class TestPaginateWalk:
         assert page.values == [{"id": 1}]
         assert page.is_last_page is False
         assert page.truncated is True
+        # No cursor was advertised: incomplete and not resumable.
+        assert page.next_page_start is None
         assert mock_get.call_count == 1
 
     def test_empty_last_page_is_not_truncated(self):
@@ -146,6 +154,117 @@ class TestPaginateWalk:
         assert page.values == []
         assert page.is_last_page is True
         assert page.truncated is False
+
+
+class TestPaginateCursor:
+    """The resume cursor: start passthrough, single window, and overshoot."""
+
+    def test_start_is_passed_through_to_request(self):
+        """The start argument becomes the first page's start query param."""
+        client = _client()
+        with patch.object(
+            client._session,
+            "get",
+            return_value=_page_response([{"id": 7}], is_last_page=True),
+        ) as mock_get:
+            client._paginate("/x", limit=25, page_size=25, max_pages=1, start=50)
+
+        assert mock_get.call_args[1]["params"] == {"start": 50, "limit": 25}
+
+    def test_single_window_issues_one_get_and_returns_envelope_cursor(self):
+        """max_pages=1 issues exactly one GET and surfaces the envelope cursor.
+
+        A full window (page_size == limit) that is not the last page returns the
+        upstream nextPageStart verbatim — the exact, unambiguous resume point.
+        """
+        client = _client()
+        with patch.object(
+            client._session,
+            "get",
+            return_value=_page_response(
+                [{"id": i} for i in range(25)], is_last_page=False, next_page_start=25
+            ),
+        ) as mock_get:
+            page = client._paginate("/x", limit=25, page_size=25, max_pages=1)
+
+        assert mock_get.call_count == 1
+        assert len(page.values) == 25
+        assert page.is_last_page is False
+        assert page.truncated is True
+        assert page.next_page_start == 25
+
+    def test_single_window_last_page_has_no_cursor(self):
+        """A single window that is the last page reports no resume cursor."""
+        client = _client()
+        with patch.object(
+            client._session,
+            "get",
+            return_value=_page_response([{"id": 1}], is_last_page=True),
+        ) as mock_get:
+            page = client._paginate("/x", limit=25, page_size=25, max_pages=1)
+
+        assert mock_get.call_count == 1
+        assert page.is_last_page is True
+        assert page.truncated is False
+        assert page.next_page_start is None
+
+    def test_capped_walk_overshoot_advertises_no_cursor(self):
+        """An overshooting capped walk is truncated with no forward cursor.
+
+        In the capped-walk (client-side-filtered) mode a page can carry more than
+        the remaining limit. The trimmed (post-limit) items live inside an
+        already-returned page, so no forward cursor can recover them: the result
+        is truncated with ``next_page_start`` None, signalling "raise limit".
+        """
+        client = _client()
+        pages = [
+            _page_response(
+                [{"id": i} for i in range(20)], is_last_page=False, next_page_start=20
+            ),
+            _page_response(
+                [{"id": 20 + i} for i in range(20)],
+                is_last_page=False,
+                next_page_start=40,
+            ),
+        ]
+        with patch.object(client._session, "get", side_effect=pages):
+            page = client._paginate("/x", limit=25, page_size=20, max_pages=10)
+
+        # 40 collected > limit 25: the walk overshot.
+        assert len(page.values) == 25
+        assert page.is_last_page is False
+        assert page.truncated is True
+        assert page.next_page_start is None
+
+    def test_filtered_last_page_denser_than_limit_has_no_cursor(self):
+        """A filtered last page with more matches than limit: truncated, no cursor.
+
+        The realistic comments case — one upstream (last) page whose post-filter
+        matches exceed ``limit``. There is no further page, so the cursor is None
+        and ``truncated`` is True; the caller raises ``limit`` to get the rest,
+        never loops on a self-pointing cursor.
+        """
+        client = _client()
+
+        def _keep_all(values: list[dict]) -> list[dict]:
+            return values  # stands in for a client-side filter (capped walk)
+
+        with patch.object(
+            client._session,
+            "get",
+            return_value=_page_response(
+                [{"id": i} for i in range(30)], is_last_page=True
+            ),
+        ) as mock_get:
+            page = client._paginate(
+                "/x", limit=10, page_size=50, max_pages=50, transform=_keep_all
+            )
+
+        assert mock_get.call_count == 1
+        assert len(page.values) == 10
+        assert page.is_last_page is True
+        assert page.truncated is True
+        assert page.next_page_start is None
 
 
 class TestPaginateTransform:

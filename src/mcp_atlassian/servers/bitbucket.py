@@ -49,13 +49,26 @@ bitbucket_mcp = FastMCP(
 )
 async def list_projects(
     ctx: Context,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first project to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
     limit: Annotated[
         int,
         Field(
             description=(
-                "Maximum number of projects to return. Bitbucket Data Center "
-                "paginates projects; if more exist than are returned, the "
-                "response sets 'truncated' to true."
+                "Maximum number of projects to return in this window. Bitbucket "
+                "Data Center paginates projects; if more exist than are returned, "
+                "the response sets 'truncated' to true and 'next_page_start' to "
+                "the cursor for the next call."
             ),
             default=DEFAULT_PROJECTS_LIMIT,
             ge=1,
@@ -67,17 +80,20 @@ async def list_projects(
 
     Args:
         ctx: The FastMCP context.
-        limit: Maximum number of projects to return.
+        start: Pagination cursor (offset of the first project); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of projects to return in this window.
 
     Returns:
         JSON string with the list of projects plus ``count``, ``is_last_page``,
-        and ``truncated`` pagination flags, or a sanitised error object on
-        failure. ``truncated`` is the authoritative completeness signal: when it
-        is true, more projects exist than were returned — raise ``limit`` (if
-        ``is_last_page`` is true) or narrow the query, and do not treat the list
-        as exhaustive. When a projects filter is configured, a ``truncated``
-        empty result means the scan did not reach the matching project, not that
-        none exists.
+        ``truncated``, and ``next_page_start`` pagination fields, or a sanitised
+        error object on failure. ``count`` is the number of projects in THIS
+        window, not a grand total (Data Center does not report one). To get more,
+        call again with ``start`` set to the returned ``next_page_start`` (when it
+        is non-null); ``is_last_page=true`` means the list is complete. When a
+        projects filter is configured the count is post-filter, so a window may be
+        empty with ``is_last_page=false`` — keep paging with
+        ``start=next_page_start`` until ``is_last_page`` is true.
     """
     # Each branch logs once, server-side, and returns only a sanitised message
     # to the client to avoid leaking internal details. Expected auth and
@@ -90,13 +106,14 @@ async def list_projects(
     # included defensively in case a raw transport error ever surfaces.
     try:
         bitbucket = await get_bitbucket_fetcher(ctx)
-        page = bitbucket.list_projects(limit=limit)
+        page = bitbucket.list_projects(start=start, limit=limit)
         response_data: dict[str, object] = {
             "success": True,
             "projects": [project.to_simplified_dict() for project in page.projects],
             "count": len(page.projects),
             "is_last_page": page.is_last_page,
             "truncated": page.truncated,
+            "next_page_start": page.next_page_start,
         }
     except MCPAtlassianAuthenticationError as e:
         logger.error(f"list_projects failed: {e}")
@@ -141,13 +158,26 @@ async def list_repositories(
             ),
         ),
     ],
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first repository to "
+                "return. Use 0 (default) for the first window, then pass the "
+                "response's 'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
     limit: Annotated[
         int,
         Field(
             description=(
-                "Maximum number of repositories to return. Bitbucket Data Center "
-                "paginates repositories; if more exist than are returned, the "
-                "response sets 'truncated' to true."
+                "Maximum number of repositories to return in this window. "
+                "Bitbucket Data Center paginates repositories; if more exist than "
+                "are returned, the response sets 'truncated' to true and "
+                "'next_page_start' to the cursor for the next call."
             ),
             default=DEFAULT_REPOS_LIMIT,
             ge=1,
@@ -160,15 +190,18 @@ async def list_repositories(
     Args:
         ctx: The FastMCP context.
         project_key: The project key whose repositories to list.
-        limit: Maximum number of repositories to return.
+        start: Pagination cursor (offset of the first repository); 0 for the
+            first window, else a prior response's ``next_page_start``.
+        limit: Maximum number of repositories to return in this window.
 
     Returns:
         JSON string with the list of repositories plus ``count``,
-        ``is_last_page``, and ``truncated`` pagination flags, or a sanitised
-        error object on failure. ``truncated`` is the authoritative completeness
-        signal: when it is true, more repositories exist than were returned —
-        raise ``limit`` (if ``is_last_page`` is true) and do not treat the list
-        as exhaustive.
+        ``is_last_page``, ``truncated``, and ``next_page_start`` pagination
+        fields, or a sanitised error object on failure. ``count`` is the number
+        of repositories in THIS window, not a grand total (Data Center does not
+        report one). To get more, call again with ``start`` set to the returned
+        ``next_page_start`` (when it is non-null); ``is_last_page=true`` means the
+        list is complete.
     """
     # Mirrors list_projects' error handling: each branch logs once, server-side,
     # and returns only a sanitised message to the client. The fetcher signals a
@@ -177,13 +210,16 @@ async def list_repositories(
     # token rejection as MCPAtlassianAuthenticationError.
     try:
         bitbucket = await get_bitbucket_fetcher(ctx)
-        page = bitbucket.list_repositories(project_key=project_key, limit=limit)
+        page = bitbucket.list_repositories(
+            project_key=project_key, start=start, limit=limit
+        )
         response_data: dict[str, object] = {
             "success": True,
             "repositories": [repo.to_simplified_dict() for repo in page.repositories],
             "count": len(page.repositories),
             "is_last_page": page.is_last_page,
             "truncated": page.truncated,
+            "next_page_start": page.next_page_start,
         }
     except MCPAtlassianAuthenticationError as e:
         logger.error(f"list_repositories failed: {e}")
@@ -274,12 +310,25 @@ async def list_pull_requests(
             default=None,
         ),
     ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first pull request to "
+                "return. Use 0 (default) for the first window, then pass the "
+                "response's 'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
     limit: Annotated[
         int,
         Field(
             description=(
-                "Maximum number of pull requests to return. If more exist than "
-                "are returned, the response sets 'truncated' to true."
+                "Maximum number of pull requests to return in this window. If "
+                "more exist than are returned, the response sets 'truncated' to "
+                "true and 'next_page_start' to the cursor for the next call."
             ),
             default=DEFAULT_PRS_LIMIT,
             ge=1,
@@ -297,12 +346,18 @@ async def list_pull_requests(
         direction: Optional direction relative to the repository.
         at: Optional fully-qualified branch ref filter.
         order: Optional ordering.
-        limit: Maximum number of pull requests to return.
+        start: Pagination cursor (offset of the first pull request); 0 for the
+            first window, else a prior response's ``next_page_start``.
+        limit: Maximum number of pull requests to return in this window.
 
     Returns:
         JSON string with the list of pull requests plus ``count``,
-        ``is_last_page``, and ``truncated`` pagination flags, or a sanitised
-        error object on failure.
+        ``is_last_page``, ``truncated``, and ``next_page_start`` pagination
+        fields, or a sanitised error object on failure. ``count`` is the number
+        of pull requests in THIS window, not a grand total (Data Center does not
+        report one). To get more, call again with ``start`` set to the returned
+        ``next_page_start`` (when it is non-null); ``is_last_page=true`` means the
+        list is complete.
     """
     try:
         bitbucket = await get_bitbucket_fetcher(ctx)
@@ -313,6 +368,7 @@ async def list_pull_requests(
             direction=direction,
             at=at,
             order=order,
+            start=start,
             limit=limit,
         )
         response_data: dict[str, object] = {
@@ -321,6 +377,7 @@ async def list_pull_requests(
             "count": len(page.pull_requests),
             "is_last_page": page.is_last_page,
             "truncated": page.truncated,
+            "next_page_start": page.next_page_start,
         }
     except MCPAtlassianAuthenticationError as e:
         logger.error(f"list_pull_requests failed: {e}")
@@ -533,12 +590,25 @@ async def get_pull_request_activities(
         int,
         Field(description="The pull-request id (a positive integer).", ge=1),
     ],
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first activity entry to "
+                "return. Use 0 (default) for the first window, then pass the "
+                "response's 'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
     limit: Annotated[
         int,
         Field(
             description=(
-                "Maximum number of activity entries to return. If more exist "
-                "than are returned, the response sets 'truncated' to true."
+                "Maximum number of activity entries to return in this window. If "
+                "more exist than are returned, the response sets 'truncated' to "
+                "true and 'next_page_start' to the cursor for the next call."
             ),
             default=DEFAULT_ACTIVITIES_LIMIT,
             ge=1,
@@ -557,12 +627,17 @@ async def get_pull_request_activities(
         project_key: The project key.
         repository_slug: The repository slug.
         pull_request_id: The pull-request id.
-        limit: Maximum number of activity entries to return.
+        start: Pagination cursor (offset of the first activity entry); 0 for the
+            first window, else a prior response's ``next_page_start``.
+        limit: Maximum number of activity entries to return in this window.
 
     Returns:
         JSON string with the activity timeline plus ``count``, ``is_last_page``,
-        and ``truncated`` pagination flags, or a sanitised error object on
-        failure.
+        ``truncated``, and ``next_page_start`` pagination fields, or a sanitised
+        error object on failure. ``count`` is the number of entries in THIS
+        window, not a grand total (Data Center does not report one). To get more,
+        call again with ``start`` set to the returned ``next_page_start`` (when it
+        is non-null); ``is_last_page=true`` means the timeline is complete.
     """
     try:
         bitbucket = await get_bitbucket_fetcher(ctx)
@@ -570,6 +645,7 @@ async def get_pull_request_activities(
             project_key=project_key,
             repository_slug=repository_slug,
             pull_request_id=pull_request_id,
+            start=start,
             limit=limit,
         )
         response_data: dict[str, object] = {
@@ -578,6 +654,7 @@ async def get_pull_request_activities(
             "count": len(page.activities),
             "is_last_page": page.is_last_page,
             "truncated": page.truncated,
+            "next_page_start": page.next_page_start,
         }
     except MCPAtlassianAuthenticationError as e:
         logger.error(f"get_pull_request_activities failed: {e}")
@@ -624,12 +701,26 @@ async def get_pull_request_comments(
         int,
         Field(description="The pull-request id (a positive integer).", ge=1),
     ],
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset into the activity timeline to "
+                "resume the comment scan from. Use 0 (default) for the first "
+                "window, then pass the response's 'next_page_start' to fetch the "
+                "next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
     limit: Annotated[
         int,
         Field(
             description=(
-                "Maximum number of comments to return. If more exist than are "
-                "returned, the response sets 'truncated' to true."
+                "Maximum number of comments to return in this window. If more "
+                "exist than are returned, the response sets 'truncated' to true "
+                "and 'next_page_start' to the cursor for the next call."
             ),
             default=DEFAULT_ACTIVITIES_LIMIT,
             ge=1,
@@ -648,11 +739,18 @@ async def get_pull_request_comments(
         project_key: The project key.
         repository_slug: The repository slug.
         pull_request_id: The pull-request id.
-        limit: Maximum number of comments to return.
+        start: Pagination cursor (offset into the activity timeline); 0 for the
+            first window, else a prior response's ``next_page_start``.
+        limit: Maximum number of comments to return in this window.
 
     Returns:
-        JSON string with the comments plus ``count``, ``is_last_page``, and
-        ``truncated`` pagination flags, or a sanitised error object on failure.
+        JSON string with the comments plus ``count``, ``is_last_page``,
+        ``truncated``, and ``next_page_start`` pagination fields, or a sanitised
+        error object on failure. ``count`` is the number of comments in THIS
+        window, not a grand total (Data Center does not report one). Because the
+        comment filter runs over the activity timeline, a window may be empty
+        with ``is_last_page=false`` — keep paging with ``start=next_page_start``
+        until ``is_last_page`` is true; that means the comments are complete.
     """
     try:
         bitbucket = await get_bitbucket_fetcher(ctx)
@@ -661,6 +759,7 @@ async def get_pull_request_comments(
             repository_slug=repository_slug,
             pull_request_id=pull_request_id,
             action="COMMENTED",
+            start=start,
             limit=limit,
         )
         comments = [
@@ -674,6 +773,7 @@ async def get_pull_request_comments(
             "count": len(comments),
             "is_last_page": page.is_last_page,
             "truncated": page.truncated,
+            "next_page_start": page.next_page_start,
         }
     except MCPAtlassianAuthenticationError as e:
         logger.error(f"get_pull_request_comments failed: {e}")

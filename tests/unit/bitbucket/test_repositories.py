@@ -60,7 +60,7 @@ def _fetcher() -> BitbucketFetcher:
 
 
 class TestListRepositories:
-    """Happy-path listing, model mapping, and pagination."""
+    """Happy-path listing, model mapping, and single-window pagination."""
 
     def test_returns_repository_models(self):
         """A page is mapped to BitbucketRepository models at the project path."""
@@ -80,32 +80,51 @@ class TestListRepositories:
         assert page.repositories[0].project.key == "PROJ"
         assert page.is_last_page is True
         assert page.truncated is False
+        assert page.next_page_start is None
         called_url = mock_get.call_args[0][0]
         assert called_url.endswith("/rest/api/1.0/projects/PROJ/repos")
-        assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 100}
+        # Single window: the page size sent upstream is the requested limit.
+        assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 10}
 
-    def test_walks_pages_until_last_page(self):
-        """Pages are followed via nextPageStart and concatenated."""
+    def test_single_window_issues_one_request_and_surfaces_cursor(self):
+        """One upstream GET; a non-last window returns the upstream cursor."""
         fetcher = _fetcher()
-        pages = [
-            _page_response([_repo("a")], is_last_page=False, next_page_start=1),
-            _page_response([_repo("b")], is_last_page=True),
-        ]
-        with patch.object(fetcher._session, "get", side_effect=pages) as mock_get:
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response(
+                [_repo("a")], is_last_page=False, next_page_start=25
+            ),
+        ) as mock_get:
             page = fetcher.list_repositories("PROJ", limit=25)
 
-        assert [r.slug for r in page.repositories] == ["a", "b"]
+        assert [r.slug for r in page.repositories] == ["a"]
+        assert page.is_last_page is False
+        assert page.truncated is True
+        assert page.next_page_start == 25
+        assert mock_get.call_count == 1
+
+    def test_start_resumes_from_cursor(self):
+        """A start offset is sent as the upstream start param."""
+        fetcher = _fetcher()
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_repo("b")], is_last_page=True),
+        ) as mock_get:
+            page = fetcher.list_repositories("PROJ", start=25, limit=25)
+
+        assert mock_get.call_args[1]["params"] == {"start": 25, "limit": 25}
         assert page.is_last_page is True
-        assert page.truncated is False
-        assert mock_get.call_args_list[1][1]["params"]["start"] == 1
+        assert page.next_page_start is None
 
     def test_truncates_at_limit(self):
-        """A small limit against a large project stops and flags truncation."""
+        """A full window with more upstream stops at one request, flags truncation."""
         fetcher = _fetcher()
         big_page = _page_response(
-            [_repo(f"r{i}") for i in range(100)],
+            [_repo(f"r{i}") for i in range(25)],
             is_last_page=False,
-            next_page_start=100,
+            next_page_start=25,
         )
         with patch.object(fetcher._session, "get", return_value=big_page) as mock_get:
             page = fetcher.list_repositories("PROJ", limit=25)
@@ -113,6 +132,7 @@ class TestListRepositories:
         assert len(page.repositories) == 25
         assert page.truncated is True
         assert page.is_last_page is False
+        assert page.next_page_start == 25
         assert mock_get.call_count == 1
 
     def test_empty_project_returns_empty_complete_result(self):
@@ -128,25 +148,19 @@ class TestListRepositories:
         assert page.repositories == []
         assert page.is_last_page is True
         assert page.truncated is False
+        assert page.next_page_start is None
 
     def test_limit_clamped_to_max(self):
-        """A limit above the cap is clamped; a huge project truncates at the cap."""
+        """A limit above the cap is clamped to MAX_REPOS_LIMIT for the window."""
         fetcher = _fetcher()
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_repo("a")], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_repositories("PROJ", limit=10_000)
 
-        def endless(url, params=None, timeout=None):
-            start = params["start"]
-            return _page_response(
-                [_repo(f"r{start + i}") for i in range(100)],
-                is_last_page=False,
-                next_page_start=start + 100,
-            )
-
-        with patch.object(fetcher._session, "get", side_effect=endless):
-            page = fetcher.list_repositories("PROJ", limit=10_000)
-
-        assert len(page.repositories) == MAX_REPOS_LIMIT
-        assert page.truncated is True
-        assert page.is_last_page is False
+        assert mock_get.call_args[1]["params"]["limit"] == MAX_REPOS_LIMIT
 
 
 class TestListRepositoriesValidation:

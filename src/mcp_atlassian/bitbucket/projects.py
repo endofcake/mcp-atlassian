@@ -39,25 +39,31 @@ class ProjectsMixin(BitbucketClient):
         return keys or None
 
     def list_projects(
-        self, limit: int = DEFAULT_PROJECTS_LIMIT
+        self, *, start: int = 0, limit: int = DEFAULT_PROJECTS_LIMIT
     ) -> BitbucketProjectsPage:
         """List Bitbucket projects visible to the authenticated user.
 
-        Bitbucket Data Center paginates the projects endpoint, so a single page
-        can silently omit projects. This walks pages (``start``/``nextPageStart``)
-        bounded by ``limit`` and a hard safety cap, and reports whether the
-        result is complete. When ``config.projects_filter`` is set, each page is
-        narrowed to that allowlist before the bound is applied.
+        Bitbucket Data Center paginates the projects endpoint. Without a
+        ``config.projects_filter`` this fetches a single window (``start`` → up
+        to ``limit``) in one request and returns the upstream cursor as
+        ``next_page_start`` so the caller can resume. When a ``projects_filter``
+        is configured the allowlist is applied client-side, so each window is
+        filled by a bounded server-side walk (capped by a hard page limit); the
+        returned ``count`` is post-filter, so a window can be empty while more
+        pages remain — keep paging with ``start=next_page_start`` until
+        ``is_last_page``.
 
         Args:
+            start: The offset to resume from (the ``next_page_start`` of a prior
+                call). 0 starts from the beginning.
             limit: Maximum number of projects to return. Clamped to
                 ``[1, MAX_PROJECTS_LIMIT]``.
 
         Returns:
             A :class:`BitbucketProjectsPage` carrying the collected project
             models, whether the upstream list was fully consumed
-            (``is_last_page``), and whether projects were omitted because a bound
-            was hit (``truncated``).
+            (``is_last_page``), whether projects were omitted because a bound was
+            hit (``truncated``), and the ``next_page_start`` resume cursor.
 
         Raises:
             ValueError: If a page response is not a paged object with a
@@ -70,16 +76,27 @@ class ProjectsMixin(BitbucketClient):
         def _filter(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [p for p in values if str(p.get("key", "")).upper() in filter_keys]
 
-        transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = (
-            _filter if filter_keys is not None else None
-        )
+        # Filtered: a bounded server-side walk per window keeps the per-call
+        # request cap. Unfiltered: a single window (one upstream request) with
+        # the cursor surfaced for resumption.
+        if filter_keys is not None:
+            transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = (
+                _filter
+            )
+            page_size = _PROJECTS_PAGE_SIZE
+            max_pages = _MAX_PROJECT_PAGES
+        else:
+            transform = None
+            page_size = limit
+            max_pages = 1
         # Filtering runs on raw dicts mid-walk; model conversion happens once the
         # page is collected (parallel to ReposMixin.list_repositories).
         page = self._paginate(
             "/projects",
             limit=limit,
-            page_size=_PROJECTS_PAGE_SIZE,
-            max_pages=_MAX_PROJECT_PAGES,
+            page_size=page_size,
+            max_pages=max_pages,
+            start=start,
             transform=transform,
         )
         projects = [BitbucketProject.from_api_response(value) for value in page.values]
@@ -87,4 +104,5 @@ class ProjectsMixin(BitbucketClient):
             projects=projects,
             is_last_page=page.is_last_page,
             truncated=page.truncated,
+            next_page_start=page.next_page_start,
         )

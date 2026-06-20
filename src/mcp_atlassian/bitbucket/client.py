@@ -79,11 +79,18 @@ class BitbucketPage:
         values: The collected raw item dicts (at most the requested ``limit``).
         is_last_page: Whether the scan reached the end of the upstream list.
         truncated: Whether the returned ``values`` omits items that exist.
+        next_page_start: The ``start`` offset to resume from after this page, or
+            ``None`` when there is no forward cursor — i.e. the list was fully
+            consumed (``is_last_page`` True), the window overshot ``limit`` (the
+            trimmed tail is unreachable forward; raise ``limit``), or a non-last
+            page advertised no cursor (incomplete, not resumable). Read it with
+            ``truncated`` / ``is_last_page`` to tell "done" from "incomplete".
     """
 
     values: list[dict[str, Any]]
     is_last_page: bool
     truncated: bool
+    next_page_start: int | None = None
 
 
 @dataclass
@@ -111,11 +118,14 @@ class BitbucketProjectsPage:
         projects: The collected project models (at most ``MAX_PROJECTS_LIMIT``).
         is_last_page: Whether the scan reached the end of the upstream list.
         truncated: Whether the returned ``projects`` omits projects that exist.
+        next_page_start: The ``start`` cursor to resume from, or ``None`` when
+            nothing more is fetchable (see :class:`BitbucketPage`).
     """
 
     projects: list[BitbucketProject]
     is_last_page: bool
     truncated: bool
+    next_page_start: int | None = None
 
 
 class BitbucketClient:
@@ -567,6 +577,7 @@ class BitbucketClient:
         limit: int,
         page_size: int,
         max_pages: int,
+        start: int = 0,
         params: dict[str, Any] | None = None,
         transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
     ) -> BitbucketPage:
@@ -574,12 +585,16 @@ class BitbucketClient:
 
         Bitbucket DC paginates with ``start``/``limit`` query params and answers
         with a ``{values, isLastPage, nextPageStart, ...}`` envelope. This
-        requests pages of ``page_size`` from ``start=0``, following
+        requests pages of ``page_size`` from ``start``, following
         ``nextPageStart`` until the upstream list ends (``isLastPage``), the
         collected count reaches ``limit``, or the ``max_pages`` safety cap is hit.
         ``transform`` is applied to each page's ``values`` before they are
         collected (e.g. a client-side allowlist filter), so it is bounded by the
         same page cap as the raw walk.
+
+        With ``max_pages=1`` and ``page_size == limit`` this fetches a single
+        window and surfaces the upstream cursor directly, so the caller resumes
+        exactly where the window ended (no aggregation ambiguity).
 
         Args:
             path: API path relative to ``/rest/api/1.0`` (e.g. ``"/projects"``).
@@ -587,13 +602,23 @@ class BitbucketClient:
                 to it. Callers clamp this to their own domain ceiling first.
             page_size: Per-request page size sent as the ``limit`` query param.
             max_pages: Hard bound on the number of page requests.
+            start: The offset of the first page to fetch (a resume cursor). 0
+                starts from the beginning.
             params: Extra query params merged into every page request.
             transform: Optional per-page mapping of the ``values`` list.
 
         Returns:
             A :class:`BitbucketPage` with the collected items (at most ``limit``),
-            whether the upstream list was fully consumed (``is_last_page``), and
-            whether items were omitted because a bound was hit (``truncated``).
+            whether the upstream list was fully consumed (``is_last_page``),
+            whether items were omitted because a bound was hit (``truncated``),
+            and ``next_page_start`` — the cursor to resume from, or ``None`` when
+            there is no forward cursor. ``None`` arises three ways: the upstream
+            list ended (``is_last_page`` True, ``truncated`` False — complete); the
+            window overshot ``limit`` (``truncated`` True — the trimmed tail lives
+            inside an already-returned page, unreachable by a forward cursor, so
+            the caller raises ``limit``); or a non-last page advertised no cursor
+            (``truncated`` True — incomplete, not resumable). A non-null
+            ``next_page_start`` is always the exact upstream offset to resume from.
 
         Raises:
             ValueError: If a page is not a paged object with a ``values`` list, or
@@ -601,26 +626,46 @@ class BitbucketClient:
             MCPAtlassianAuthenticationError: If the bearer token is rejected.
         """
         collected: list[dict[str, Any]] = []
-        start = 0
+        next_start = start  # cursor for the page about to be fetched
+        page_start = start  # start offset of the most-recently-fetched page
         is_last_page = True
+        last_next_start = None  # nextPageStart reported by the most recent page
         for _ in range(max_pages):
-            page_params = {**(params or {}), "start": start, "limit": page_size}
+            page_start = next_start
+            page_params = {**(params or {}), "start": page_start, "limit": page_size}
             page = self._get(path, params=page_params)
             values = self._page_values(page, path)
             if transform is not None:
                 values = transform(values)
             collected.extend(values)
             is_last_page = bool(page.get("isLastPage", True))
-            next_start = page.get("nextPageStart")
-            if is_last_page or next_start is None or len(collected) >= limit:
+            last_next_start = page.get("nextPageStart")
+            if is_last_page or last_next_start is None or len(collected) >= limit:
                 break
-            start = next_start
+            next_start = last_next_start
 
+        overshot = len(collected) > limit
         # truncated if we trimmed an overshooting page, or stopped (limit/cap
         # reached) while the upstream list still had more pages.
-        truncated = len(collected) > limit or not is_last_page
+        truncated = overshot or not is_last_page
+        next_page_start: int | None
+        if overshot:
+            # A window denser than ``limit``: the trimmed tail lives inside an
+            # already-returned page, so a forward cursor cannot recover it without
+            # re-yielding this window. Advertise no cursor (``truncated`` is true);
+            # the caller raises ``limit`` to get the rest. Only the
+            # client-side-filtered walk can overshoot — the single-window paths
+            # request ``page_size == limit``, so a page never exceeds ``limit``.
+            next_page_start = None
+        elif is_last_page:
+            next_page_start = None
+        else:
+            # A full window with more upstream pages: resume from the advertised
+            # cursor, or None when the page gave none ("incomplete, can't resume").
+            next_page_start = last_next_start
         return BitbucketPage(
             values=collected[:limit],
             is_last_page=is_last_page,
             truncated=truncated,
+            next_page_start=next_page_start,
         )

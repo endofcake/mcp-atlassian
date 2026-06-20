@@ -63,7 +63,7 @@ _PR = {
 
 
 class TestListPullRequests:
-    """list_pull_requests: params, pagination, and validation."""
+    """list_pull_requests: params, single-window pagination, and validation."""
 
     def test_returns_models_and_default_params(self):
         fetcher = BitbucketFetcher(config=_byo_config())
@@ -81,12 +81,14 @@ class TestListPullRequests:
         assert page.pull_requests[0].title == "Add X"
         assert page.is_last_page is True
         assert page.truncated is False
+        assert page.next_page_start is None
         called_url = mock_get.call_args[0][0]
         assert called_url.endswith(
             "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests"
         )
-        # With no filters set, only start/limit pagination params are sent.
-        assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 50}
+        # Single window: page size sent upstream is the default limit, plus the
+        # start cursor; no filter params.
+        assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 25}
 
     def test_passes_state_direction_at_order(self):
         fetcher = BitbucketFetcher(config=_byo_config())
@@ -110,19 +112,38 @@ class TestListPullRequests:
         assert params["at"] == "refs/heads/main"
         assert params["order"] == "OLDEST"
 
-    def test_walks_pages_until_last(self):
+    def test_single_window_issues_one_request_and_surfaces_cursor(self):
+        """One upstream GET; a non-last window returns the upstream cursor."""
         fetcher = BitbucketFetcher(config=_byo_config())
-        pages = [
-            _page_response(
-                [{"id": 1, "title": "a"}], is_last_page=False, next_page_start=1
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response(
+                [{"id": 1, "title": "a"}], is_last_page=False, next_page_start=25
             ),
-            _page_response([{"id": 2, "title": "b"}], is_last_page=True),
-        ]
-        with patch.object(fetcher._session, "get", side_effect=pages):
+        ) as mock_get:
             page = fetcher.list_pull_requests(project_key="P", repository_slug="r")
 
-        assert [pr.id for pr in page.pull_requests] == [1, 2]
-        assert page.is_last_page is True
+        assert [pr.id for pr in page.pull_requests] == [1]
+        assert page.is_last_page is False
+        assert page.truncated is True
+        assert page.next_page_start == 25
+        assert mock_get.call_count == 1
+
+    def test_start_resumes_from_cursor(self):
+        """A start offset is sent as the upstream start param."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_PR], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_pull_requests(
+                project_key="P", repository_slug="r", start=25, limit=25
+            )
+
+        assert mock_get.call_args[1]["params"]["start"] == 25
+        assert mock_get.call_args[1]["params"]["limit"] == 25
 
     @pytest.mark.parametrize("blank", ["", "   "])
     def test_blank_project_key_raises(self, blank):

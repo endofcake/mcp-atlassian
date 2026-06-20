@@ -20,14 +20,9 @@ logger = logging.getLogger("mcp-atlassian.bitbucket")
 # --- list_pull_requests bounds ---
 # Default number of pull requests a single list_pull_requests call returns.
 DEFAULT_PRS_LIMIT = 25
-# Hard ceiling on pull requests returned in one call.
+# Hard ceiling on pull requests returned in one call. This caps the per-call
+# window (the tool's `limit`); the caller pages further with the returned cursor.
 MAX_PRS_LIMIT = 100
-# Per-request page size for the underlying paged endpoint.
-_PRS_PAGE_SIZE = 50
-# Bound on the pagination loop. state/direction/at/order are server-side query
-# params (no client-side filter walk), so reaching MAX_PRS_LIMIT needs
-# ceil(100 / 50) = 2 pages; the headroom tolerates short pages.
-_MAX_PR_PAGES = 10
 
 # --- get_activities bounds ---
 # Default number of activity entries a single get_activities call returns.
@@ -64,11 +59,15 @@ class BitbucketPullRequestsPage:
         pull_requests: The collected pull-request models (at most ``limit``).
         is_last_page: Whether the scan reached the end of the upstream list.
         truncated: Whether the returned ``pull_requests`` omits PRs that exist.
+        next_page_start: The ``start`` cursor to resume from, or ``None`` when
+            nothing more is fetchable (see
+            :class:`~mcp_atlassian.bitbucket.client.BitbucketPage`).
     """
 
     pull_requests: list[BitbucketPullRequest]
     is_last_page: bool
     truncated: bool
+    next_page_start: int | None = None
 
 
 @dataclass
@@ -84,11 +83,15 @@ class BitbucketActivitiesPage:
         activities: The collected activity models (at most ``limit``).
         is_last_page: Whether the scan reached the end of the upstream list.
         truncated: Whether the returned ``activities`` omits entries that exist.
+        next_page_start: The ``start`` cursor to resume from, or ``None`` when
+            nothing more is fetchable (see
+            :class:`~mcp_atlassian.bitbucket.client.BitbucketPage`).
     """
 
     activities: list[BitbucketActivity]
     is_last_page: bool
     truncated: bool
+    next_page_start: int | None = None
 
 
 class PullRequestsMixin(BitbucketClient):
@@ -154,13 +157,15 @@ class PullRequestsMixin(BitbucketClient):
         direction: str | None = None,
         at: str | None = None,
         order: str | None = None,
+        start: int = 0,
         limit: int = DEFAULT_PRS_LIMIT,
     ) -> BitbucketPullRequestsPage:
         """List pull requests in a Bitbucket Data Center repository.
 
         Calls ``GET /rest/api/1.0/projects/{projectKey}/repos/{repositorySlug}/
-        pull-requests`` (paged with ``start``/``limit``), following pages until
-        the list is exhausted, ``limit`` is reached, or the page cap is hit.
+        pull-requests`` (paged with ``start``/``limit``), fetching a single
+        window (``start`` → up to ``limit``) in one request and returning the
+        upstream cursor as ``next_page_start`` so the caller can resume.
 
         Args:
             project_key: The project key (e.g. ``"PROJ"``).
@@ -173,13 +178,16 @@ class PullRequestsMixin(BitbucketClient):
                 ``refs/heads/main``).
             order: Optional ordering — ``NEWEST`` (default upstream) or
                 ``OLDEST``.
+            start: The offset to resume from (the ``next_page_start`` of a prior
+                call). 0 starts from the beginning.
             limit: Maximum number of pull requests to return. Clamped to
                 ``[1, MAX_PRS_LIMIT]``.
 
         Returns:
             A :class:`BitbucketPullRequestsPage` carrying the collected pull
             requests, whether the upstream list was fully consumed
-            (``is_last_page``), and whether PRs were omitted (``truncated``).
+            (``is_last_page``), whether PRs were omitted (``truncated``), and the
+            ``next_page_start`` resume cursor.
 
         Raises:
             ValueError: If a segment is blank, a page is misshaped, or the
@@ -199,11 +207,13 @@ class PullRequestsMixin(BitbucketClient):
             params["at"] = at
         if order is not None:
             params["order"] = order
+        # Single window: one upstream request, cursor surfaced for resumption.
         page = self._paginate(
             path,
             limit=limit,
-            page_size=_PRS_PAGE_SIZE,
-            max_pages=_MAX_PR_PAGES,
+            page_size=limit,
+            max_pages=1,
+            start=start,
             params=params or None,
         )
         pull_requests = [
@@ -213,6 +223,7 @@ class PullRequestsMixin(BitbucketClient):
             pull_requests=pull_requests,
             is_last_page=page.is_last_page,
             truncated=page.truncated,
+            next_page_start=page.next_page_start,
         )
 
     def get_pull_request(
@@ -314,14 +325,21 @@ class PullRequestsMixin(BitbucketClient):
         pull_request_id: int | str,
         *,
         action: str | None = None,
+        start: int = 0,
         limit: int = DEFAULT_ACTIVITIES_LIMIT,
     ) -> BitbucketActivitiesPage:
         """List a pull request's activity timeline (comments + approvals + …).
 
-        Calls ``GET .../pull-requests/{pullRequestId}/activities`` (paged). The
-        endpoint exposes no action query filter, so ``action`` is applied
-        client-side during the walk (the same mechanism as the projects filter),
-        which is how the comments view is built (``action="COMMENTED"``).
+        Calls ``GET .../pull-requests/{pullRequestId}/activities`` (paged). With
+        no ``action`` this fetches a single window (``start`` → up to ``limit``)
+        in one request. The endpoint exposes no action query filter, so an
+        ``action`` is applied client-side: each window is then filled by a
+        bounded server-side walk (capped by a hard page limit), the mechanism
+        behind the comments view (``action="COMMENTED"``). Either way the
+        upstream cursor is returned as ``next_page_start`` so the caller can
+        resume; under an ``action`` filter the returned ``count`` is post-filter,
+        so a window can be empty while more pages remain — keep paging with
+        ``start=next_page_start`` until ``is_last_page``.
 
         Args:
             project_key: The project key.
@@ -329,13 +347,16 @@ class PullRequestsMixin(BitbucketClient):
             pull_request_id: The pull-request id (positive integer).
             action: Optional activity action to filter to (e.g. ``"COMMENTED"``),
                 matched case-insensitively.
+            start: The offset to resume from (the ``next_page_start`` of a prior
+                call). 0 starts from the beginning.
             limit: Maximum number of activity entries to return. Clamped to
                 ``[1, MAX_ACTIVITIES_LIMIT]``.
 
         Returns:
             A :class:`BitbucketActivitiesPage` carrying the collected activities,
-            whether the upstream list was fully consumed (``is_last_page``), and
-            whether entries were omitted (``truncated``).
+            whether the upstream list was fully consumed (``is_last_page``),
+            whether entries were omitted (``truncated``), and the
+            ``next_page_start`` resume cursor.
 
         Raises:
             ValueError: If a segment is blank, the id is not a positive integer,
@@ -348,20 +369,31 @@ class PullRequestsMixin(BitbucketClient):
         pr_id = self._coerce_pr_id(pull_request_id)
         limit = max(1, min(limit, MAX_ACTIVITIES_LIMIT))
 
-        transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
+        # Filtered: a bounded server-side walk per window keeps the per-call
+        # request cap. Unfiltered: a single window (one upstream request) with
+        # the cursor surfaced for resumption.
         if action is not None:
             wanted = action.strip().upper()
 
             def _filter(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 return [v for v in values if str(v.get("action", "")).upper() == wanted]
 
-            transform = _filter
+            transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = (
+                _filter
+            )
+            page_size = _ACTIVITIES_PAGE_SIZE
+            max_pages = _MAX_ACTIVITY_PAGES
+        else:
+            transform = None
+            page_size = limit
+            max_pages = 1
 
         page = self._paginate(
             f"{base}/{pr_id}/activities",
             limit=limit,
-            page_size=_ACTIVITIES_PAGE_SIZE,
-            max_pages=_MAX_ACTIVITY_PAGES,
+            page_size=page_size,
+            max_pages=max_pages,
+            start=start,
             transform=transform,
         )
         activities = [
@@ -371,6 +403,7 @@ class PullRequestsMixin(BitbucketClient):
             activities=activities,
             is_last_page=page.is_last_page,
             truncated=page.truncated,
+            next_page_start=page.next_page_start,
         )
 
     @staticmethod
