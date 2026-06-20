@@ -39,7 +39,11 @@ class ProjectsMixin(BitbucketClient):
         return keys or None
 
     def list_projects(
-        self, *, start: int = 0, limit: int = DEFAULT_PROJECTS_LIMIT
+        self,
+        *,
+        name: str | None = None,
+        start: int = 0,
+        limit: int = DEFAULT_PROJECTS_LIMIT,
     ) -> BitbucketProjectsPage:
         """List Bitbucket projects visible to the authenticated user.
 
@@ -53,7 +57,13 @@ class ProjectsMixin(BitbucketClient):
         pages remain — keep paging with ``start=next_page_start`` until
         ``is_last_page``.
 
+        A non-blank ``name`` is passed through as a server-side query filter in
+        both modes; it is orthogonal to the ``projects_filter`` key allowlist, so
+        the two narrow the result independently.
+
         Args:
+            name: Optional server-side filter on project name. The match
+                semantics are decided by the instance.
             start: The offset to resume from (the ``next_page_start`` of a prior
                 call). 0 starts from the beginning.
             limit: Maximum number of projects to return. Clamped to
@@ -72,6 +82,11 @@ class ProjectsMixin(BitbucketClient):
         """
         limit = max(1, min(limit, MAX_PROJECTS_LIMIT))
         filter_keys = self._projects_filter_keys()
+        # A server-side name filter rides on whichever mode is selected below; it
+        # is independent of the client-side key allowlist.
+        params: dict[str, Any] | None = (
+            {"name": name.strip()} if name and name.strip() else None
+        )
 
         def _filter(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
             return [p for p in values if str(p.get("key", "")).upper() in filter_keys]
@@ -97,6 +112,7 @@ class ProjectsMixin(BitbucketClient):
             page_size=page_size,
             max_pages=max_pages,
             start=start,
+            params=params,
             transform=transform,
         )
         projects = [BitbucketProject.from_api_response(value) for value in page.values]

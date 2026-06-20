@@ -157,6 +157,8 @@ class PullRequestsMixin(BitbucketClient):
         direction: str | None = None,
         at: str | None = None,
         order: str | None = None,
+        filter_text: str | None = None,
+        draft: bool | None = None,
         start: int = 0,
         limit: int = DEFAULT_PRS_LIMIT,
     ) -> BitbucketPullRequestsPage:
@@ -178,6 +180,10 @@ class PullRequestsMixin(BitbucketClient):
                 ``refs/heads/main``).
             order: Optional ordering — ``NEWEST`` (default upstream) or
                 ``OLDEST``.
+            filter_text: Optional substring matched against a pull request's
+                title or description, applied server-side.
+            draft: Optional filter by draft status. Sent as the lowercase string
+                the endpoint expects (``"true"``/``"false"``).
             start: The offset to resume from (the ``next_page_start`` of a prior
                 call). 0 starts from the beginning.
             limit: Maximum number of pull requests to return. Clamped to
@@ -207,6 +213,12 @@ class PullRequestsMixin(BitbucketClient):
             params["at"] = at
         if order is not None:
             params["order"] = order
+        if filter_text and filter_text.strip():
+            params["filterText"] = filter_text.strip()
+        if draft is not None:
+            # The endpoint types draft as a string query param, so the boolean
+            # is sent as its lowercase string form.
+            params["draft"] = "true" if draft else "false"
         # Single window: one upstream request, cursor surfaced for resumption.
         page = self._paginate(
             path,

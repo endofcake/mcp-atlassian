@@ -163,6 +163,77 @@ class TestListRepositories:
         assert mock_get.call_args[1]["params"]["limit"] == MAX_REPOS_LIMIT
 
 
+class TestListRepositoriesNameFilter:
+    """The server-side ``name`` filter routes to the cross-project search."""
+
+    def test_name_targets_cross_project_repos_endpoint(self):
+        """With a name, the request hits /repos with projectkey + name params."""
+        fetcher = _fetcher()
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_repo("api")], is_last_page=True),
+        ) as mock_get:
+            page = fetcher.list_repositories("PROJ", name="api", limit=10)
+
+        called_url = mock_get.call_args[0][0]
+        # Cross-project search endpoint, not the project-scoped path.
+        assert called_url.endswith("/rest/api/1.0/repos")
+        assert not called_url.endswith("/projects/PROJ/repos")
+        params = mock_get.call_args[1]["params"]
+        # Always scoped by projectkey (never an unscoped all-repos scan).
+        assert params["projectkey"] == "PROJ"
+        assert params["name"] == "api"
+        assert params["start"] == 0
+        assert params["limit"] == 10
+        # Same model parses the cross-project response.
+        assert [r.slug for r in page.repositories] == ["api"]
+        assert isinstance(page.repositories[0], BitbucketRepository)
+
+    def test_name_filtered_path_is_single_window(self):
+        """The name path is a single upstream GET that surfaces the cursor."""
+        fetcher = _fetcher()
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response(
+                [_repo("api")], is_last_page=False, next_page_start=25
+            ),
+        ) as mock_get:
+            page = fetcher.list_repositories("PROJ", name="api", start=25, limit=25)
+
+        assert mock_get.call_count == 1
+        assert mock_get.call_args[1]["params"]["start"] == 25
+        assert page.next_page_start == 25
+        assert page.is_last_page is False
+        assert page.truncated is True
+
+    @pytest.mark.parametrize("name", [None, "", "   "])
+    def test_blank_name_uses_project_scoped_path(self, name):
+        """A None/blank name keeps the project-scoped path with no extra params."""
+        fetcher = _fetcher()
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_repo("api")], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_repositories("PROJ", name=name)
+
+        called_url = mock_get.call_args[0][0]
+        assert called_url.endswith("/rest/api/1.0/projects/PROJ/repos")
+        # No projectkey/name query params on the unfiltered path.
+        assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 25}
+
+    @pytest.mark.parametrize("bad_key", ["", "   "])
+    def test_blank_project_key_raises_even_with_name(self, bad_key):
+        """A blank project_key is rejected before any request, even with a name."""
+        fetcher = _fetcher()
+        with patch.object(fetcher._session, "get") as mock_get:
+            with pytest.raises(ValueError, match="non-empty"):
+                fetcher.list_repositories(bad_key, name="api")
+        mock_get.assert_not_called()
+
+
 class TestListRepositoriesValidation:
     """project_key validation and path encoding."""
 

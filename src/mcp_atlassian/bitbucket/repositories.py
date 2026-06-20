@@ -2,6 +2,7 @@
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 from urllib.parse import quote
 
 from ..models.bitbucket import BitbucketRepository
@@ -44,18 +45,38 @@ class ReposMixin(BitbucketClient):
     """Mixin for Bitbucket Data Center repository operations."""
 
     def list_repositories(
-        self, project_key: str, *, start: int = 0, limit: int = DEFAULT_REPOS_LIMIT
+        self,
+        project_key: str,
+        *,
+        name: str | None = None,
+        start: int = 0,
+        limit: int = DEFAULT_REPOS_LIMIT,
     ) -> BitbucketRepositoriesPage:
         """List repositories in a Bitbucket Data Center project.
 
-        Calls ``GET /rest/api/1.0/projects/{projectKey}/repos`` (paged with
+        Without ``name`` this calls the project-scoped
+        ``GET /rest/api/1.0/projects/{projectKey}/repos`` (paged with
         ``start``/``limit``), fetching a single window (``start`` → up to
         ``limit``) in one request and returning the upstream cursor as
         ``next_page_start`` so the caller can resume.
 
+        With a non-blank ``name`` it routes to the cross-project
+        ``GET /rest/api/1.0/repos`` search, always scoped to this project via the
+        ``projectkey`` query param (never an unscoped all-repositories scan), with
+        ``name`` as a server-side filter. Both forms return the same
+        :class:`~mcp_atlassian.models.bitbucket.BitbucketRepository` model and the
+        same single-window page shape. Because ``name`` selects the endpoint, it
+        must be re-passed on every resume call — dropping it on a follow-up
+        switches back to the project-scoped listing, so the prior
+        ``next_page_start`` no longer applies.
+
         Args:
             project_key: The project key whose repositories to list (e.g.
                 ``"PROJ"``).
+            name: Optional repository-name filter, matched case-insensitively
+                with surrounding whitespace ignored. When set, results come from
+                the cross-project search scoped to this project — a slightly wider
+                visibility surface than the unfiltered project listing.
             start: The offset to resume from (the ``next_page_start`` of a prior
                 call). 0 starts from the beginning.
             limit: Maximum number of repositories to return. Clamped to
@@ -77,10 +98,19 @@ class ReposMixin(BitbucketClient):
         if not key:
             raise ValueError("project_key must be a non-empty Bitbucket project key.")
         limit = max(1, min(limit, MAX_REPOS_LIMIT))
-        # project_key is caller-supplied and goes into the request path, so it is
-        # percent-encoded (no unescaped slashes) to prevent path traversal or
-        # query-string injection into the Bitbucket request.
-        path = f"/projects/{quote(key, safe='')}/repos"
+        params: dict[str, Any] | None
+        if name and name.strip():
+            # Cross-project search, always scoped to this project: project_key
+            # rides as a query param (requests URL-encodes it), never an
+            # unscoped all-repositories scan.
+            path = "/repos"
+            params = {"projectkey": key, "name": name.strip()}
+        else:
+            # project_key is caller-supplied and goes into the request path, so
+            # it is percent-encoded (no unescaped slashes) to prevent path
+            # traversal or query-string injection into the Bitbucket request.
+            path = f"/projects/{quote(key, safe='')}/repos"
+            params = None
         # Single window: one upstream request, cursor surfaced for resumption.
         page = self._paginate(
             path,
@@ -88,6 +118,7 @@ class ReposMixin(BitbucketClient):
             page_size=limit,
             max_pages=1,
             start=start,
+            params=params,
         )
         repositories = [
             BitbucketRepository.from_api_response(value) for value in page.values

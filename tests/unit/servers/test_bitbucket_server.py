@@ -68,7 +68,7 @@ class TestListProjectsTool:
         assert payload["is_last_page"] is True
         assert payload["truncated"] is False
         assert payload["next_page_start"] is None
-        fetcher.list_projects.assert_called_once_with(start=0, limit=10)
+        fetcher.list_projects.assert_called_once_with(name=None, start=0, limit=10)
 
     async def test_start_cursor_is_passed_and_surfaced(self):
         """The start cursor is forwarded and next_page_start is surfaced."""
@@ -87,7 +87,23 @@ class TestListProjectsTool:
 
         payload = json.loads(result)
         assert payload["next_page_start"] == 25
-        fetcher.list_projects.assert_called_once_with(start=10, limit=25)
+        fetcher.list_projects.assert_called_once_with(name=None, start=10, limit=25)
+
+    async def test_name_filter_threads_to_mixin(self):
+        """A supplied name is forwarded to the mixin call."""
+        fetcher = MagicMock()
+        fetcher.list_projects.return_value = BitbucketProjectsPage(
+            projects=[], is_last_page=True, truncated=False, next_page_start=None
+        )
+        ctx = MagicMock()
+
+        with patch(
+            "mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            AsyncMock(return_value=fetcher),
+        ):
+            await list_projects(ctx, name="Proj")
+
+        assert fetcher.list_projects.call_args[1]["name"] == "Proj"
 
     async def test_truncated_result_surfaces_flag(self):
         """When the client truncates, the tool reports truncated=true to the caller."""
@@ -244,7 +260,7 @@ class TestListRepositoriesTool:
         assert payload["truncated"] is False
         assert payload["next_page_start"] is None
         fetcher.list_repositories.assert_called_once_with(
-            project_key="PROJ", start=0, limit=10
+            project_key="PROJ", name=None, start=0, limit=10
         )
 
     async def test_start_cursor_is_passed_and_surfaced(self):
@@ -272,8 +288,24 @@ class TestListRepositoriesTool:
         payload = json.loads(result)
         assert payload["next_page_start"] == 25
         fetcher.list_repositories.assert_called_once_with(
-            project_key="PROJ", start=10, limit=25
+            project_key="PROJ", name=None, start=10, limit=25
         )
+
+    async def test_name_filter_threads_to_mixin(self):
+        """A supplied name is forwarded to the mixin call."""
+        fetcher = MagicMock()
+        fetcher.list_repositories.return_value = BitbucketRepositoriesPage(
+            repositories=[], is_last_page=True, truncated=False, next_page_start=None
+        )
+        ctx = MagicMock()
+
+        with patch(
+            "mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            AsyncMock(return_value=fetcher),
+        ):
+            await list_repositories(ctx, project_key="PROJ", name="api")
+
+        assert fetcher.list_repositories.call_args[1]["name"] == "api"
 
     async def test_truncated_result_surfaces_flag(self):
         """When the client truncates, the tool reports truncated=true."""
@@ -426,6 +458,8 @@ class TestListPullRequestsTool:
             direction=None,
             at=None,
             order=None,
+            filter_text=None,
+            draft=None,
             start=0,
             limit=25,
         )
@@ -454,6 +488,50 @@ class TestListPullRequestsTool:
         payload = json.loads(result)
         assert payload["next_page_start"] == 25
         assert fetcher.list_pull_requests.call_args[1]["start"] == 10
+
+    async def test_filter_text_and_draft_thread_to_mixin(self):
+        """Supplied filter_text and draft are forwarded to the mixin call."""
+        fetcher = MagicMock()
+        pr = BitbucketPullRequest.from_api_response(_PR_API)
+        fetcher.list_pull_requests.return_value = BitbucketPullRequestsPage(
+            pull_requests=[pr],
+            is_last_page=True,
+            truncated=False,
+            next_page_start=None,
+        )
+        ctx = MagicMock()
+
+        with _patched_fetcher(fetcher):
+            await list_pull_requests(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                filter_text="login",
+                draft=True,
+            )
+
+        call_kwargs = fetcher.list_pull_requests.call_args[1]
+        assert call_kwargs["filter_text"] == "login"
+        assert call_kwargs["draft"] is True
+
+    async def test_absent_filters_default_to_none(self):
+        """filter_text and draft default to None when not supplied."""
+        fetcher = MagicMock()
+        pr = BitbucketPullRequest.from_api_response(_PR_API)
+        fetcher.list_pull_requests.return_value = BitbucketPullRequestsPage(
+            pull_requests=[pr],
+            is_last_page=True,
+            truncated=False,
+            next_page_start=None,
+        )
+        ctx = MagicMock()
+
+        with _patched_fetcher(fetcher):
+            await list_pull_requests(ctx, project_key="P", repository_slug="r")
+
+        call_kwargs = fetcher.list_pull_requests.call_args[1]
+        assert call_kwargs["filter_text"] is None
+        assert call_kwargs["draft"] is None
 
     async def test_auth_error_message(self):
         fetcher = MagicMock()

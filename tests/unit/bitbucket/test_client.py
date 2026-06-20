@@ -320,6 +320,72 @@ class TestListProjectsFilter:
         assert [p.key for p in page.projects] == ["PROJ", "OTHER"]
 
 
+class TestListProjectsNameFilter:
+    """The server-side ``name`` query filter on list_projects."""
+
+    def test_name_lands_in_query_when_set(self):
+        """A non-blank name is sent as the upstream 'name' query param."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([{"key": "PROJ"}], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_projects(name="Proj")
+
+        assert mock_get.call_args[1]["params"]["name"] == "Proj"
+
+    @pytest.mark.parametrize("name", [None, "", "   "])
+    def test_name_absent_from_query_when_unset(self, name):
+        """A None/blank name does not add a 'name' query param."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([{"key": "PROJ"}], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_projects(name=name)
+
+        assert "name" not in mock_get.call_args[1]["params"]
+
+    def test_name_coexists_with_configured_projects_filter(self):
+        """The server-side name and the client-side key allowlist both apply.
+
+        The configured ``projects_filter`` keeps its capped walk and narrows the
+        result client-side, while ``name`` rides as a server-side query param on
+        every page request — the two filters are independent.
+        """
+        fetcher = BitbucketFetcher(config=_byo_config(projects_filter="PROJ"))
+        pages = [
+            _page_response([{"key": "OTHER"}], is_last_page=False, next_page_start=1),
+            _page_response([{"key": "PROJ"}], is_last_page=True),
+        ]
+        with patch.object(fetcher._session, "get", side_effect=pages) as mock_get:
+            page = fetcher.list_projects(name="Proj")
+
+        # Server-side name param rides on every page of the capped walk.
+        assert mock_get.call_count == 2
+        assert all(
+            call.kwargs["params"]["name"] == "Proj" for call in mock_get.call_args_list
+        )
+        # Client-side allowlist still narrows the returned models.
+        assert [p.key for p in page.projects] == ["PROJ"]
+
+    def test_name_filter_resumes_from_cursor(self):
+        """A capped walk with name + projects_filter honours a non-zero start."""
+        fetcher = BitbucketFetcher(config=_byo_config(projects_filter="PROJ"))
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([{"key": "PROJ"}], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_projects(name="Proj", start=500)
+
+        params = mock_get.call_args[1]["params"]
+        assert params["start"] == 500
+        assert params["name"] == "Proj"
+
+
 def _http_error_response(status: int) -> MagicMock:
     """Build a mock response whose raise_for_status raises an HTTPError."""
     response = MagicMock()

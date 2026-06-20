@@ -49,6 +49,18 @@ bitbucket_mcp = FastMCP(
 )
 async def list_projects(
     ctx: Context,
+    name: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional server-side filter on project name. The match semantics "
+                "(substring vs exact) depend on the instance, so if you get fewer "
+                "results than expected, check 'is_last_page' and page further "
+                "before concluding a project does not exist."
+            ),
+            default=None,
+        ),
+    ] = None,
     start: Annotated[
         int,
         Field(
@@ -80,6 +92,8 @@ async def list_projects(
 
     Args:
         ctx: The FastMCP context.
+        name: Optional server-side filter on project name; the match semantics
+            are decided by the instance.
         start: Pagination cursor (offset of the first project); 0 for the first
             window, else a prior response's ``next_page_start``.
         limit: Maximum number of projects to return in this window.
@@ -106,7 +120,7 @@ async def list_projects(
     # included defensively in case a raw transport error ever surfaces.
     try:
         bitbucket = await get_bitbucket_fetcher(ctx)
-        page = bitbucket.list_projects(start=start, limit=limit)
+        page = bitbucket.list_projects(name=name, start=start, limit=limit)
         response_data: dict[str, object] = {
             "success": True,
             "projects": [project.to_simplified_dict() for project in page.projects],
@@ -158,6 +172,20 @@ async def list_repositories(
             ),
         ),
     ],
+    name: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional repository-name filter, matched case-insensitively "
+                "(surrounding whitespace ignored). When set, results come from a "
+                "cross-project search scoped to this project — a slightly wider "
+                "visibility surface than the unfiltered project listing. Re-pass "
+                "'name' on every page; dropping it on a resume switches endpoints "
+                "and invalidates the prior 'next_page_start'."
+            ),
+            default=None,
+        ),
+    ] = None,
     start: Annotated[
         int,
         Field(
@@ -190,6 +218,10 @@ async def list_repositories(
     Args:
         ctx: The FastMCP context.
         project_key: The project key whose repositories to list.
+        name: Optional repository-name filter, matched case-insensitively
+            (surrounding whitespace ignored). When set, results come from a
+            cross-project search scoped to this project — a slightly wider
+            visibility surface than the unfiltered listing.
         start: Pagination cursor (offset of the first repository); 0 for the
             first window, else a prior response's ``next_page_start``.
         limit: Maximum number of repositories to return in this window.
@@ -211,7 +243,7 @@ async def list_repositories(
     try:
         bitbucket = await get_bitbucket_fetcher(ctx)
         page = bitbucket.list_repositories(
-            project_key=project_key, start=start, limit=limit
+            project_key=project_key, name=name, start=start, limit=limit
         )
         response_data: dict[str, object] = {
             "success": True,
@@ -310,6 +342,20 @@ async def list_pull_requests(
             default=None,
         ),
     ] = None,
+    filter_text: Annotated[
+        str | None,
+        Field(
+            description="Optional substring match on PR title or description.",
+            default=None,
+        ),
+    ] = None,
+    draft: Annotated[
+        bool | None,
+        Field(
+            description="Optional filter by draft status.",
+            default=None,
+        ),
+    ] = None,
     start: Annotated[
         int,
         Field(
@@ -346,6 +392,9 @@ async def list_pull_requests(
         direction: Optional direction relative to the repository.
         at: Optional fully-qualified branch ref filter.
         order: Optional ordering.
+        filter_text: Optional substring match on PR title or description.
+        draft: Optional filter by draft status. The accepted wire values are
+            confirmed at runtime.
         start: Pagination cursor (offset of the first pull request); 0 for the
             first window, else a prior response's ``next_page_start``.
         limit: Maximum number of pull requests to return in this window.
@@ -368,6 +417,8 @@ async def list_pull_requests(
             direction=direction,
             at=at,
             order=order,
+            filter_text=filter_text,
+            draft=draft,
             start=start,
             limit=limit,
         )

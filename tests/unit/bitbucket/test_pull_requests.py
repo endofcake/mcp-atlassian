@@ -171,6 +171,78 @@ class TestListPullRequests:
         assert "a%2Fb" in called_url
         assert "/repos/a/b/" not in called_url
 
+    def test_filter_text_lands_in_query_when_set(self):
+        """A filter_text is sent as the upstream 'filterText' query param."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_PR], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_pull_requests(
+                project_key="P", repository_slug="r", filter_text="login"
+            )
+
+        assert mock_get.call_args[1]["params"]["filterText"] == "login"
+
+    @pytest.mark.parametrize("draft, expected", [(True, "true"), (False, "false")])
+    def test_draft_sends_lowercase_string(self, draft, expected):
+        """A draft boolean is coerced to the lowercase string the endpoint types."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_PR], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_pull_requests(
+                project_key="P", repository_slug="r", draft=draft
+            )
+
+        assert mock_get.call_args[1]["params"]["draft"] == expected
+
+    def test_absent_filters_are_omitted_from_query(self):
+        """filterText and draft are absent when filter_text/draft are None."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_PR], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_pull_requests(project_key="P", repository_slug="r")
+
+        params = mock_get.call_args[1]["params"]
+        assert "filterText" not in params
+        assert "draft" not in params
+
+    @pytest.mark.parametrize("filter_text", ["", "   "])
+    def test_blank_filter_text_is_omitted(self, filter_text):
+        """A blank/whitespace filter_text is treated as no filter, not sent."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_PR], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_pull_requests(
+                project_key="P", repository_slug="r", filter_text=filter_text
+            )
+
+        assert "filterText" not in mock_get.call_args[1]["params"]
+
+    def test_filter_text_is_stripped_on_the_wire(self):
+        """Surrounding whitespace is trimmed from the sent filterText."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([_PR], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_pull_requests(
+                project_key="P", repository_slug="r", filter_text="  login  "
+            )
+
+        assert mock_get.call_args[1]["params"]["filterText"] == "login"
+
 
 class TestGetPullRequest:
     """get_pull_request: single fetch, id validation, shape, and 404."""
