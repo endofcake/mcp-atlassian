@@ -260,6 +260,22 @@ async def _run_stdio_with_stdin_guard(run_kwargs: dict[str, object]) -> None:
     help="Atlassian Cloud OAuth 2.0 access token (if you have your own you'd like to "
     "use for the session.)",
 )
+@click.option(
+    "--ssl-certfile",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Path to the TLS certificate (PEM) for the server's own HTTPS "
+    "listener (sse/streamable-http transports). This terminates TLS at the "
+    "MCP server itself; it is unrelated to the client-side *_CLIENT_CERT "
+    "mTLS options used when connecting to Atlassian.",
+)
+@click.option(
+    "--ssl-keyfile",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Path to the TLS private key (PEM) for the server's own HTTPS "
+    "listener. Must be provided together with --ssl-certfile.",
+)
 def main(
     verbose: int,
     env_file: str | None,
@@ -290,6 +306,8 @@ def main(
     oauth_scope: str | None,
     oauth_cloud_id: str | None,
     oauth_access_token: str | None,
+    ssl_certfile: str | None,
+    ssl_keyfile: str | None,
 ) -> None:
     """MCP Atlassian Server - Jira and Confluence functionality for MCP
 
@@ -398,6 +416,41 @@ def main(
         f"Final path for Streamable HTTP: {final_path if final_path else 'FastMCP default'}"
     )
 
+    # TLS precedence for the server's own HTTPS listener (sse/streamable-http).
+    # Env fallback first, then CLI override, mirroring host/port/path above.
+    final_ssl_certfile: str | None = os.getenv("MCP_SSL_CERTFILE", None)
+    if click_ctx and was_option_provided(click_ctx, "ssl_certfile"):
+        final_ssl_certfile = ssl_certfile
+    final_ssl_keyfile: str | None = os.getenv("MCP_SSL_KEYFILE", None)
+    if click_ctx and was_option_provided(click_ctx, "ssl_keyfile"):
+        final_ssl_keyfile = ssl_keyfile
+
+    # A half-configured listener fails obscurely deep in uvicorn startup, so
+    # require both or neither and fail fast with a clear message.
+    if bool(final_ssl_certfile) != bool(final_ssl_keyfile):
+        logger.error(
+            "--ssl-certfile and --ssl-keyfile (env MCP_SSL_CERTFILE / "
+            "MCP_SSL_KEYFILE) must be provided together."
+        )
+        sys.exit(1)
+    # The CLI options are guarded by click.Path(exists=True), but the env vars
+    # — the common in-cluster route, with the cert mounted from a Secret — are
+    # not. Validate here so a missing mount fails fast with a clear message
+    # instead of an opaque uvicorn error after the listener log line.
+    if final_ssl_certfile and not os.path.isfile(final_ssl_certfile):
+        logger.error(f"TLS certificate file not found: {final_ssl_certfile}")
+        sys.exit(1)
+    if final_ssl_keyfile and not os.path.isfile(final_ssl_keyfile):
+        logger.error(f"TLS private key file not found: {final_ssl_keyfile}")
+        sys.exit(1)
+    final_ssl_enabled = bool(final_ssl_certfile) and bool(final_ssl_keyfile)
+    if final_ssl_enabled and final_transport == "stdio":
+        logger.warning(
+            "TLS certificate configured but transport is 'stdio'; it has no "
+            "effect because stdio has no network listener."
+        )
+    logger.debug(f"Final TLS for HTTP listener: enabled={final_ssl_enabled}")
+
     # Set env vars for downstream config
     if click_ctx and was_option_provided(click_ctx, "enabled_tools"):
         os.environ["ENABLED_TOOLS"] = enabled_tools
@@ -467,8 +520,16 @@ def main(
 
         run_kwargs["stateless_http"] = final_stateless
 
+        if final_ssl_enabled:
+            run_kwargs["uvicorn_config"] = {
+                "ssl_certfile": final_ssl_certfile,
+                "ssl_keyfile": final_ssl_keyfile,
+            }
+
+        scheme = "https" if final_ssl_enabled else "http"
         logger.info(
-            f"Starting server with {final_transport.upper()} transport on http://{final_host}:{final_port}{log_display_path}"
+            f"Starting server with {final_transport.upper()} transport on "
+            f"{scheme}://{final_host}:{final_port}{log_display_path}"
         )
     else:
         logger.error(
