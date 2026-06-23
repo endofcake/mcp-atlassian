@@ -63,6 +63,29 @@ See the `values.yaml` file for all configuration options.
 - **persistence.enabled**: Enable OAuth token persistence
 - **oauthProxy.enabled**: Expose MCP OAuth discovery + DCR routes (opt-in)
 - **oauthClientStorage.mode**: `default` (FastMCP storage) or `factory` (custom)
+- **tls.enabled**: Serve the HTTP transports over HTTPS from an existing cert Secret
+
+### Server TLS (HTTPS listener)
+
+Serve the `sse`/`streamable-http` transports over HTTPS by terminating TLS at the
+MCP server itself (for end-to-end encryption to the pod). The chart does **not**
+create or manage certificates — supply an existing Secret (for example one issued
+by cert-manager) holding the cert and key:
+
+```yaml
+tls:
+  enabled: true
+  secretName: mcp-atlassian-tls   # existing Secret with tls.crt / tls.key
+  # certFileKey: tls.crt          # key within the Secret holding the cert
+  # keyFileKey: tls.key           # key within the Secret holding the private key
+  # mountPath: /etc/mcp-atlassian/tls
+  # defaultMode: 288              # 0440 octal in decimal — owner+group read only
+```
+
+The Secret is mounted read-only and passed to the server via `--ssl-certfile` /
+`--ssl-keyfile`. When enabled, the readiness probe automatically switches to
+`scheme: HTTPS`; set `readinessProbe.httpGet.scheme` explicitly to override. The
+render fails fast if `secretName` is empty or the transport is `stdio`.
 
 ### OAuth Proxy + DCR (opt-in)
 

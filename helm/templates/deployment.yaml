@@ -6,6 +6,17 @@
 {{- fail (printf "bitbucket.authMode must be one of \"oauth\" or \"byot\" when bitbucket.enabled is true, got %q. An unrecognised value silently disables Bitbucket." .Values.bitbucket.authMode) }}
 {{- end }}
 {{- end }}
+{{- if .Values.tls.enabled }}
+{{- if not .Values.tls.secretName }}
+{{- fail "tls.secretName is required when tls.enabled is true; the chart mounts an existing Secret (e.g. from cert-manager) and does not create one." }}
+{{- end }}
+{{- if eq .Values.transport "stdio" }}
+{{- fail "tls.enabled requires an HTTP transport (sse or streamable-http); stdio has no network listener for TLS to terminate on." }}
+{{- end }}
+{{- if or (not .Values.tls.certFileKey) (not .Values.tls.keyFileKey) }}
+{{- fail "tls.certFileKey and tls.keyFileKey must be non-empty when tls.enabled is true; an empty key composes a directory path and the server crashloops at startup." }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -58,6 +69,12 @@ spec:
         - {{ .Values.transport }}
         - --port
         - "{{ .Values.port }}"
+        {{- if .Values.tls.enabled }}
+        - --ssl-certfile
+        - {{ printf "%s/%s" .Values.tls.mountPath .Values.tls.certFileKey | quote }}
+        - --ssl-keyfile
+        - {{ printf "%s/%s" .Values.tls.mountPath .Values.tls.keyFileKey | quote }}
+        {{- end }}
         {{- end }}
         {{- if .Values.config.verbose }}
         - -v
@@ -349,7 +366,15 @@ spec:
 
         {{- if ne .Values.transport "stdio" }}
         readinessProbe:
+          {{- if and .Values.tls.enabled .Values.readinessProbe.httpGet }}
+          {{- /* The pod serves HTTPS, so the probe must too. Default the
+                 scheme to HTTPS but let an explicit value win. */}}
+          {{- $probe := deepCopy .Values.readinessProbe }}
+          {{- $_ := set $probe.httpGet "scheme" (default "HTTPS" $probe.httpGet.scheme) }}
+          {{- toYaml $probe | nindent 12 }}
+          {{- else }}
           {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- end }}
         {{- end }}
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
@@ -357,6 +382,11 @@ spec:
         {{- if and (eq .Values.authMode "oauth") .Values.persistence.enabled }}
         - name: oauth-tokens
           mountPath: /home/app/.mcp-atlassian
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: tls-certs
+          mountPath: {{ .Values.tls.mountPath | quote }}
+          readOnly: true
         {{- end }}
         {{- with .Values.volumeMounts }}
         {{- toYaml . | nindent 8 }}
@@ -366,6 +396,12 @@ spec:
       - name: oauth-tokens
         persistentVolumeClaim:
           claimName: {{ if .Values.persistence.existingClaim }}{{ .Values.persistence.existingClaim }}{{- else }}{{ include "mcp-atlassian.fullname" . }}{{- end }}
+      {{- end }}
+      {{- if .Values.tls.enabled }}
+      - name: tls-certs
+        secret:
+          secretName: {{ .Values.tls.secretName | quote }}
+          defaultMode: {{ .Values.tls.defaultMode }}
       {{- end }}
       {{- with .Values.volumes }}
       {{- toYaml . | nindent 6 }}

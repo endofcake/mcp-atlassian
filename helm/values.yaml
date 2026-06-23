@@ -50,6 +50,28 @@ service:
   targetPort: 9000
   annotations: {}
 
+# Server TLS (HTTPS listener)
+# Serve the HTTP transports (sse/streamable-http) over HTTPS by terminating TLS
+# at the MCP server itself — useful for end-to-end encryption to the pod. The
+# chart does NOT create or manage certificates: provide an existing Secret (for
+# example one issued by cert-manager) holding the cert and key, and it is mounted
+# read-only into the container and passed to the server via --ssl-certfile /
+# --ssl-keyfile. Ignored under the 'stdio' transport (no network listener).
+tls:
+  enabled: false
+  # Name of an existing Secret (PEM cert + key). Required when tls.enabled.
+  secretName: ""
+  # Keys within that Secret. Defaults match a kubernetes.io/tls Secret.
+  certFileKey: tls.crt
+  keyFileKey: tls.key
+  # Mount point for the Secret inside the container.
+  mountPath: /etc/mcp-atlassian/tls
+  # File mode for the mounted cert/key, as a DECIMAL integer. 288 == octal 0440
+  # (owner+group read, no world read) so the private key is not world-readable;
+  # the app still reads it via the pod's fsGroup. Expressed in decimal to avoid
+  # YAML octal-parsing ambiguity — set 384 for 0600, 256 for 0400.
+  defaultMode: 288
+
 ingress:
   enabled: false
   className: ""
