@@ -569,6 +569,146 @@ class PullRequestsMixin(BitbucketClient):
             )
         return BitbucketComment.from_api_response(data)
 
+    def update_comment(
+        self,
+        project_key: str,
+        repository_slug: str,
+        pull_request_id: int | str,
+        comment_id: int | str,
+        *,
+        version: int,
+        text: str | None = None,
+        thread_resolved: bool | None = None,
+    ) -> BitbucketComment:
+        """Edit a pull-request comment's text and/or resolve its thread.
+
+        Calls ``PUT .../pull-requests/{pullRequestId}/comments/{commentId}`` with
+        the optimistic-lock ``version`` and the changed field(s) in the JSON body.
+        Bitbucket DC has no separate resolve endpoint: resolving a thread is
+        ``PUT {version, threadResolved: true}`` (``false`` reopens it), editing
+        text is ``PUT {version, text}``; both may be sent in one call. A
+        successful ``PUT`` returns the updated ``RestComment`` with a bumped
+        ``version``. Only the comment author may edit its *text* (a 401);
+        anyone with access may toggle the thread state.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+            comment_id: The comment id to update.
+            version: The comment's current ``version`` (from ``add_comment`` or
+                ``get_pull_request_comments``); a stale value yields a 409.
+            text: When set, the new comment text.
+            thread_resolved: When set, resolve (``True``) or reopen (``False``)
+                the comment's thread.
+
+        Returns:
+            The updated :class:`~mcp_atlassian.models.bitbucket.BitbucketComment`
+            (carrying the bumped ``version`` and the new ``thread_resolved``).
+
+        Raises:
+            ValueError: If a segment is blank, the id is not a positive integer,
+                ``version`` is not an int, neither ``text`` nor
+                ``thread_resolved`` is provided, the response is misshaped, or
+                the request fails (a 409 stale-version surfaces the instance's
+                own message).
+            BitbucketResourceNotFoundError: If the pull request or comment does
+                not exist or is not accessible.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        comment_path = self._comment_path(base, pr_id, comment_id)
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise ValueError("version must be an integer (the comment's version).")
+        if text is None and thread_resolved is None:
+            raise ValueError(
+                "at least one of text or thread_resolved must be provided."
+            )
+        if text is not None and not text.strip():
+            raise ValueError("text must be a non-blank comment string.")
+
+        body: dict[str, Any] = {"version": version}
+        if text is not None:
+            body["text"] = text
+        if thread_resolved is not None:
+            body["threadResolved"] = thread_resolved
+        data = self._put(comment_path, json_body=body)
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Bitbucket returned an unexpected response shape for "
+                f"{comment_path}; expected a comment object."
+            )
+        return BitbucketComment.from_api_response(data)
+
+    def delete_comment(
+        self,
+        project_key: str,
+        repository_slug: str,
+        pull_request_id: int | str,
+        comment_id: int | str,
+        *,
+        version: int,
+    ) -> None:
+        """Delete a pull-request comment.
+
+        Calls ``DELETE .../pull-requests/{pullRequestId}/comments/{commentId}``
+        with the optimistic-lock ``version`` as a query parameter; a successful
+        delete returns ``204`` with no body. Delete does **not** cascade: a 409
+        may mean the ``version`` is stale, the comment has replies, or the
+        repository is archived — the instance's own message disambiguates.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+            comment_id: The comment id to delete.
+            version: The comment's current ``version`` (from ``add_comment`` or
+                ``get_pull_request_comments``).
+
+        Returns:
+            None — a successful delete has no body.
+
+        Raises:
+            ValueError: If a segment is blank, the id is not a positive integer,
+                ``version`` is not an int, or the request fails (a 409 surfaces
+                the instance's own message — stale version or has-replies).
+            BitbucketResourceNotFoundError: If the pull request or comment does
+                not exist or is not accessible.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        comment_path = self._comment_path(base, pr_id, comment_id)
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise ValueError("version must be an integer (the comment's version).")
+        self._delete(comment_path, params={"version": version})
+
+    @staticmethod
+    def _comment_path(base: str, pr_id: int, comment_id: int | str) -> str:
+        """Build the comment-scoped REST path for a positive-integer comment id.
+
+        Args:
+            base: The PR collection path from :meth:`_pr_base_path`.
+            pr_id: The validated positive-integer pull-request id.
+            comment_id: The caller-supplied comment id (coerced to a positive
+                integer; a numeric string like ``"5"`` is accepted).
+
+        Returns:
+            ``{base}/{pr_id}/comments/{commentId}``. The id is validated as a
+            positive integer (an integer cannot carry traversal or injection).
+
+        Raises:
+            ValueError: If ``comment_id`` is not a positive integer.
+        """
+        try:
+            cid = int(comment_id)
+        except (TypeError, ValueError):
+            raise ValueError("comment_id must be a positive integer.") from None
+        if cid <= 0:
+            raise ValueError("comment_id must be a positive integer.")
+        return f"{base}/{pr_id}/comments/{cid}"
+
     def set_review_status(
         self,
         project_key: str,

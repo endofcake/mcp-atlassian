@@ -1981,3 +1981,312 @@ async def set_review_status(
             "error": "An unexpected error occurred while setting the review status.",
         }
     return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Edit Bitbucket Pull Request Comment",
+        "readOnlyHint": False,
+    },
+)
+@check_write_access
+async def edit_comment(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    comment_id: Annotated[
+        int,
+        Field(description="The id of the comment to edit.", ge=1),
+    ],
+    text: Annotated[
+        str,
+        Field(description="The new comment text (Markdown). Must be non-blank."),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The comment's current version, from add_comment or "
+                "get_pull_request_comments. A 409 means the comment changed "
+                "since you read it — re-fetch its version and retry."
+            ),
+            ge=0,
+        ),
+    ],
+) -> str:
+    """Edit the text of a Bitbucket Data Center pull-request comment.
+
+    Replaces the comment text via an optimistic-locked update: 'version' must be
+    the comment's current version (from add_comment or
+    get_pull_request_comments). A 409 means the comment changed since you read
+    it — re-fetch the version and retry. Only the comment **author** may edit
+    its text: a non-author attempt returns 401 regardless of permission level.
+    Blocked when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        comment_id: The id of the comment to edit.
+        text: The new comment text (Markdown); must be non-blank.
+        version: The comment's current version (optimistic-lock token).
+
+    Returns:
+        JSON string with the updated comment (its bumped 'version' and text), or
+        a sanitised error object on failure.
+
+    Raises:
+        ValueError: If in read-only mode (surfaced as a ToolError).
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        comment = bitbucket.update_comment(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            pull_request_id=pull_request_id,
+            comment_id=comment_id,
+            version=version,
+            text=text,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "comment": comment.to_simplified_dict(),
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"edit_comment failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        logger.error(f"edit_comment failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"edit_comment failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in edit_comment:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while editing the comment.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Resolve Bitbucket Pull Request Comment Thread",
+        "readOnlyHint": False,
+    },
+)
+@check_write_access
+async def resolve_comment(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    comment_id: Annotated[
+        int,
+        Field(description="The id of the comment whose thread to resolve.", ge=1),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The comment's current version, from add_comment or "
+                "get_pull_request_comments. A 409 means the comment changed "
+                "since you read it — re-fetch its version and retry."
+            ),
+            ge=0,
+        ),
+    ],
+    resolved: Annotated[
+        bool,
+        Field(
+            description=(
+                "True (default) marks the comment thread resolved; False reopens it."
+            ),
+            default=True,
+        ),
+    ] = True,
+) -> str:
+    """Resolve or reopen a Bitbucket Data Center pull-request comment thread.
+
+    Toggles the comment's thread-resolved state via an optimistic-locked update:
+    'version' must be the comment's current version (from add_comment or
+    get_pull_request_comments). A 409 means the comment changed since you read
+    it — re-fetch the version and retry. This is thread resolution (the common
+    review action), not task resolution. Blocked when the server runs with
+    READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        comment_id: The id of the comment whose thread to resolve.
+        version: The comment's current version (optimistic-lock token).
+        resolved: True (default) resolves the thread; False reopens it.
+
+    Returns:
+        JSON string with the updated comment (its bumped 'version' and
+        'thread_resolved' state), or a sanitised error object on failure.
+
+    Raises:
+        ValueError: If in read-only mode (surfaced as a ToolError).
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        comment = bitbucket.update_comment(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            pull_request_id=pull_request_id,
+            comment_id=comment_id,
+            version=version,
+            thread_resolved=resolved,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "comment": comment.to_simplified_dict(),
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"resolve_comment failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        logger.error(f"resolve_comment failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"resolve_comment failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in resolve_comment:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while resolving the comment.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Delete Bitbucket Pull Request Comment",
+        "readOnlyHint": False,
+    },
+)
+@check_write_access
+async def delete_comment(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    comment_id: Annotated[
+        int,
+        Field(description="The id of the comment to delete.", ge=1),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The comment's current version, from add_comment or "
+                "get_pull_request_comments. A 409 may mean the version is stale "
+                "OR the comment has replies (delete does not cascade)."
+            ),
+            ge=0,
+        ),
+    ],
+) -> str:
+    """Delete a Bitbucket Data Center pull-request comment.
+
+    Deletes the comment via an optimistic-locked delete: 'version' must be the
+    comment's current version (from add_comment or get_pull_request_comments).
+    Delete does **not** cascade — a 409 may mean the version is stale, the
+    comment has replies, or the repository is archived. Deleting another user's
+    comment may require elevated (repo-admin) permission and otherwise returns
+    401/409. Blocked when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        comment_id: The id of the comment to delete.
+        version: The comment's current version (optimistic-lock token).
+
+    Returns:
+        JSON string confirming the delete (the deleted 'comment_id'), or a
+        sanitised error object on failure.
+
+    Raises:
+        ValueError: If in read-only mode (surfaced as a ToolError).
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        bitbucket.delete_comment(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            pull_request_id=pull_request_id,
+            comment_id=comment_id,
+            version=version,
+        )
+        # A 204 has no body to echo, so confirm with the deleted id.
+        response_data: dict[str, object] = {
+            "success": True,
+            "comment_id": comment_id,
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"delete_comment failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        logger.error(f"delete_comment failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"delete_comment failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in delete_comment:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while deleting the comment.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)

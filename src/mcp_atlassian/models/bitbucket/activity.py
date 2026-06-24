@@ -28,6 +28,7 @@ class BitbucketComment(ApiModel):
     created_date: int | None = None
     state: str | None = None
     severity: str | None = None
+    thread_resolved: bool | None = None
     reply_count: int = 0
 
     @classmethod
@@ -56,6 +57,7 @@ class BitbucketComment(ApiModel):
         )
         replies = data.get("comments")
         reply_count = len(replies) if isinstance(replies, list) else 0
+        thread_resolved = data.get("threadResolved")
         return cls(
             id=int(comment_id) if isinstance(comment_id, int) else 0,
             version=version if isinstance(version, int) else None,
@@ -64,6 +66,9 @@ class BitbucketComment(ApiModel):
             created_date=data.get("createdDate"),
             state=data.get("state"),
             severity=data.get("severity"),
+            thread_resolved=(
+                thread_resolved if isinstance(thread_resolved, bool) else None
+            ),
             reply_count=reply_count,
         )
 
@@ -82,6 +87,10 @@ class BitbucketComment(ApiModel):
             result["state"] = self.state
         if self.severity:
             result["severity"] = self.severity
+        # thread_resolved can legitimately be False (an open thread), so test
+        # for presence, not truthiness, to confirm a resolve/unresolve result.
+        if self.thread_resolved is not None:
+            result["thread_resolved"] = self.thread_resolved
         if self.reply_count:
             result["reply_count"] = self.reply_count
         return result

@@ -702,6 +702,97 @@ class TestRequestWriteTaxonomy:
         assert mock_put.call_args[1]["json"] == {"status": "APPROVED"}
 
 
+def _no_content_response() -> MagicMock:
+    """A 204 success: empty body, .json() would raise if ever called."""
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.content = b""
+    response.json.side_effect = json.JSONDecodeError("no body", "", 0)
+    return response
+
+
+class TestDeleteVerb:
+    """_delete: query params, the 204/empty-body path, and the shared taxonomy.
+
+    The error taxonomy is proven once via _get/_post above; these pin that
+    _delete routes through the same _request ladder (so 401/404/409 map
+    identically) and that an empty 204 success returns cleanly rather than
+    raising the non-JSON-body path.
+    """
+
+    def test_sends_delete_with_query_params(self):
+        """_delete issues a DELETE with the params to the API-root-joined URL."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "delete", return_value=_no_content_response()
+        ) as mock_delete:
+            result = fetcher._delete(
+                "/projects/PROJ/repos/r/pull-requests/1/comments/9",
+                params={"version": 2},
+            )
+
+        assert result is None
+        called_url = mock_delete.call_args[0][0]
+        assert called_url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/r/pull-requests/1/comments/9"
+        )
+        assert mock_delete.call_args[1]["params"] == {"version": 2}
+
+    def test_empty_204_body_returns_none_without_json_error(self):
+        """A 204 with no body returns None — never the non-JSON-body ValueError."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "delete", return_value=_no_content_response()
+        ):
+            # Would raise "non-JSON response" if the empty body were parsed.
+            assert fetcher._delete("/x", params={"version": 0}) is None
+
+    def test_whitespace_only_body_is_tolerated_as_empty(self):
+        """A 2xx whose body is only whitespace is treated as no-content."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        resp = MagicMock()
+        resp.raise_for_status.return_value = None
+        resp.content = b"  \n"
+        resp.json.side_effect = json.JSONDecodeError("ws", "  \n", 0)
+        with patch.object(fetcher._session, "delete", return_value=resp):
+            assert fetcher._delete("/x", params={"version": 1}) is None
+
+    def test_409_has_replies_surfaces_envelope_message(self):
+        """A 409 (stale version or has-replies) surfaces the instance's message."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [{"message": "The comment has replies and cannot be deleted."}]
+        }
+        with patch.object(
+            fetcher._session, "delete", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError) as excinfo:
+                fetcher._delete("/x", params={"version": 1})
+
+        message = str(excinfo.value)
+        assert "HTTP 409" in message
+        assert "has replies" in message
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_auth_status_raises_authentication_error(self, status):
+        """401/403 surface as the shared auth error for DELETE too."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "delete", return_value=_http_error_response(status)
+        ):
+            with pytest.raises(MCPAtlassianAuthenticationError, match=str(status)):
+                fetcher._delete("/x", params={"version": 1})
+
+    def test_404_raises_resource_not_found(self):
+        """404 surfaces as the typed not-found error for DELETE too."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "delete", return_value=_http_error_response(404)
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError):
+                fetcher._delete("/x", params={"version": 1})
+
+
 def _response_with_header(body, username):
     """A successful response carrying an X-AUSERNAME header and JSON body."""
     response = MagicMock()

@@ -1,5 +1,6 @@
 """Unit tests for PullRequestsMixin (mocked against pinned-spec shapes)."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -794,3 +795,215 @@ class TestSetReviewStatus:
             ):
                 with pytest.raises(ValueError, match="unexpected response shape"):
                     fetcher.set_review_status("P", "r", 5, "APPROVED")
+
+
+def _no_content_response() -> MagicMock:
+    """A 204 success: empty body, .json() would raise if ever parsed."""
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    response.content = b""
+    response.json.side_effect = json.JSONDecodeError("no body", "", 0)
+    return response
+
+
+class TestUpdateComment:
+    """update_comment: validation, the minimal PUT body, and the parsed return."""
+
+    @staticmethod
+    def _put_ok(body=None):
+        """A successful PUT response carrying the updated comment."""
+        return _json_response(body or {"id": 9, "version": 4, "text": "edited"})
+
+    def test_edit_text_sends_version_and_text(self):
+        """Editing text sends {version, text} to the comment path."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=self._put_ok()
+        ) as mock_put:
+            fetcher.update_comment("PROJ", "my-repo", 5, 9, version=3, text="edited")
+
+        url = mock_put.call_args[0][0]
+        assert url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/5/comments/9"
+        )
+        assert mock_put.call_args[1]["json"] == {"version": 3, "text": "edited"}
+
+    def test_resolve_sends_version_and_thread_resolved(self):
+        """Resolving sends {version, threadResolved: True}."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=self._put_ok()
+        ) as mock_put:
+            fetcher.update_comment("P", "r", 5, 9, version=3, thread_resolved=True)
+
+        assert mock_put.call_args[1]["json"] == {
+            "version": 3,
+            "threadResolved": True,
+        }
+
+    def test_unresolve_sends_thread_resolved_false(self):
+        """Reopening sends threadResolved: False (not dropped as falsy)."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=self._put_ok()
+        ) as mock_put:
+            fetcher.update_comment("P", "r", 5, 9, version=3, thread_resolved=False)
+
+        assert mock_put.call_args[1]["json"] == {
+            "version": 3,
+            "threadResolved": False,
+        }
+
+    def test_text_and_resolve_in_one_call(self):
+        """Both fields may be sent together in a single PUT."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=self._put_ok()
+        ) as mock_put:
+            fetcher.update_comment(
+                "P", "r", 5, 9, version=3, text="edited", thread_resolved=True
+            )
+
+        assert mock_put.call_args[1]["json"] == {
+            "version": 3,
+            "text": "edited",
+            "threadResolved": True,
+        }
+
+    def test_returns_updated_comment_with_bumped_version(self):
+        """The 200 body is parsed: bumped version and thread_resolved surface."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"id": 9, "version": 4, "text": "edited", "threadResolved": True}
+        with patch.object(fetcher._session, "put", return_value=self._put_ok(body)):
+            comment = fetcher.update_comment("P", "r", 5, 9, version=3, text="edited")
+
+        assert comment.id == 9
+        assert comment.version == 4
+        assert comment.thread_resolved is True
+
+    def test_no_field_provided_rejected_before_put(self):
+        """Neither text nor thread_resolved → ValueError, no request issued."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match="at least one of"):
+                fetcher.update_comment("P", "r", 5, 9, version=3)
+        mock_put.assert_not_called()
+
+    @pytest.mark.parametrize("bad_version", ["3", 3.0, None, True])
+    def test_non_int_version_rejected_before_put(self, bad_version):
+        """A non-int version (incl. bool) is rejected before any request."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match="version must be an integer"):
+                fetcher.update_comment("P", "r", 5, 9, version=bad_version, text="x")
+        mock_put.assert_not_called()
+
+    def test_blank_text_rejected_before_put(self):
+        """A whitespace-only text is rejected before any request."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match="non-blank"):
+                fetcher.update_comment("P", "r", 5, 9, version=3, text="   ")
+        mock_put.assert_not_called()
+
+    def test_non_numeric_comment_id_rejected_before_put(self):
+        """A non-numeric comment id (e.g. a traversal attempt) raises, no request."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match="comment_id must be a positive"):
+                fetcher.update_comment("P", "r", 5, "9/../x", version=3, text="e")
+        mock_put.assert_not_called()
+
+    @pytest.mark.parametrize("bad_id", [0, -1, "0", "-1"])
+    def test_non_positive_comment_id_rejected_before_put(self, bad_id):
+        """A non-positive comment id is rejected before any request is issued."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match="comment_id must be a positive"):
+                fetcher.update_comment("P", "r", 5, bad_id, version=3, text="e")
+        mock_put.assert_not_called()
+
+    def test_stale_version_409_surfaces_server_message(self):
+        """A 409 stale-version surfaces the instance's own errors[].message."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "The comment version is out of date."}]}
+        with patch.object(
+            fetcher._session, "put", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="out of date"):
+                fetcher.update_comment("P", "r", 5, 9, version=1, text="e")
+
+    def test_non_dict_response_raises(self):
+        """A non-object body is an error, not a silent empty comment."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=_json_response(["nope"])
+        ):
+            with pytest.raises(ValueError, match="unexpected response shape"):
+                fetcher.update_comment("P", "r", 5, 9, version=3, text="e")
+
+
+class TestDeleteComment:
+    """delete_comment: the version query param, the 204 path, error surfacing."""
+
+    def test_sends_version_as_query_param(self):
+        """The version is sent as a query param to the comment path; returns None."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "delete", return_value=_no_content_response()
+        ) as mock_delete:
+            result = fetcher.delete_comment("PROJ", "my-repo", 5, 9, version=3)
+
+        assert result is None
+        url = mock_delete.call_args[0][0]
+        assert url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/5/comments/9"
+        )
+        assert mock_delete.call_args[1]["params"] == {"version": 3}
+
+    @pytest.mark.parametrize("bad_version", ["3", 3.0, None, True])
+    def test_non_int_version_rejected_before_delete(self, bad_version):
+        """A non-int version (incl. bool) is rejected before any request."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "delete") as mock_delete:
+            with pytest.raises(ValueError, match="version must be an integer"):
+                fetcher.delete_comment("P", "r", 5, 9, version=bad_version)
+        mock_delete.assert_not_called()
+
+    def test_non_numeric_comment_id_rejected_before_delete(self):
+        """A non-numeric comment id (e.g. a traversal attempt) raises, no request."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "delete") as mock_delete:
+            with pytest.raises(ValueError, match="comment_id must be a positive"):
+                fetcher.delete_comment("P", "r", 5, "9/../x", version=3)
+        mock_delete.assert_not_called()
+
+    @pytest.mark.parametrize("bad_id", [0, -1, "0", "-1"])
+    def test_non_positive_comment_id_rejected_before_delete(self, bad_id):
+        """A non-positive comment id is rejected before any request is issued."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "delete") as mock_delete:
+            with pytest.raises(ValueError, match="comment_id must be a positive"):
+                fetcher.delete_comment("P", "r", 5, bad_id, version=3)
+        mock_delete.assert_not_called()
+
+    def test_has_replies_409_surfaces_server_message(self):
+        """A 409 (has-replies/stale) surfaces the instance's own message."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [{"message": "The comment has replies and cannot be deleted."}]
+        }
+        with patch.object(
+            fetcher._session, "delete", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="has replies"):
+                fetcher.delete_comment("P", "r", 5, 9, version=1)
+
+    def test_404_raises_resource_not_found(self):
+        """A 404 surfaces as the typed not-found error."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "delete", return_value=_http_error_response(404)
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError):
+                fetcher.delete_comment("P", "r", 999, 9, version=1)

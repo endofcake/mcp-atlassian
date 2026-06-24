@@ -36,6 +36,8 @@ from mcp_atlassian.models.bitbucket import (
 )
 from mcp_atlassian.servers.bitbucket import (
     add_comment,
+    delete_comment,
+    edit_comment,
     get_commit,
     get_default_branch,
     get_pull_request,
@@ -50,6 +52,7 @@ from mcp_atlassian.servers.bitbucket import (
     list_pull_requests,
     list_repositories,
     list_tags,
+    resolve_comment,
     set_review_status,
 )
 
@@ -1382,6 +1385,383 @@ class TestSetReviewStatusTool:
             )
         payload = json.loads(result)
         assert payload["error"].startswith("Authentication/Permission Error:")
+
+
+class TestEditCommentTool:
+    """The edit_comment write tool: success, the read-only gate, error mapping."""
+
+    async def test_success_returns_updated_comment(self):
+        fetcher = MagicMock()
+        fetcher.update_comment.return_value = BitbucketComment.from_api_response(
+            {"id": 9, "version": 4, "text": "edited"}
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await edit_comment(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                pull_request_id=5,
+                comment_id=9,
+                text="edited",
+                version=3,
+            )
+
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["comment"]["id"] == 9
+        assert payload["comment"]["version"] == 4
+        fetcher.update_comment.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            comment_id=9,
+            version=3,
+            text="edited",
+        )
+
+    async def test_read_only_mode_blocks_and_makes_no_call(self):
+        """READ_ONLY_MODE raises a ToolError before any fetcher/HTTP call."""
+        fetcher = MagicMock()
+        with _patched_fetcher(fetcher):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await edit_comment(
+                    _read_only_ctx(),
+                    project_key="P",
+                    repository_slug="r",
+                    pull_request_id=5,
+                    comment_id=9,
+                    text="x",
+                    version=3,
+                )
+        fetcher.update_comment.assert_not_called()
+
+    async def test_stale_version_is_network_error(self):
+        """A 409 stale-version ValueError surfaces as the sanitised error."""
+        fetcher = MagicMock()
+        fetcher.update_comment.side_effect = ValueError(
+            "Bitbucket API request to ... failed with HTTP 409: "
+            "The comment version is out of date."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await edit_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=9,
+                text="x",
+                version=1,
+            )
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.update_comment.side_effect = BitbucketResourceNotFoundError("nope")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await edit_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=999,
+                text="x",
+                version=3,
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_auth_error_message(self):
+        """Author-only-text-edit rejection surfaces as the auth/permission error."""
+        fetcher = MagicMock()
+        fetcher.update_comment.side_effect = MCPAtlassianAuthenticationError("rejected")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await edit_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=9,
+                text="x",
+                version=3,
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")
+
+    async def test_unexpected_error_is_sanitised(self, caplog):
+        """An unexpected error is logged but never leaked to the client."""
+        fetcher = MagicMock()
+        fetcher.update_comment.side_effect = RuntimeError("pool=secret host=internal")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await edit_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=9,
+                text="x",
+                version=3,
+            )
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "secret" not in payload["error"]
+        assert payload["error"] == (
+            "An unexpected error occurred while editing the comment."
+        )
+
+
+class TestResolveCommentTool:
+    """The resolve_comment write tool: resolve/reopen, the gate, error mapping."""
+
+    async def test_resolve_threads_resolved_true(self):
+        fetcher = MagicMock()
+        fetcher.update_comment.return_value = BitbucketComment.from_api_response(
+            {"id": 9, "version": 4, "threadResolved": True}
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await resolve_comment(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                pull_request_id=5,
+                comment_id=9,
+                version=3,
+            )
+
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["comment"]["thread_resolved"] is True
+        fetcher.update_comment.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            comment_id=9,
+            version=3,
+            thread_resolved=True,
+        )
+
+    async def test_unresolve_passes_thread_resolved_false(self):
+        """resolved=False reopens the thread (threadResolved=False)."""
+        fetcher = MagicMock()
+        fetcher.update_comment.return_value = BitbucketComment.from_api_response(
+            {"id": 9, "version": 5, "threadResolved": False}
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await resolve_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=9,
+                version=4,
+                resolved=False,
+            )
+
+        payload = json.loads(result)
+        assert payload["comment"]["thread_resolved"] is False
+        fetcher.update_comment.assert_called_once_with(
+            project_key="P",
+            repository_slug="r",
+            pull_request_id=5,
+            comment_id=9,
+            version=4,
+            thread_resolved=False,
+        )
+
+    async def test_read_only_mode_blocks_and_makes_no_call(self):
+        fetcher = MagicMock()
+        with _patched_fetcher(fetcher):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await resolve_comment(
+                    _read_only_ctx(),
+                    project_key="P",
+                    repository_slug="r",
+                    pull_request_id=5,
+                    comment_id=9,
+                    version=3,
+                )
+        fetcher.update_comment.assert_not_called()
+
+    async def test_stale_version_is_network_error(self):
+        fetcher = MagicMock()
+        fetcher.update_comment.side_effect = ValueError(
+            "failed with HTTP 409: out of date"
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await resolve_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=9,
+                version=1,
+            )
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_auth_error_message(self):
+        fetcher = MagicMock()
+        fetcher.update_comment.side_effect = MCPAtlassianAuthenticationError("rejected")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await resolve_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=9,
+                version=3,
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.update_comment.side_effect = BitbucketResourceNotFoundError("nope")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await resolve_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=999,
+                version=3,
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        """An unexpected error is sanitised — internals never reach the client."""
+        fetcher = MagicMock()
+        fetcher.update_comment.side_effect = RuntimeError("pool=secret host=internal")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await resolve_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=9,
+                version=3,
+            )
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "secret" not in payload["error"]
+        assert payload["error"] == (
+            "An unexpected error occurred while resolving the comment."
+        )
+
+
+class TestDeleteCommentTool:
+    """The delete_comment write tool: success envelope, the gate, error mapping."""
+
+    async def test_success_echoes_comment_id(self):
+        """A successful delete (204, no body) confirms with the comment id."""
+        fetcher = MagicMock()
+        fetcher.delete_comment.return_value = None
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await delete_comment(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                pull_request_id=5,
+                comment_id=9,
+                version=3,
+            )
+
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["comment_id"] == 9
+        fetcher.delete_comment.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            comment_id=9,
+            version=3,
+        )
+
+    async def test_read_only_mode_blocks_and_makes_no_call(self):
+        fetcher = MagicMock()
+        with _patched_fetcher(fetcher):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await delete_comment(
+                    _read_only_ctx(),
+                    project_key="P",
+                    repository_slug="r",
+                    pull_request_id=5,
+                    comment_id=9,
+                    version=3,
+                )
+        fetcher.delete_comment.assert_not_called()
+
+    async def test_has_replies_409_is_network_error(self):
+        """A 409 (has-replies/stale) ValueError surfaces as the sanitised error."""
+        fetcher = MagicMock()
+        fetcher.delete_comment.side_effect = ValueError(
+            "failed with HTTP 409: The comment has replies and cannot be deleted."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await delete_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=9,
+                version=1,
+            )
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.delete_comment.side_effect = BitbucketResourceNotFoundError("nope")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await delete_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=999,
+                version=3,
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        """An unexpected error is sanitised — internals never reach the client."""
+        fetcher = MagicMock()
+        fetcher.delete_comment.side_effect = RuntimeError("pool=secret host=internal")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await delete_comment(
+                ctx,
+                project_key="P",
+                repository_slug="r",
+                pull_request_id=5,
+                comment_id=9,
+                version=3,
+            )
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert "secret" not in payload["error"]
+        assert payload["error"] == (
+            "An unexpected error occurred while deleting the comment."
+        )
 
 
 _COMMIT_API = {

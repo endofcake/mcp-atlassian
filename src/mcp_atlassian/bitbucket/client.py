@@ -220,27 +220,34 @@ class BitbucketClient:
         *,
         params: dict[str, Any] | None = None,
         json_body: Any | None = None,
+        allow_empty: bool = False,
     ) -> Any:
         """Issue a request against the Bitbucket DC core REST API.
 
         Carries the leak-free error taxonomy shared by every verb:
-        :meth:`_get`/:meth:`_post`/:meth:`_put` are thin wrappers. Connection,
-        TLS, timeout, auth (401/403), not-found (404), client/conflict
-        (400/409), non-JSON-body, and any other transport failure map to a
-        crafted message that never embeds the raw transport error — so internal
-        host/pool details are not leaked to the client. The sole exception is a
-        400/409, where the instance's own ``errors[].message`` text (and nothing
-        else from the body) is appended so a write rejection is actionable.
+        :meth:`_get`/:meth:`_post`/:meth:`_put`/:meth:`_delete` are thin
+        wrappers. Connection, TLS, timeout, auth (401/403), not-found (404),
+        client/conflict (400/409), non-JSON-body, and any other transport
+        failure map to a crafted message that never embeds the raw transport
+        error — so internal host/pool details are not leaked to the client. The
+        sole exception is a 400/409, where the instance's own ``errors[].message``
+        text (and nothing else from the body) is appended so a write rejection is
+        actionable.
 
         Args:
-            method: HTTP method (``"GET"``, ``"POST"``, ``"PUT"``).
+            method: HTTP method (``"GET"``, ``"POST"``, ``"PUT"``, ``"DELETE"``).
             path: API path relative to ``/rest/api/1.0`` (e.g. ``"/projects"``).
             params: Optional query parameters.
             json_body: Optional JSON request body (writes only). When None no
                 body is attached, so a GET issues the exact original call.
+            allow_empty: When True, a 2xx with an empty/no-content body returns
+                ``None`` instead of raising — for verbs (``DELETE``) whose
+                success response is a ``204`` with no JSON. The error taxonomy is
+                unchanged; only an empty *success* body is tolerated.
 
         Returns:
-            The parsed JSON response.
+            The parsed JSON response, or ``None`` for an empty body when
+            ``allow_empty`` is set.
 
         Raises:
             MCPAtlassianAuthenticationError: If the bearer token is rejected
@@ -267,6 +274,12 @@ class BitbucketClient:
             response = http_method(url, **request_kwargs)
             self._capture_auth_username(response)
             response.raise_for_status()
+            # A DELETE succeeds with a 204/no-content body; calling .json() on it
+            # would raise the JSONDecodeError → ValueError path and mask the
+            # success. Tolerate only an empty *success* body, and only when the
+            # caller opted in; a non-empty body is still parsed normally.
+            if allow_empty and not (response.content or b"").strip():
+                return None
             return response.json()
         except SSLError as e:
             # SSLError subclasses ConnectionError, so this clause must precede
@@ -505,6 +518,26 @@ class BitbucketClient:
             The parsed JSON response.
         """
         return self._request("PUT", path, json_body=json_body)
+
+    def _delete(self, path: str, *, params: dict[str, Any] | None = None) -> None:
+        """Issue a DELETE against the Bitbucket DC core REST API.
+
+        Thin wrapper over :meth:`_request`; see it for the shared error taxonomy.
+        A successful DELETE returns ``204`` with no body, so the empty response
+        is tolerated (``allow_empty``) and ``None`` is returned rather than
+        raising the non-JSON-body path. On a 400/409 the raised ValueError
+        carries the instance's own ``errors[].message`` text, so a rejection
+        (e.g. a stale ``version`` or a comment with replies) is actionable.
+
+        Args:
+            path: API path relative to ``/rest/api/1.0``.
+            params: Optional query parameters (e.g. the optimistic-lock
+                ``version``).
+
+        Returns:
+            None — a successful delete has no body to return.
+        """
+        self._request("DELETE", path, params=params, allow_empty=True)
 
     def get_current_user(self) -> dict[str, Any]:
         """Validate the session by querying the inbox pull-request count.

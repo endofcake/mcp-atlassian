@@ -842,6 +842,33 @@ class TestBitbucketComment:
         assert comment.version is None
         assert "version" not in comment.to_simplified_dict()
 
+    def test_thread_resolved_true_is_parsed_and_surfaced(self):
+        """threadResolved=True is parsed and surfaced to confirm a resolve."""
+        comment = BitbucketComment.from_api_response(
+            {"id": 9, "version": 4, "threadResolved": True}
+        )
+        assert comment.thread_resolved is True
+        assert comment.to_simplified_dict()["thread_resolved"] is True
+
+    def test_thread_resolved_false_is_surfaced_not_dropped(self):
+        """threadResolved=False (an open thread) must not be dropped as falsy."""
+        comment = BitbucketComment.from_api_response(
+            {"id": 9, "version": 4, "threadResolved": False}
+        )
+        assert comment.thread_resolved is False
+        assert comment.to_simplified_dict()["thread_resolved"] is False
+
+    def test_missing_thread_resolved_is_omitted(self):
+        """A comment without threadResolved (edition-variant) omits the key.
+
+        The field is not present on every DC edition's RestComment, so an absent
+        value parses to None and is omitted rather than emitting a misleading
+        false.
+        """
+        comment = BitbucketComment.from_api_response({"id": 9, "version": 4})
+        assert comment.thread_resolved is None
+        assert "thread_resolved" not in comment.to_simplified_dict()
+
 
 # Version-portability guards. The shapes below are synthetic but mirror the
 # *structure* of Bitbucket DC 8.x and 9.x runtime responses (not captured data):

@@ -333,12 +333,21 @@ class TestToolsetTagCompleteness:
                 )
 
     def test_bitbucket_tool_count(self, bitbucket_tools):
-        """Verify expected number of Bitbucket tools (14 read + 2 write)."""
-        assert len(bitbucket_tools) == 16, (
-            f"Expected 16 Bitbucket tools, got {len(bitbucket_tools)}"
+        """Verify expected number of Bitbucket tools (14 read + 5 write)."""
+        assert len(bitbucket_tools) == 19, (
+            f"Expected 19 Bitbucket tools, got {len(bitbucket_tools)}"
         )
 
-    @pytest.mark.parametrize("tool_name", ["add_comment", "set_review_status"])
+    @pytest.mark.parametrize(
+        "tool_name",
+        [
+            "add_comment",
+            "set_review_status",
+            "edit_comment",
+            "resolve_comment",
+            "delete_comment",
+        ],
+    )
     def test_bitbucket_write_tools_registered(self, bitbucket_tools, tool_name):
         """The PR write tools register under the pull-requests toolset.
 
