@@ -6,12 +6,14 @@ import pytest
 
 from mcp_atlassian.models.bitbucket import (
     BitbucketActivity,
+    BitbucketBranch,
     BitbucketComment,
     BitbucketFileDiff,
     BitbucketProject,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
     BitbucketRepository,
+    BitbucketTag,
 )
 
 # Shapes mirror the pinned Bitbucket DC REST spec (RestProject / RestRepository).
@@ -151,6 +153,140 @@ class TestBitbucketRepository:
             {"slug": "r", "name": "r"}
         ).to_simplified_dict()
         assert result == {"slug": "r", "name": "r"}
+
+
+# Shapes mirror the pinned Bitbucket DC REST spec (RestBranch / RestTag).
+_BRANCH_API = {
+    "id": "refs/heads/main",
+    "displayId": "main",
+    "latestCommit": "abc123",
+    "latestChangeset": "abc123",  # legacy alias the model must drop
+    "type": "BRANCH",
+    "default": True,
+}
+
+_TAG_API = {
+    "id": "refs/tags/v1.0.0",
+    "displayId": "v1.0.0",
+    "latestCommit": "def456",
+    "latestChangeset": "def456",  # legacy alias the model must drop
+    "type": "TAG",
+    "hash": "objsha789",
+}
+
+
+class TestBitbucketBranch:
+    """BitbucketBranch parsing and simplification."""
+
+    def test_from_api_response_maps_fields(self):
+        branch = BitbucketBranch.from_api_response(_BRANCH_API)
+        assert branch.id == "refs/heads/main"
+        assert branch.display_id == "main"  # from displayId
+        assert branch.latest_commit == "abc123"  # from latestCommit
+        assert branch.type == "BRANCH"
+        assert branch.is_default is True  # from default
+
+    def test_from_api_response_empty_returns_default(self):
+        branch = BitbucketBranch.from_api_response({})
+        assert branch.id == ""
+        assert branch.display_id == ""
+        assert branch.latest_commit is None
+        assert branch.is_default is None
+
+    def test_from_api_response_non_dict_returns_default(self):
+        branch = BitbucketBranch.from_api_response("nonsense")  # type: ignore[arg-type]
+        assert branch.id == ""
+
+    def test_minimal_ref_populates_identity_only(self):
+        """A RestMinimalRef (no commit/default) leaves those fields unset."""
+        branch = BitbucketBranch.from_api_response(
+            {"id": "refs/heads/main", "displayId": "main", "type": "BRANCH"}
+        )
+        assert branch.display_id == "main"
+        assert branch.latest_commit is None
+        assert branch.is_default is None
+
+    def test_to_simplified_dict_omits_absent_optionals(self):
+        result = BitbucketBranch.from_api_response(
+            {"id": "refs/heads/x", "displayId": "x"}
+        ).to_simplified_dict()
+        assert result == {"display_id": "x", "id": "refs/heads/x"}
+        assert "latest_commit" not in result
+        assert "is_default" not in result
+
+    def test_to_simplified_dict_never_surfaces_latest_changeset(self):
+        result = BitbucketBranch.from_api_response(_BRANCH_API).to_simplified_dict()
+        assert result == {
+            "display_id": "main",
+            "id": "refs/heads/main",
+            "latest_commit": "abc123",
+            "type": "BRANCH",
+            "is_default": True,
+        }
+        assert "latestChangeset" not in result
+        assert "latest_changeset" not in result
+
+    def test_to_summary_dict_is_triage_only(self):
+        result = BitbucketBranch.from_api_response(_BRANCH_API).to_summary_dict()
+        assert result == {"display_id": "main", "latest_commit": "abc123"}
+
+    def test_to_summary_dict_omits_absent_latest_commit(self):
+        """A minimal ref (no commit) summarises to display_id only, by design."""
+        result = BitbucketBranch.from_api_response(
+            {"id": "refs/heads/main", "displayId": "main", "type": "BRANCH"}
+        ).to_summary_dict()
+        assert result == {"display_id": "main"}
+        assert "latest_commit" not in result
+
+
+class TestBitbucketTag:
+    """BitbucketTag parsing and simplification."""
+
+    def test_from_api_response_maps_fields(self):
+        tag = BitbucketTag.from_api_response(_TAG_API)
+        assert tag.id == "refs/tags/v1.0.0"
+        assert tag.display_id == "v1.0.0"
+        assert tag.latest_commit == "def456"
+        assert tag.type == "TAG"
+        assert tag.hash == "objsha789"  # annotated-tag object SHA
+
+    def test_lightweight_tag_has_null_hash(self):
+        data = {k: v for k, v in _TAG_API.items() if k != "hash"}
+        tag = BitbucketTag.from_api_response(data)
+        assert tag.hash is None
+
+    def test_from_api_response_empty_returns_default(self):
+        tag = BitbucketTag.from_api_response({})
+        assert tag.id == ""
+        assert tag.hash is None
+
+    def test_from_api_response_non_dict_returns_default(self):
+        tag = BitbucketTag.from_api_response("nonsense")  # type: ignore[arg-type]
+        assert tag.id == ""
+
+    def test_to_simplified_dict_omits_absent_optionals(self):
+        result = BitbucketTag.from_api_response(
+            {"id": "refs/tags/x", "displayId": "x"}
+        ).to_simplified_dict()
+        assert result == {"display_id": "x", "id": "refs/tags/x"}
+        assert "hash" not in result
+        assert "latest_commit" not in result
+
+    def test_to_simplified_dict_never_surfaces_latest_changeset(self):
+        result = BitbucketTag.from_api_response(_TAG_API).to_simplified_dict()
+        assert result == {
+            "display_id": "v1.0.0",
+            "id": "refs/tags/v1.0.0",
+            "latest_commit": "def456",
+            "type": "TAG",
+            "hash": "objsha789",
+        }
+        assert "latestChangeset" not in result
+        assert "latest_changeset" not in result
+
+    def test_to_summary_dict_is_triage_only(self):
+        result = BitbucketTag.from_api_response(_TAG_API).to_summary_dict()
+        assert result == {"display_id": "v1.0.0", "latest_commit": "def456"}
 
 
 # Shapes mirror the pinned Bitbucket DC REST spec (RestPullRequest).
@@ -723,6 +859,90 @@ class TestBitbucketVersionPortability:
         )
         assert pr.id == 42
         assert "pullRequestLinks" not in pr.to_simplified_dict()
+
+    @pytest.mark.parametrize(
+        ("label", "data"),
+        [
+            # 8.x branches carry the legacy `latestChangeset` alias beside
+            # `latestCommit`; the model must read `latestCommit` and never
+            # surface the duplicate.
+            (
+                "v8",
+                {
+                    "id": "refs/heads/main",
+                    "displayId": "main",
+                    "latestCommit": "abc123",
+                    "latestChangeset": "abc123",
+                    "type": "BRANCH",
+                    "default": True,
+                },
+            ),
+            # 9.x drops the legacy alias.
+            (
+                "v9",
+                {
+                    "id": "refs/heads/main",
+                    "displayId": "main",
+                    "latestCommit": "abc123",
+                    "type": "BRANCH",
+                    "default": True,
+                },
+            ),
+        ],
+    )
+    def test_branch_parses_across_versions(self, label, data):
+        branch = BitbucketBranch.from_api_response(data)
+        assert branch.display_id == "main"
+        assert branch.latest_commit == "abc123"
+        assert branch.is_default is True
+        assert "latest_changeset" not in branch.to_simplified_dict()
+
+    @pytest.mark.parametrize(
+        ("label", "data"),
+        [
+            (
+                "v8",
+                {
+                    "id": "refs/tags/v1",
+                    "displayId": "v1",
+                    "latestCommit": "def456",
+                    "latestChangeset": "def456",
+                    "hash": "objsha",
+                    "type": "TAG",
+                },
+            ),
+            (
+                "v9",
+                {
+                    "id": "refs/tags/v1",
+                    "displayId": "v1",
+                    "latestCommit": "def456",
+                    "hash": "objsha",
+                    "type": "TAG",
+                },
+            ),
+        ],
+    )
+    def test_tag_parses_across_versions(self, label, data):
+        tag = BitbucketTag.from_api_response(data)
+        assert tag.display_id == "v1"
+        assert tag.latest_commit == "def456"
+        assert tag.hash == "objsha"
+        assert "latest_changeset" not in tag.to_simplified_dict()
+
+    def test_ref_additive_and_unknown_wire_fields_are_ignored(self):
+        """Additive/unknown ref wire keys are dropped, not breaking parsing."""
+        branch = BitbucketBranch.from_api_response(
+            {**_BRANCH_API, "metadata": {"x": 1}, "futureField": True}
+        )
+        assert branch.display_id == "main"
+        assert "metadata" not in branch.to_simplified_dict()
+
+        tag = BitbucketTag.from_api_response(
+            {**_TAG_API, "metadata": {"x": 1}, "futureField": True}
+        )
+        assert tag.display_id == "v1.0.0"
+        assert "metadata" not in tag.to_simplified_dict()
 
 
 class TestSummaryProjections:

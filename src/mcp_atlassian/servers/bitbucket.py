@@ -27,6 +27,10 @@ from mcp_atlassian.bitbucket.pull_requests import (
     MAX_MAX_LINES_PER_FILE,
     MAX_PRS_LIMIT,
 )
+from mcp_atlassian.bitbucket.refs import (
+    DEFAULT_REFS_LIMIT,
+    MAX_REFS_LIMIT,
+)
 from mcp_atlassian.bitbucket.repositories import (
     DEFAULT_REPOS_LIMIT,
     MAX_REPOS_LIMIT,
@@ -305,6 +309,446 @@ async def list_repositories(
         response_data = {
             "success": False,
             "error": "An unexpected error occurred while listing repositories.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "List Bitbucket Branches", "readOnlyHint": True},
+)
+async def list_branches(
+    ctx: Context,
+    project_key: Annotated[
+        str,
+        Field(
+            description=(
+                "The Bitbucket project key (e.g. 'PROJ'). Use list_projects to "
+                "discover available keys."
+            ),
+        ),
+    ],
+    repository_slug: Annotated[
+        str,
+        Field(
+            description=(
+                "The repository slug (e.g. 'my-repo'). Use list_repositories to "
+                "discover available slugs."
+            ),
+        ),
+    ],
+    filter_text: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional server-side filter on branch name (substring match). "
+                "If you get fewer results than expected, check 'is_last_page' and "
+                "page further before concluding a branch does not exist."
+            ),
+            default=None,
+        ),
+    ] = None,
+    order_by: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional ordering: 'ALPHABETICAL' or 'MODIFICATION' (most "
+                "recently modified first). An unrecognised value falls back to "
+                "the server default."
+            ),
+            default=None,
+        ),
+    ] = None,
+    boost_matches: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "When true, floats exact and prefix matches of 'filter_text' to "
+                "the top of the results. Pair with 'filter_text'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first branch to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of branches to return in this window. Bitbucket "
+                "Data Center paginates branches; if more exist than are returned, "
+                "the response sets 'truncated' to true and 'next_page_start' to "
+                "the cursor for the next call."
+            ),
+            default=DEFAULT_REFS_LIMIT,
+            ge=1,
+            le=MAX_REFS_LIMIT,
+        ),
+    ] = DEFAULT_REFS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each branch's triage fields (display_id, "
+                "latest_commit) instead of the full record — for scanning a large "
+                "list to pick one."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List branches in a Bitbucket Data Center repository.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        filter_text: Optional server-side branch-name filter (substring match).
+        order_by: Optional ordering — ALPHABETICAL or MODIFICATION.
+        boost_matches: When true, floats exact/prefix filter matches up.
+        start: Pagination cursor (offset of the first branch); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of branches to return in this window.
+
+    Returns:
+        JSON string with the list of branches plus ``count``, ``is_last_page``,
+        ``truncated``, and ``next_page_start`` pagination fields, or a sanitised
+        error object on failure. ``count`` is the number of branches in THIS
+        window, not a grand total (Data Center does not report one). To get more,
+        call again with ``start`` set to the returned ``next_page_start`` (when it
+        is non-null); ``is_last_page=true`` means the list is complete.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        page = bitbucket.list_branches(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            filter_text=filter_text,
+            order_by=order_by,
+            boost_matches=boost_matches,
+            start=start,
+            limit=limit,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "branches": [
+                branch.to_summary_dict() if summary else branch.to_simplified_dict()
+                for branch in page.branches
+            ],
+            "count": len(page.branches),
+            "is_last_page": page.is_last_page,
+            "truncated": page.truncated,
+            "next_page_start": page.next_page_start,
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"list_branches failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        # Must precede the ValueError branch (this subclasses ValueError).
+        logger.error(f"list_branches failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"list_branches failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in list_branches:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while listing branches.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "List Bitbucket Tags", "readOnlyHint": True},
+)
+async def list_tags(
+    ctx: Context,
+    project_key: Annotated[
+        str,
+        Field(
+            description=(
+                "The Bitbucket project key (e.g. 'PROJ'). Use list_projects to "
+                "discover available keys."
+            ),
+        ),
+    ],
+    repository_slug: Annotated[
+        str,
+        Field(
+            description=(
+                "The repository slug (e.g. 'my-repo'). Use list_repositories to "
+                "discover available slugs."
+            ),
+        ),
+    ],
+    filter_text: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional server-side filter on tag name (substring match). If "
+                "you get fewer results than expected, check 'is_last_page' and "
+                "page further before concluding a tag does not exist."
+            ),
+            default=None,
+        ),
+    ] = None,
+    order_by: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional ordering: 'ALPHABETICAL' or 'MODIFICATION' (most "
+                "recently modified first). An unrecognised value falls back to "
+                "the server default."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first tag to return. Use 0 "
+                "(default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of tags to return in this window. Bitbucket Data "
+                "Center paginates tags; if more exist than are returned, the "
+                "response sets 'truncated' to true and 'next_page_start' to the "
+                "cursor for the next call."
+            ),
+            default=DEFAULT_REFS_LIMIT,
+            ge=1,
+            le=MAX_REFS_LIMIT,
+        ),
+    ] = DEFAULT_REFS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each tag's triage fields (display_id, "
+                "latest_commit) instead of the full record — for scanning a large "
+                "list to pick one."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List tags in a Bitbucket Data Center repository.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        filter_text: Optional server-side tag-name filter (substring match).
+        order_by: Optional ordering — ALPHABETICAL or MODIFICATION.
+        start: Pagination cursor (offset of the first tag); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of tags to return in this window.
+
+    Returns:
+        JSON string with the list of tags plus ``count``, ``is_last_page``,
+        ``truncated``, and ``next_page_start`` pagination fields, or a sanitised
+        error object on failure. ``count`` is the number of tags in THIS window,
+        not a grand total (Data Center does not report one). To get more, call
+        again with ``start`` set to the returned ``next_page_start`` (when it is
+        non-null); ``is_last_page=true`` means the list is complete.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        page = bitbucket.list_tags(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            filter_text=filter_text,
+            order_by=order_by,
+            start=start,
+            limit=limit,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "tags": [
+                tag.to_summary_dict() if summary else tag.to_simplified_dict()
+                for tag in page.tags
+            ],
+            "count": len(page.tags),
+            "is_last_page": page.is_last_page,
+            "truncated": page.truncated,
+            "next_page_start": page.next_page_start,
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"list_tags failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        # Must precede the ValueError branch (this subclasses ValueError).
+        logger.error(f"list_tags failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"list_tags failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in list_tags:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while listing tags.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Get Bitbucket Tag", "readOnlyHint": True},
+)
+async def get_tag(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "The tag name (e.g. 'v1.0.0' or 'release/1.0'). Slashes and "
+                "special characters are handled."
+            ),
+        ),
+    ],
+) -> str:
+    """Get a single tag in a Bitbucket Data Center repository.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        name: The tag name.
+
+    Returns:
+        JSON string with the tag (display id, ref id, latest commit, and the
+        annotated-tag ``hash`` when present), or a sanitised error object on
+        failure.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        tag = bitbucket.get_tag(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            name=name,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "tag": tag.to_simplified_dict(),
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"get_tag failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        logger.error(f"get_tag failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"get_tag failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in get_tag:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while getting the tag.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Get Bitbucket Default Branch", "readOnlyHint": True},
+)
+async def get_default_branch(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+) -> str:
+    """Get a Bitbucket Data Center repository's default branch.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+
+    Returns:
+        JSON string with the default branch as a minimal ref (display id, ref
+        id, type — no commit SHA), or a sanitised error object on failure.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        branch = bitbucket.get_default_branch(
+            project_key=project_key,
+            repository_slug=repository_slug,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "branch": branch.to_simplified_dict(),
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"get_default_branch failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        logger.error(f"get_default_branch failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"get_default_branch failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in get_default_branch:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while getting the default branch.",
         }
     return json.dumps(response_data, indent=2, ensure_ascii=False)
 

@@ -18,11 +18,13 @@ from .pull_request import (
     BitbucketPullRequest,
     BitbucketRef,
 )
+from .ref import BitbucketBranch, BitbucketTag
 from .repository import BitbucketRepository
 from .user import BitbucketUser
 
 __all__ = [
     "BitbucketActivity",
+    "BitbucketBranch",
     "BitbucketComment",
     "BitbucketDiffHunk",
     "BitbucketDiffLine",
@@ -34,5 +36,6 @@ __all__ = [
     "BitbucketPullRequestDiff",
     "BitbucketRef",
     "BitbucketRepository",
+    "BitbucketTag",
     "BitbucketUser",
 ]

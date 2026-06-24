@@ -16,25 +16,35 @@ from mcp_atlassian.bitbucket.pull_requests import (
     BitbucketActivitiesPage,
     BitbucketPullRequestsPage,
 )
+from mcp_atlassian.bitbucket.refs import (
+    BitbucketBranchesPage,
+    BitbucketTagsPage,
+)
 from mcp_atlassian.bitbucket.repositories import BitbucketRepositoriesPage
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.models.bitbucket import (
     BitbucketActivity,
+    BitbucketBranch,
     BitbucketComment,
     BitbucketProject,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
     BitbucketRepository,
+    BitbucketTag,
 )
 from mcp_atlassian.servers.bitbucket import (
     add_comment,
+    get_default_branch,
     get_pull_request,
     get_pull_request_activities,
     get_pull_request_comments,
     get_pull_request_diff,
+    get_tag,
+    list_branches,
     list_projects,
     list_pull_requests,
     list_repositories,
+    list_tags,
     set_review_status,
 )
 
@@ -477,6 +487,326 @@ _PR_API = {
     "participants": [{"user": {"name": "a"}, "role": "AUTHOR"}],
     "reviewers": [{"user": {"name": "r"}, "status": "APPROVED", "approved": True}],
 }
+
+_BRANCH_API = {
+    "id": "refs/heads/main",
+    "displayId": "main",
+    "latestCommit": "abc123",
+    "type": "BRANCH",
+    "default": True,
+}
+
+_TAG_API = {
+    "id": "refs/tags/v1.0.0",
+    "displayId": "v1.0.0",
+    "latestCommit": "def456",
+    "type": "TAG",
+    "hash": "objsha",
+}
+
+
+class TestListBranchesTool:
+    """The list_branches tool."""
+
+    async def test_success_returns_simplified_branches(self):
+        fetcher = MagicMock()
+        branch = BitbucketBranch.from_api_response(_BRANCH_API)
+        fetcher.list_branches.return_value = BitbucketBranchesPage(
+            branches=[branch],
+            is_last_page=True,
+            truncated=False,
+            next_page_start=None,
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_branches(
+                ctx, project_key="PROJ", repository_slug="my-repo"
+            )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["branches"] == [branch.to_simplified_dict()]
+        assert payload["count"] == 1
+        assert payload["is_last_page"] is True
+        assert payload["truncated"] is False
+        assert payload["next_page_start"] is None
+
+    async def test_summary_returns_triage_only(self):
+        fetcher = MagicMock()
+        branch = BitbucketBranch.from_api_response(_BRANCH_API)
+        fetcher.list_branches.return_value = BitbucketBranchesPage(
+            branches=[branch], is_last_page=True, truncated=False, next_page_start=None
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_branches(
+                ctx, project_key="PROJ", repository_slug="my-repo", summary=True
+            )
+        payload = json.loads(result)
+        assert payload["branches"] == [
+            {"display_id": "main", "latest_commit": "abc123"}
+        ]
+        # Projection is a tool-layer concern; the mixin call carries no summary.
+        assert "summary" not in fetcher.list_branches.call_args.kwargs
+
+    async def test_filters_and_cursor_thread_to_mixin(self):
+        fetcher = MagicMock()
+        fetcher.list_branches.return_value = BitbucketBranchesPage(
+            branches=[], is_last_page=False, truncated=True, next_page_start=25
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_branches(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                filter_text="main",
+                order_by="MODIFICATION",
+                boost_matches=True,
+                start=10,
+                limit=50,
+            )
+        payload = json.loads(result)
+        assert payload["next_page_start"] == 25
+        fetcher.list_branches.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            filter_text="main",
+            order_by="MODIFICATION",
+            boost_matches=True,
+            start=10,
+            limit=50,
+        )
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.list_branches.side_effect = BitbucketResourceNotFoundError(
+            "Bitbucket resource not found (HTTP 404) for .../branches."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_branches(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_auth_error_message(self):
+        fetcher = MagicMock()
+        fetcher.list_branches.side_effect = MCPAtlassianAuthenticationError("401")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_branches(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        fetcher = MagicMock()
+        fetcher.list_branches.side_effect = RuntimeError("secret-host:5432")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_branches(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"] == (
+            "An unexpected error occurred while listing branches."
+        )
+        assert "secret-host" not in payload["error"]
+
+
+class TestListTagsTool:
+    """The list_tags tool."""
+
+    async def test_success_returns_simplified_tags(self):
+        fetcher = MagicMock()
+        tag = BitbucketTag.from_api_response(_TAG_API)
+        fetcher.list_tags.return_value = BitbucketTagsPage(
+            tags=[tag], is_last_page=True, truncated=False, next_page_start=None
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_tags(ctx, project_key="PROJ", repository_slug="my-repo")
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["tags"] == [tag.to_simplified_dict()]
+        assert payload["count"] == 1
+        assert payload["is_last_page"] is True
+
+    async def test_summary_returns_triage_only(self):
+        fetcher = MagicMock()
+        tag = BitbucketTag.from_api_response(_TAG_API)
+        fetcher.list_tags.return_value = BitbucketTagsPage(
+            tags=[tag], is_last_page=True, truncated=False, next_page_start=None
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_tags(
+                ctx, project_key="PROJ", repository_slug="my-repo", summary=True
+            )
+        payload = json.loads(result)
+        assert payload["tags"] == [{"display_id": "v1.0.0", "latest_commit": "def456"}]
+        assert "summary" not in fetcher.list_tags.call_args.kwargs
+
+    async def test_filters_and_cursor_thread_to_mixin(self):
+        fetcher = MagicMock()
+        fetcher.list_tags.return_value = BitbucketTagsPage(
+            tags=[], is_last_page=False, truncated=True, next_page_start=25
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_tags(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                filter_text="v1",
+                order_by="ALPHABETICAL",
+                start=10,
+                limit=50,
+            )
+        payload = json.loads(result)
+        assert payload["next_page_start"] == 25
+        fetcher.list_tags.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            filter_text="v1",
+            order_by="ALPHABETICAL",
+            start=10,
+            limit=50,
+        )
+
+    async def test_network_error_message(self):
+        fetcher = MagicMock()
+        fetcher.list_tags.side_effect = ValueError("boom")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_tags(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.list_tags.side_effect = BitbucketResourceNotFoundError(
+            "Bitbucket resource not found (HTTP 404) for .../tags."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_tags(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        fetcher = MagicMock()
+        fetcher.list_tags.side_effect = RuntimeError("secret-host:5432")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_tags(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"] == ("An unexpected error occurred while listing tags.")
+        assert "secret-host" not in payload["error"]
+
+
+class TestGetTagTool:
+    """The get_tag tool."""
+
+    async def test_success_returns_tag(self):
+        fetcher = MagicMock()
+        fetcher.get_tag.return_value = BitbucketTag.from_api_response(_TAG_API)
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_tag(
+                ctx, project_key="PROJ", repository_slug="my-repo", name="v1.0.0"
+            )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["tag"]["display_id"] == "v1.0.0"
+        assert payload["tag"]["hash"] == "objsha"
+        fetcher.get_tag.assert_called_once_with(
+            project_key="PROJ", repository_slug="my-repo", name="v1.0.0"
+        )
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.get_tag.side_effect = BitbucketResourceNotFoundError(
+            "Bitbucket resource not found (HTTP 404) for .../tags/v-missing."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_tag(
+                ctx, project_key="P", repository_slug="r", name="v-missing"
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        fetcher = MagicMock()
+        fetcher.get_tag.side_effect = RuntimeError("secret-host:5432")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_tag(ctx, project_key="P", repository_slug="r", name="v1")
+        payload = json.loads(result)
+        assert payload["error"] == (
+            "An unexpected error occurred while getting the tag."
+        )
+        assert "secret-host" not in payload["error"]
+
+
+class TestGetDefaultBranchTool:
+    """The get_default_branch tool."""
+
+    async def test_success_returns_branch(self):
+        fetcher = MagicMock()
+        fetcher.get_default_branch.return_value = BitbucketBranch.from_api_response(
+            {"id": "refs/heads/main", "displayId": "main", "type": "BRANCH"}
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_default_branch(
+                ctx, project_key="PROJ", repository_slug="my-repo"
+            )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["branch"]["display_id"] == "main"
+        assert payload["branch"]["id"] == "refs/heads/main"
+        fetcher.get_default_branch.assert_called_once_with(
+            project_key="PROJ", repository_slug="my-repo"
+        )
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.get_default_branch.side_effect = BitbucketResourceNotFoundError(
+            "Bitbucket resource not found (HTTP 404) for .../default-branch."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_default_branch(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_auth_error_message(self):
+        fetcher = MagicMock()
+        fetcher.get_default_branch.side_effect = MCPAtlassianAuthenticationError("403")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_default_branch(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")
+
+    async def test_network_error_message(self):
+        fetcher = MagicMock()
+        fetcher.get_default_branch.side_effect = ValueError("boom")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_default_branch(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        fetcher = MagicMock()
+        fetcher.get_default_branch.side_effect = RuntimeError("secret-host:5432")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_default_branch(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"] == (
+            "An unexpected error occurred while getting the default branch."
+        )
+        assert "secret-host" not in payload["error"]
 
 
 class TestListPullRequestsTool:

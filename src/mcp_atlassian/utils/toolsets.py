@@ -152,7 +152,7 @@ BITBUCKET_TOOLSETS: dict[str, ToolsetDefinition] = {
     ),
     "bitbucket_repositories": ToolsetDefinition(
         name="bitbucket_repositories",
-        description="Bitbucket Data Center repository listing",
+        description="Bitbucket Data Center repository and ref (branch, tag) operations",
         default=False,
     ),
     "bitbucket_pull_requests": ToolsetDefinition(
