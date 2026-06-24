@@ -22,12 +22,14 @@ from mcp_atlassian.bitbucket.refs import (
     BitbucketTagsPage,
 )
 from mcp_atlassian.bitbucket.repositories import BitbucketRepositoriesPage
+from mcp_atlassian.bitbucket.source import BitbucketBrowseResult
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.models.bitbucket import (
     BitbucketActivity,
     BitbucketBranch,
     BitbucketComment,
     BitbucketCommit,
+    BitbucketDirectoryEntry,
     BitbucketProject,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
@@ -36,6 +38,7 @@ from mcp_atlassian.models.bitbucket import (
 )
 from mcp_atlassian.servers.bitbucket import (
     add_comment,
+    browse_path,
     delete_comment,
     edit_comment,
     get_commit,
@@ -1971,6 +1974,181 @@ class TestGetCommitTool:
         payload = json.loads(result)
         assert payload["error"] == (
             "An unexpected error occurred while getting the commit."
+        )
+        assert "secret-host" not in payload["error"]
+
+
+def _dir_result(entries, *, is_last_page=True, next_page_start=None, path="src"):
+    """Build a DIRECTORY BitbucketBrowseResult."""
+    return BitbucketBrowseResult(
+        kind="DIRECTORY",
+        path=path,
+        lines=None,
+        children=entries,
+        is_last_page=is_last_page,
+        next_page_start=next_page_start,
+        truncated=not is_last_page,
+        binary=False,
+    )
+
+
+def _file_result(
+    lines, *, is_last_page=True, next_page_start=None, binary=False, path="src/app.py"
+):
+    """Build a FILE BitbucketBrowseResult."""
+    return BitbucketBrowseResult(
+        kind="FILE",
+        path=path,
+        lines=lines,
+        children=None,
+        is_last_page=is_last_page,
+        next_page_start=next_page_start,
+        truncated=not is_last_page,
+        binary=binary,
+    )
+
+
+class TestBrowsePathTool:
+    """The browse_path tool — directory and file envelopes, errors."""
+
+    async def test_directory_envelope(self):
+        fetcher = MagicMock()
+        entry = BitbucketDirectoryEntry.from_api_response(
+            {
+                "path": {"components": ["src", "app.py"], "name": "app.py"},
+                "type": "FILE",
+                "size": 12,
+            }
+        )
+        fetcher.browse.return_value = _dir_result([entry])
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await browse_path(
+                ctx, project_key="PROJ", repository_slug="my-repo", path="src"
+            )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["type"] == "DIRECTORY"
+        assert payload["children"] == [entry.to_simplified_dict()]
+        assert payload["count"] == 1
+        assert "lines" not in payload
+        assert "binary" not in payload
+        fetcher.browse.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            path="src",
+            at=None,
+            start=0,
+            limit=100,
+        )
+
+    async def test_repo_root_default_path_envelope(self):
+        fetcher = MagicMock()
+        fetcher.browse.return_value = _dir_result([], path="")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await browse_path(
+                ctx, project_key="PROJ", repository_slug="my-repo"
+            )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["type"] == "DIRECTORY"
+        assert payload["path"] == ""
+        assert fetcher.browse.call_args[1]["path"] == ""
+
+    async def test_file_envelope(self):
+        fetcher = MagicMock()
+        fetcher.browse.return_value = _file_result(
+            ["import os", "print(1)"], binary=False
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await browse_path(
+                ctx, project_key="P", repository_slug="r", path="src/app.py"
+            )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["type"] == "FILE"
+        assert payload["lines"] == ["import os", "print(1)"]
+        assert payload["binary"] is False
+        assert payload["count"] == 2
+        assert "children" not in payload
+
+    async def test_binary_file_surfaced(self):
+        fetcher = MagicMock()
+        fetcher.browse.return_value = _file_result([], binary=True, path="img.png")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await browse_path(
+                ctx, project_key="P", repository_slug="r", path="img.png"
+            )
+        payload = json.loads(result)
+        assert payload["type"] == "FILE"
+        assert payload["binary"] is True
+
+    async def test_cursor_threads_to_mixin(self):
+        fetcher = MagicMock()
+        fetcher.browse.return_value = _file_result(
+            ["a"], is_last_page=False, next_page_start=100
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await browse_path(
+                ctx, project_key="P", repository_slug="r", path="big.txt", start=50
+            )
+        payload = json.loads(result)
+        assert payload["is_last_page"] is False
+        assert payload["truncated"] is True
+        assert payload["next_page_start"] == 100
+        assert fetcher.browse.call_args[1]["start"] == 50
+
+    async def test_traversal_path_surfaces_clean_value_error(self):
+        fetcher = MagicMock()
+        fetcher.browse.side_effect = ValueError(
+            "Invalid path component in browse path: empty, '.', and '..' "
+            "segments are not allowed (path traversal rejected)."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await browse_path(
+                ctx, project_key="P", repository_slug="r", path="../etc/passwd"
+            )
+        payload = json.loads(result)
+        assert payload["success"] is False
+        assert payload["error"].startswith("Network or API Error:")
+        assert "traversal" in payload["error"]
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.browse.side_effect = BitbucketResourceNotFoundError(
+            "Bitbucket resource not found (HTTP 404) for .../browse/missing."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await browse_path(
+                ctx, project_key="P", repository_slug="r", path="missing"
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_auth_error_message(self):
+        fetcher = MagicMock()
+        fetcher.browse.side_effect = MCPAtlassianAuthenticationError("403")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await browse_path(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        fetcher = MagicMock()
+        fetcher.browse.side_effect = RuntimeError("secret-host:5432")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await browse_path(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"] == (
+            "An unexpected error occurred while browsing the path."
         )
         assert "secret-host" not in payload["error"]
 

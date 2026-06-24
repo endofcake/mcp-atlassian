@@ -12,10 +12,11 @@ from .projects import ProjectsMixin
 from .pull_requests import PullRequestsMixin
 from .refs import RefsMixin
 from .repositories import ReposMixin
+from .source import SourceMixin
 
 
 class BitbucketFetcher(
-    ProjectsMixin, ReposMixin, RefsMixin, PullRequestsMixin, CommitsMixin
+    ProjectsMixin, ReposMixin, RefsMixin, PullRequestsMixin, CommitsMixin, SourceMixin
 ):
     """Bitbucket Data Center client composing all domain mixins.
 
@@ -32,6 +33,8 @@ class BitbucketFetcher(
       pull-request listing, metadata, structured diff, and activity timeline.
     - :class:`~mcp_atlassian.bitbucket.commits.CommitsMixin`: commit history,
       single-commit lookup, and pull-request commit listing.
+    - :class:`~mcp_atlassian.bitbucket.source.SourceMixin`: directory and file
+      browsing over the ``browse`` endpoint.
     """
 
     pass

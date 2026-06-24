@@ -9,6 +9,7 @@ from mcp_atlassian.models.bitbucket import (
     BitbucketBranch,
     BitbucketComment,
     BitbucketCommit,
+    BitbucketDirectoryEntry,
     BitbucketFileDiff,
     BitbucketProject,
     BitbucketPullRequest,
@@ -921,6 +922,75 @@ def _pr_with_top_level_author(name: str, status: str) -> dict:
     }
 
 
+class TestBitbucketDirectoryEntry:
+    """The browse directory child model."""
+
+    def test_from_api_response_joins_components(self):
+        entry = BitbucketDirectoryEntry.from_api_response(
+            {
+                "path": {"components": ["src", "app.py"], "name": "app.py"},
+                "type": "FILE",
+                "size": 128,
+                "contentId": "blob-abc",
+            }
+        )
+        assert entry.path == "src/app.py"
+        assert entry.type == "FILE"
+        assert entry.size == 128
+        assert entry.content_id == "blob-abc"
+
+    def test_directory_entry_has_no_size_or_content(self):
+        entry = BitbucketDirectoryEntry.from_api_response(
+            {"path": {"components": ["src"], "name": "src"}, "type": "DIRECTORY"}
+        )
+        assert entry.path == "src"
+        assert entry.type == "DIRECTORY"
+        assert entry.size is None
+        assert entry.content_id is None
+
+    def test_submodule_entry_type_preserved(self):
+        entry = BitbucketDirectoryEntry.from_api_response(
+            {
+                "path": {"components": ["vendor"], "name": "vendor"},
+                "type": "SUBMODULE",
+                "size": 0,
+            }
+        )
+        assert entry.type == "SUBMODULE"
+        assert "type" in entry.to_simplified_dict()
+
+    def test_from_api_response_empty_returns_default(self):
+        entry = BitbucketDirectoryEntry.from_api_response({})
+        assert entry.path is None
+        assert entry.type is None
+
+    def test_from_api_response_non_dict_returns_default(self):
+        entry = BitbucketDirectoryEntry.from_api_response(["nope"])  # type: ignore[arg-type]
+        assert entry.path is None
+
+    def test_to_simplified_dict_omits_absent_optionals(self):
+        entry = BitbucketDirectoryEntry.from_api_response(
+            {"path": {"components": ["x"], "name": "x"}, "type": "DIRECTORY"}
+        )
+        assert entry.to_simplified_dict() == {"path": "x", "type": "DIRECTORY"}
+
+    def test_to_simplified_dict_full(self):
+        entry = BitbucketDirectoryEntry.from_api_response(
+            {
+                "path": {"components": ["a", "b.txt"], "name": "b.txt"},
+                "type": "FILE",
+                "size": 5,
+                "contentId": "h",
+            }
+        )
+        assert entry.to_simplified_dict() == {
+            "path": "a/b.txt",
+            "type": "FILE",
+            "size": 5,
+            "content_id": "h",
+        }
+
+
 class TestBitbucketVersionPortability:
     """The read models parse both DC 8.x and 9.x runtime shapes."""
 
@@ -1117,6 +1187,50 @@ class TestBitbucketVersionPortability:
         )
         assert tag.display_id == "v1.0.0"
         assert "metadata" not in tag.to_simplified_dict()
+
+    @pytest.mark.parametrize(
+        ("label", "data"),
+        [
+            # 8.x and 9.x browse children both carry the {components, name,
+            # parent} path object and the FILE/DIRECTORY/SUBMODULE type; 9.x may
+            # add wire fields (e.g. a richer `path` object) that are ignored.
+            (
+                "v8",
+                {
+                    "path": {
+                        "components": ["src", "app.py"],
+                        "parent": "src",
+                        "name": "app.py",
+                    },
+                    "type": "FILE",
+                    "size": 64,
+                    "contentId": "c8",
+                },
+            ),
+            (
+                "v9",
+                {
+                    "path": {
+                        "components": ["src", "app.py"],
+                        "parent": "src",
+                        "name": "app.py",
+                        "extension": "py",
+                    },
+                    "type": "FILE",
+                    "size": 64,
+                    "contentId": "c9",
+                    "futureField": {"nested": 1},
+                },
+            ),
+        ],
+    )
+    def test_directory_entry_parses_across_versions(self, label, data):
+        entry = BitbucketDirectoryEntry.from_api_response(data)
+        assert entry.path == "src/app.py"
+        assert entry.type == "FILE"
+        assert entry.size == 64
+        assert entry.content_id == data["contentId"]
+        assert "futureField" not in entry.to_simplified_dict()
 
 
 class TestSummaryProjections:

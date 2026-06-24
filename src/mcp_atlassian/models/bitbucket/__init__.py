@@ -21,6 +21,7 @@ from .pull_request import (
 )
 from .ref import BitbucketBranch, BitbucketTag
 from .repository import BitbucketRepository
+from .source import BitbucketDirectoryEntry
 from .user import BitbucketUser
 
 __all__ = [
@@ -31,6 +32,7 @@ __all__ = [
     "BitbucketDiffHunk",
     "BitbucketDiffLine",
     "BitbucketDiffSegment",
+    "BitbucketDirectoryEntry",
     "BitbucketFileDiff",
     "BitbucketParticipant",
     "BitbucketProject",

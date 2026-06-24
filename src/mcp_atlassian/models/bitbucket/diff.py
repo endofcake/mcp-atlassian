@@ -14,28 +14,9 @@ from typing import Any
 
 from ..base import ApiModel
 from ..constants import EMPTY_STRING
+from ._paths import _path_from_ref
 
 logger = logging.getLogger(__name__)
-
-
-def _path_from_ref(ref: Any) -> str | None:
-    """Join a diff path object (``{components, name, parent, ...}``) to a string.
-
-    Args:
-        ref: A ``source``/``destination`` object from a ``RestDiff``, or None for
-            an added (no source) or deleted (no destination) file.
-
-    Returns:
-        The slash-joined path (e.g. ``"path/to/file.txt"``), or None when the ref
-        is absent.
-    """
-    if not isinstance(ref, dict):
-        return None
-    components = ref.get("components")
-    if isinstance(components, list) and components:
-        return "/".join(str(c) for c in components)
-    name = ref.get("name")
-    return str(name) if name else None
 
 
 def _dict_lines(segment: dict[str, Any]) -> list[dict[str, Any]]:

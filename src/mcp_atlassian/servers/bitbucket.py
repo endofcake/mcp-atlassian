@@ -39,6 +39,10 @@ from mcp_atlassian.bitbucket.repositories import (
     DEFAULT_REPOS_LIMIT,
     MAX_REPOS_LIMIT,
 )
+from mcp_atlassian.bitbucket.source import (
+    DEFAULT_BROWSE_LIMIT,
+    MAX_BROWSE_LIMIT,
+)
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.servers.dependencies import get_bitbucket_fetcher
 from mcp_atlassian.utils.decorators import check_write_access
@@ -1020,6 +1024,144 @@ async def get_commit(
         response_data = {
             "success": False,
             "error": "An unexpected error occurred while getting the commit.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Browse Bitbucket Source", "readOnlyHint": True},
+)
+async def browse_path(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    path: Annotated[
+        str,
+        Field(
+            description=(
+                "The path to browse, relative to the repository root (e.g. "
+                "'src/app.py' for a file or 'src' for a directory). Empty (the "
+                "default) browses the repository root. Real path separators are "
+                "preserved; '.'/'..' and traversal paths are rejected."
+            ),
+            default="",
+        ),
+    ] = "",
+    at: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional commit SHA, branch, or tag ref to read at. The "
+                "repository's default branch is used when omitted."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the 0-based offset of the first line (file) "
+                "or child (directory) to return. Use 0 (default) for the first "
+                "window, then pass the response's 'next_page_start' to fetch the "
+                "next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of lines (file) or children (directory) to "
+                "return in this window. If more exist, the response sets "
+                "'truncated' to true and 'next_page_start' to the next cursor."
+            ),
+            default=DEFAULT_BROWSE_LIMIT,
+            ge=1,
+            le=MAX_BROWSE_LIMIT,
+        ),
+    ] = DEFAULT_BROWSE_LIMIT,
+) -> str:
+    """Browse a file or directory in a Bitbucket Data Center repository.
+
+    Returns either a directory listing OR a window of a file's text lines from
+    one call — read the response's 'type' field ("FILE" or "DIRECTORY") to tell
+    which. 'at' selects a commit/branch/tag (the default branch otherwise). Page
+    large files or directories by calling again with 'start' set to the returned
+    'next_page_start'. '.'/'..' and traversal paths are rejected. 'count' is the
+    number of items in THIS window, not a grand total.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        path: The path to browse (empty for the repository root).
+        at: Optional commit/branch/tag ref to read at.
+        start: Pagination cursor (0-based line/child offset); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum lines (file) or children (directory) for this window.
+
+    Returns:
+        JSON string with ``type`` ("FILE"|"DIRECTORY"), ``path``, and either
+        ``lines`` (file) or ``children`` (directory), plus ``binary`` (file
+        only), ``count``, ``is_last_page``, ``truncated``, and
+        ``next_page_start``; or a sanitised error object on failure.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        result = bitbucket.browse(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            path=path,
+            at=at,
+            start=start,
+            limit=limit,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "type": result.kind,
+            "path": result.path,
+            "is_last_page": result.is_last_page,
+            "truncated": result.truncated,
+            "next_page_start": result.next_page_start,
+        }
+        if result.kind == "DIRECTORY":
+            children = result.children or []
+            response_data["children"] = [c.to_simplified_dict() for c in children]
+            response_data["count"] = len(children)
+        else:
+            lines = result.lines or []
+            response_data["lines"] = lines
+            response_data["binary"] = result.binary
+            response_data["count"] = len(lines)
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"browse_path failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        # Must precede the ValueError branch (this subclasses ValueError).
+        logger.error(f"browse_path failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"browse_path failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in browse_path:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while browsing the path.",
         }
     return json.dumps(response_data, indent=2, ensure_ascii=False)
 
