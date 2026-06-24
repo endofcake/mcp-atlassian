@@ -17,6 +17,10 @@ from mcp_atlassian.bitbucket.client import (
     MAX_PROJECTS_LIMIT,
     BitbucketResourceNotFoundError,
 )
+from mcp_atlassian.bitbucket.commits import (
+    DEFAULT_COMMITS_LIMIT,
+    MAX_COMMITS_LIMIT,
+)
 from mcp_atlassian.bitbucket.pull_requests import (
     DEFAULT_ACTIVITIES_LIMIT,
     DEFAULT_MAX_FILES,
@@ -754,6 +758,273 @@ async def get_default_branch(
 
 
 @bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "List Bitbucket Commits", "readOnlyHint": True},
+)
+async def list_commits(
+    ctx: Context,
+    project_key: Annotated[
+        str,
+        Field(
+            description=(
+                "The Bitbucket project key (e.g. 'PROJ'). Use list_projects to "
+                "discover available keys."
+            ),
+        ),
+    ],
+    repository_slug: Annotated[
+        str,
+        Field(
+            description=(
+                "The repository slug (e.g. 'my-repo'). Use list_repositories to "
+                "discover available slugs."
+            ),
+        ),
+    ],
+    since: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional exclusive lower-bound commit SHA or ref to start the "
+                "history from. Applied server-side."
+            ),
+            default=None,
+        ),
+    ] = None,
+    until: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional inclusive upper-bound commit SHA or ref (e.g. a branch "
+                "name like 'main' or a tip SHA). Applied server-side."
+            ),
+            default=None,
+        ),
+    ] = None,
+    path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional path to restrict the history to (file or directory). "
+                "Applied server-side. Required when using 'follow_renames'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    merges: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional merge-commit handling: 'exclude', 'include', or 'only'. "
+                "An unrecognised value falls back to the server default."
+            ),
+            default=None,
+        ),
+    ] = None,
+    follow_renames: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "When true, follow a file's history across renames. Only valid "
+                "together with a single-file 'path'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    ignore_missing: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "When true, ignore missing commits instead of failing the call."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first commit to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of commits to return in this window. Bitbucket "
+                "Data Center paginates commits; if more exist than are returned, "
+                "the response sets 'truncated' to true and 'next_page_start' to "
+                "the cursor for the next call."
+            ),
+            default=DEFAULT_COMMITS_LIMIT,
+            ge=1,
+            le=MAX_COMMITS_LIMIT,
+        ),
+    ] = DEFAULT_COMMITS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each commit's triage fields (display_id, "
+                "author, author_timestamp, first message line) instead of the "
+                "full record — for scanning a large history to pick one."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List commits in a Bitbucket Data Center repository.
+
+    The history filters ('since', 'until', 'path', 'merges', 'follow_renames')
+    are applied server-side, not by walking the result. 'follow_renames' is only
+    valid together with a single-file 'path'.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        since: Optional exclusive lower-bound commit/ref.
+        until: Optional inclusive upper-bound commit/ref (e.g. a branch tip).
+        path: Optional path to restrict the history to.
+        merges: Optional merge-commit handling — exclude/include/only.
+        follow_renames: When true, follow a file across renames (needs 'path').
+        ignore_missing: When true, ignore missing commits rather than failing.
+        start: Pagination cursor (offset of the first commit); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of commits to return in this window.
+
+    Returns:
+        JSON string with the list of commits plus ``count``, ``is_last_page``,
+        ``truncated``, and ``next_page_start`` pagination fields, or a sanitised
+        error object on failure. ``count`` is the number of commits in THIS
+        window, not a grand total (Data Center does not report one). To get more,
+        call again with ``start`` set to the returned ``next_page_start`` (when it
+        is non-null); ``is_last_page=true`` means the list is complete.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        page = bitbucket.list_commits(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            since=since,
+            until=until,
+            path=path,
+            merges=merges,
+            follow_renames=follow_renames,
+            ignore_missing=ignore_missing,
+            start=start,
+            limit=limit,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "commits": [
+                commit.to_summary_dict() if summary else commit.to_simplified_dict()
+                for commit in page.commits
+            ],
+            "count": len(page.commits),
+            "is_last_page": page.is_last_page,
+            "truncated": page.truncated,
+            "next_page_start": page.next_page_start,
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"list_commits failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        # Must precede the ValueError branch (this subclasses ValueError).
+        logger.error(f"list_commits failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"list_commits failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in list_commits:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while listing commits.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Get Bitbucket Commit", "readOnlyHint": True},
+)
+async def get_commit(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    commit_id: Annotated[
+        str,
+        Field(
+            description=(
+                "The commit SHA (full or abbreviated). Returned strictly by id."
+            ),
+        ),
+    ],
+) -> str:
+    """Get a single commit by id in a Bitbucket Data Center repository.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        commit_id: The commit SHA (full or abbreviated).
+
+    Returns:
+        JSON string with the commit (id, display id, message, author/committer,
+        timestamps, parents), or a sanitised error object on failure.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        commit = bitbucket.get_commit(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            commit_id=commit_id,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "commit": commit.to_simplified_dict(),
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"get_commit failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        logger.error(f"get_commit failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"get_commit failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in get_commit:")
+        response_data = {
+            "success": False,
+            "error": "An unexpected error occurred while getting the commit.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
     tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
     annotations={"title": "List Bitbucket Pull Requests", "readOnlyHint": True},
 )
@@ -1001,6 +1272,129 @@ async def get_pull_request(
         response_data = {
             "success": False,
             "error": "An unexpected error occurred while getting the pull request.",
+        }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Get Bitbucket Pull Request Commits",
+        "readOnlyHint": True,
+    },
+)
+async def get_pull_request_commits(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first commit to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of commits to return in this window. Bitbucket "
+                "Data Center paginates commits; if more exist than are returned, "
+                "the response sets 'truncated' to true and 'next_page_start' to "
+                "the cursor for the next call."
+            ),
+            default=DEFAULT_COMMITS_LIMIT,
+            ge=1,
+            le=MAX_COMMITS_LIMIT,
+        ),
+    ] = DEFAULT_COMMITS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each commit's triage fields (display_id, "
+                "author, author_timestamp, first message line) instead of the "
+                "full record."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List the commits that make up a Bitbucket Data Center pull request.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        start: Pagination cursor (offset of the first commit); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of commits to return in this window.
+
+    Returns:
+        JSON string with the list of commits plus ``count``, ``is_last_page``,
+        ``truncated``, and ``next_page_start`` pagination fields, or a sanitised
+        error object on failure. ``count`` is the number of commits in THIS
+        window, not a grand total. To get more, call again with ``start`` set to
+        the returned ``next_page_start`` (when it is non-null);
+        ``is_last_page=true`` means the list is complete.
+    """
+    try:
+        bitbucket = await get_bitbucket_fetcher(ctx)
+        page = bitbucket.get_pull_request_commits(
+            project_key=project_key,
+            repository_slug=repository_slug,
+            pull_request_id=pull_request_id,
+            start=start,
+            limit=limit,
+        )
+        response_data: dict[str, object] = {
+            "success": True,
+            "commits": [
+                commit.to_summary_dict() if summary else commit.to_simplified_dict()
+                for commit in page.commits
+            ],
+            "count": len(page.commits),
+            "is_last_page": page.is_last_page,
+            "truncated": page.truncated,
+            "next_page_start": page.next_page_start,
+        }
+    except MCPAtlassianAuthenticationError as e:
+        logger.error(f"get_pull_request_commits failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Authentication/Permission Error: {str(e)}",
+        }
+    except BitbucketResourceNotFoundError as e:
+        # Must precede the ValueError branch (this subclasses ValueError).
+        logger.error(f"get_pull_request_commits failed: {e}")
+        response_data = {"success": False, "error": f"Not Found: {str(e)}"}
+    except (ValueError, OSError, HTTPError) as e:
+        logger.error(f"get_pull_request_commits failed: {e}")
+        response_data = {
+            "success": False,
+            "error": f"Network or API Error: {str(e)}",
+        }
+    except Exception:
+        logger.exception("Unexpected error in get_pull_request_commits:")
+        response_data = {
+            "success": False,
+            "error": (
+                "An unexpected error occurred while getting the pull request commits."
+            ),
         }
     return json.dumps(response_data, indent=2, ensure_ascii=False)
 

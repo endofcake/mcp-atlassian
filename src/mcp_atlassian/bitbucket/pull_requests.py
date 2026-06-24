@@ -126,28 +126,6 @@ class PullRequestsMixin(BitbucketClient):
             f"/repos/{quote(slug, safe='')}/pull-requests"
         )
 
-    @staticmethod
-    def _coerce_pr_id(pull_request_id: int | str) -> int:
-        """Coerce and validate a pull-request id to a positive integer.
-
-        Args:
-            pull_request_id: The caller-supplied pull-request id.
-
-        Returns:
-            The id as a positive ``int`` (safe to interpolate into the path —
-            an integer cannot carry traversal or injection).
-
-        Raises:
-            ValueError: If the id is not a positive integer.
-        """
-        try:
-            pr_id = int(pull_request_id)
-        except (TypeError, ValueError):
-            raise ValueError("pull_request_id must be a positive integer.") from None
-        if pr_id <= 0:
-            raise ValueError("pull_request_id must be a positive integer.")
-        return pr_id
-
     def list_pull_requests(
         self,
         project_key: str,

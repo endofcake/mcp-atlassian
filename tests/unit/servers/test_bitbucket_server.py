@@ -12,6 +12,7 @@ from mcp_atlassian.bitbucket.client import (
     BitbucketProjectsPage,
     BitbucketResourceNotFoundError,
 )
+from mcp_atlassian.bitbucket.commits import BitbucketCommitsPage
 from mcp_atlassian.bitbucket.pull_requests import (
     BitbucketActivitiesPage,
     BitbucketPullRequestsPage,
@@ -26,6 +27,7 @@ from mcp_atlassian.models.bitbucket import (
     BitbucketActivity,
     BitbucketBranch,
     BitbucketComment,
+    BitbucketCommit,
     BitbucketProject,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
@@ -34,13 +36,16 @@ from mcp_atlassian.models.bitbucket import (
 )
 from mcp_atlassian.servers.bitbucket import (
     add_comment,
+    get_commit,
     get_default_branch,
     get_pull_request,
     get_pull_request_activities,
     get_pull_request_comments,
+    get_pull_request_commits,
     get_pull_request_diff,
     get_tag,
     list_branches,
+    list_commits,
     list_projects,
     list_pull_requests,
     list_repositories,
@@ -1377,3 +1382,337 @@ class TestSetReviewStatusTool:
             )
         payload = json.loads(result)
         assert payload["error"].startswith("Authentication/Permission Error:")
+
+
+_COMMIT_API = {
+    "id": "abc123def456",
+    "displayId": "abc123d",
+    "message": "Add X\n\nbody",
+    "author": {"name": "Jane Dev", "emailAddress": "jane@x"},
+    "authorTimestamp": 1700000000000,
+    "committer": {"name": "Jane Dev", "emailAddress": "jane@x"},
+    "committerTimestamp": 1700000000000,
+    "parents": [{"id": "p1", "displayId": "p1d"}],
+}
+
+
+class TestListCommitsTool:
+    """The list_commits tool."""
+
+    async def test_success_returns_simplified_commits(self):
+        fetcher = MagicMock()
+        commit = BitbucketCommit.from_api_response(_COMMIT_API)
+        fetcher.list_commits.return_value = BitbucketCommitsPage(
+            commits=[commit],
+            is_last_page=True,
+            truncated=False,
+            next_page_start=None,
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_commits(
+                ctx, project_key="PROJ", repository_slug="my-repo"
+            )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["commits"] == [commit.to_simplified_dict()]
+        assert payload["count"] == 1
+        assert payload["is_last_page"] is True
+        assert payload["truncated"] is False
+        assert payload["next_page_start"] is None
+        # PII minimisation holds end-to-end: no inline email in the envelope.
+        assert "jane@x" not in result
+
+    async def test_summary_returns_triage_only(self):
+        fetcher = MagicMock()
+        commit = BitbucketCommit.from_api_response(_COMMIT_API)
+        fetcher.list_commits.return_value = BitbucketCommitsPage(
+            commits=[commit], is_last_page=True, truncated=False, next_page_start=None
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_commits(
+                ctx, project_key="PROJ", repository_slug="my-repo", summary=True
+            )
+        payload = json.loads(result)
+        assert payload["commits"] == [
+            {
+                "display_id": "abc123d",
+                "author": "Jane Dev",
+                "author_timestamp": 1700000000000,
+                "message": "Add X",
+            }
+        ]
+        # Projection is a tool-layer concern; the mixin call carries no summary.
+        assert "summary" not in fetcher.list_commits.call_args.kwargs
+
+    async def test_filters_and_cursor_thread_to_mixin(self):
+        fetcher = MagicMock()
+        fetcher.list_commits.return_value = BitbucketCommitsPage(
+            commits=[], is_last_page=False, truncated=True, next_page_start=25
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_commits(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                since="oldsha",
+                until="main",
+                path="src/app.py",
+                merges="only",
+                follow_renames=True,
+                ignore_missing=False,
+                start=10,
+                limit=50,
+            )
+        payload = json.loads(result)
+        assert payload["next_page_start"] == 25
+        fetcher.list_commits.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            since="oldsha",
+            until="main",
+            path="src/app.py",
+            merges="only",
+            follow_renames=True,
+            ignore_missing=False,
+            start=10,
+            limit=50,
+        )
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.list_commits.side_effect = BitbucketResourceNotFoundError(
+            "Bitbucket resource not found (HTTP 404) for .../commits."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_commits(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_network_error_message(self):
+        fetcher = MagicMock()
+        fetcher.list_commits.side_effect = ValueError("boom")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_commits(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_auth_error_message(self):
+        fetcher = MagicMock()
+        fetcher.list_commits.side_effect = MCPAtlassianAuthenticationError("401")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_commits(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        fetcher = MagicMock()
+        fetcher.list_commits.side_effect = RuntimeError("secret-host:5432")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await list_commits(ctx, project_key="P", repository_slug="r")
+        payload = json.loads(result)
+        assert payload["error"] == (
+            "An unexpected error occurred while listing commits."
+        )
+        assert "secret-host" not in payload["error"]
+
+
+class TestGetCommitTool:
+    """The get_commit tool."""
+
+    async def test_success_returns_commit(self):
+        fetcher = MagicMock()
+        fetcher.get_commit.return_value = BitbucketCommit.from_api_response(_COMMIT_API)
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_commit(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                commit_id="abc123def456",
+            )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["commit"]["display_id"] == "abc123d"
+        assert payload["commit"]["author"] == {"name": "Jane Dev"}
+        fetcher.get_commit.assert_called_once_with(
+            project_key="PROJ", repository_slug="my-repo", commit_id="abc123def456"
+        )
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.get_commit.side_effect = BitbucketResourceNotFoundError(
+            "Bitbucket resource not found (HTTP 404) for .../commits/missing."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_commit(
+                ctx, project_key="P", repository_slug="r", commit_id="missing"
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_network_error_message(self):
+        fetcher = MagicMock()
+        fetcher.get_commit.side_effect = ValueError("boom")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_commit(
+                ctx, project_key="P", repository_slug="r", commit_id="sha"
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_auth_error_message(self):
+        fetcher = MagicMock()
+        fetcher.get_commit.side_effect = MCPAtlassianAuthenticationError("403")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_commit(
+                ctx, project_key="P", repository_slug="r", commit_id="sha"
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        fetcher = MagicMock()
+        fetcher.get_commit.side_effect = RuntimeError("secret-host:5432")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_commit(
+                ctx, project_key="P", repository_slug="r", commit_id="sha"
+            )
+        payload = json.loads(result)
+        assert payload["error"] == (
+            "An unexpected error occurred while getting the commit."
+        )
+        assert "secret-host" not in payload["error"]
+
+
+class TestGetPullRequestCommitsTool:
+    """The get_pull_request_commits tool."""
+
+    async def test_success_returns_commits(self):
+        fetcher = MagicMock()
+        commit = BitbucketCommit.from_api_response(_COMMIT_API)
+        fetcher.get_pull_request_commits.return_value = BitbucketCommitsPage(
+            commits=[commit], is_last_page=True, truncated=False, next_page_start=None
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_pull_request_commits(
+                ctx, project_key="PROJ", repository_slug="my-repo", pull_request_id=42
+            )
+        payload = json.loads(result)
+        assert payload["success"] is True
+        assert payload["commits"] == [commit.to_simplified_dict()]
+        assert payload["count"] == 1
+        assert payload["is_last_page"] is True
+
+    async def test_cursor_threads_to_mixin(self):
+        fetcher = MagicMock()
+        fetcher.get_pull_request_commits.return_value = BitbucketCommitsPage(
+            commits=[], is_last_page=False, truncated=True, next_page_start=25
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_pull_request_commits(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                pull_request_id=42,
+                start=10,
+                limit=50,
+            )
+        payload = json.loads(result)
+        assert payload["next_page_start"] == 25
+        fetcher.get_pull_request_commits.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=42,
+            start=10,
+            limit=50,
+        )
+
+    async def test_summary_returns_triage_only(self):
+        fetcher = MagicMock()
+        commit = BitbucketCommit.from_api_response(_COMMIT_API)
+        fetcher.get_pull_request_commits.return_value = BitbucketCommitsPage(
+            commits=[commit], is_last_page=True, truncated=False, next_page_start=None
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_pull_request_commits(
+                ctx,
+                project_key="PROJ",
+                repository_slug="my-repo",
+                pull_request_id=42,
+                summary=True,
+            )
+        payload = json.loads(result)
+        assert payload["commits"] == [
+            {
+                "display_id": "abc123d",
+                "author": "Jane Dev",
+                "author_timestamp": 1700000000000,
+                "message": "Add X",
+            }
+        ]
+        assert "summary" not in fetcher.get_pull_request_commits.call_args.kwargs
+
+    async def test_not_found_message(self):
+        fetcher = MagicMock()
+        fetcher.get_pull_request_commits.side_effect = BitbucketResourceNotFoundError(
+            "Bitbucket resource not found (HTTP 404) for .../pull-requests/42/commits."
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_pull_request_commits(
+                ctx, project_key="P", repository_slug="r", pull_request_id=42
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Not Found:")
+
+    async def test_network_error_message(self):
+        fetcher = MagicMock()
+        fetcher.get_pull_request_commits.side_effect = ValueError("boom")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_pull_request_commits(
+                ctx, project_key="P", repository_slug="r", pull_request_id=42
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Network or API Error:")
+
+    async def test_auth_error_message(self):
+        fetcher = MagicMock()
+        fetcher.get_pull_request_commits.side_effect = MCPAtlassianAuthenticationError(
+            "401"
+        )
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_pull_request_commits(
+                ctx, project_key="P", repository_slug="r", pull_request_id=42
+            )
+        payload = json.loads(result)
+        assert payload["error"].startswith("Authentication/Permission Error:")
+
+    async def test_unexpected_error_is_sanitised(self):
+        fetcher = MagicMock()
+        fetcher.get_pull_request_commits.side_effect = RuntimeError("secret-host:5432")
+        ctx = MagicMock()
+        with _patched_fetcher(fetcher):
+            result = await get_pull_request_commits(
+                ctx, project_key="P", repository_slug="r", pull_request_id=42
+            )
+        payload = json.loads(result)
+        assert payload["error"] == (
+            "An unexpected error occurred while getting the pull request commits."
+        )
+        assert "secret-host" not in payload["error"]

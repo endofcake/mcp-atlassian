@@ -333,9 +333,9 @@ class TestToolsetTagCompleteness:
                 )
 
     def test_bitbucket_tool_count(self, bitbucket_tools):
-        """Verify expected number of Bitbucket tools (11 read + 2 write)."""
-        assert len(bitbucket_tools) == 13, (
-            f"Expected 13 Bitbucket tools, got {len(bitbucket_tools)}"
+        """Verify expected number of Bitbucket tools (14 read + 2 write)."""
+        assert len(bitbucket_tools) == 16, (
+            f"Expected 16 Bitbucket tools, got {len(bitbucket_tools)}"
         )
 
     @pytest.mark.parametrize("tool_name", ["add_comment", "set_review_status"])

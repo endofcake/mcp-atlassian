@@ -6,6 +6,7 @@ import os
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import quote
 
 from requests import HTTPError, Session
 from requests.exceptions import ConnectionError as RequestsConnectionError
@@ -404,6 +405,59 @@ class BitbucketClient:
         username = response.headers.get("X-AUSERNAME")
         if isinstance(username, str) and username:
             self._auth_username = username
+
+    @staticmethod
+    def _repo_base_path(project_key: str, repository_slug: str) -> str:
+        """Build and validate the repo-scoped REST path `/projects/{key}/repos/{slug}`.
+
+        Both caller-supplied segments are percent-encoded with quote(safe='') (no
+        unescaped slashes) to prevent path traversal.
+
+        Args:
+            project_key: The project key (e.g. ``"PROJ"``).
+            repository_slug: The repository slug (e.g. ``"my-repo"``).
+
+        Returns:
+            ``/projects/{key}/repos/{slug}`` with both caller segments
+            percent-encoded.
+
+        Raises:
+            ValueError: If either caller segment is blank.
+        """
+        key = project_key.strip()
+        slug = repository_slug.strip()
+        if not key:
+            raise ValueError("project_key must be a non-empty Bitbucket project key.")
+        if not slug:
+            raise ValueError(
+                "repository_slug must be a non-empty Bitbucket repository slug."
+            )
+        return f"/projects/{quote(key, safe='')}/repos/{quote(slug, safe='')}"
+
+    @staticmethod
+    def _coerce_pr_id(pull_request_id: int | str) -> int:
+        """Coerce and validate a pull-request id to a positive integer.
+
+        Shared by the pull-request and commit mixins (both build
+        ``.../pull-requests/{id}/...`` paths).
+
+        Args:
+            pull_request_id: The caller-supplied pull-request id.
+
+        Returns:
+            The id as a positive ``int`` (safe to interpolate into the path —
+            an integer cannot carry traversal or injection).
+
+        Raises:
+            ValueError: If the id is not a positive integer.
+        """
+        try:
+            pr_id = int(pull_request_id)
+        except (TypeError, ValueError):
+            raise ValueError("pull_request_id must be a positive integer.") from None
+        if pr_id <= 0:
+            raise ValueError("pull_request_id must be a positive integer.")
+        return pr_id
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:
         """Issue a GET against the Bitbucket DC core REST API.

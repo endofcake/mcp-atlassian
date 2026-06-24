@@ -5,6 +5,7 @@ entity type, mirroring the Jira and Confluence model packages.
 """
 
 from .activity import BitbucketActivity, BitbucketComment
+from .commit import BitbucketCommit
 from .diff import (
     BitbucketDiffHunk,
     BitbucketDiffLine,
@@ -26,6 +27,7 @@ __all__ = [
     "BitbucketActivity",
     "BitbucketBranch",
     "BitbucketComment",
+    "BitbucketCommit",
     "BitbucketDiffHunk",
     "BitbucketDiffLine",
     "BitbucketDiffSegment",

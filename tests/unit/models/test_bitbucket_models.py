@@ -8,12 +8,14 @@ from mcp_atlassian.models.bitbucket import (
     BitbucketActivity,
     BitbucketBranch,
     BitbucketComment,
+    BitbucketCommit,
     BitbucketFileDiff,
     BitbucketProject,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
     BitbucketRepository,
     BitbucketTag,
+    BitbucketUser,
 )
 
 # Shapes mirror the pinned Bitbucket DC REST spec (RestProject / RestRepository).
@@ -287,6 +289,102 @@ class TestBitbucketTag:
     def test_to_summary_dict_is_triage_only(self):
         result = BitbucketTag.from_api_response(_TAG_API).to_summary_dict()
         assert result == {"display_id": "v1.0.0", "latest_commit": "def456"}
+
+
+# Shapes mirror the pinned Bitbucket DC REST spec (RestCommit). author/committer
+# are inline {name, emailAddress} objects (NOT user refs — no slug/account).
+_COMMIT_API = {
+    "id": "abc123def456abc123def456abc123def456abcd",
+    "displayId": "abc123d",
+    "message": "Add feature X\n\nMore detail in the body.",
+    "author": {"name": "Jane Dev", "emailAddress": "jane@corp.example.com"},
+    "authorTimestamp": 1700000000000,
+    "committer": {"name": "Repo Bot", "emailAddress": "bot@corp.example.com"},
+    "committerTimestamp": 1700000100000,
+    "parents": [
+        {"id": "parent1sha", "displayId": "parent1"},
+        {"id": "parent2sha", "displayId": "parent2"},
+    ],
+}
+
+
+class TestBitbucketCommit:
+    """BitbucketCommit parsing and simplification."""
+
+    def test_from_api_response_maps_fields(self):
+        commit = BitbucketCommit.from_api_response(_COMMIT_API)
+        assert commit.id == "abc123def456abc123def456abc123def456abcd"
+        assert commit.display_id == "abc123d"
+        assert commit.message.startswith("Add feature X")
+        assert commit.author_timestamp == 1700000000000
+        assert commit.committer_timestamp == 1700000100000
+
+    def test_inline_author_parses_to_user_with_email_dropped(self):
+        """author/committer parse to BitbucketUser; emailAddress is never kept."""
+        commit = BitbucketCommit.from_api_response(_COMMIT_API)
+        assert isinstance(commit.author, BitbucketUser)
+        assert commit.author.name == "Jane Dev"
+        assert isinstance(commit.committer, BitbucketUser)
+        assert commit.committer.name == "Repo Bot"
+        # PII minimisation: the inline email is dropped at the model boundary.
+        simplified = commit.to_simplified_dict()
+        assert "jane@corp.example.com" not in str(simplified)
+        assert "emailAddress" not in str(simplified)
+
+    def test_parents_extracted_as_ids(self):
+        commit = BitbucketCommit.from_api_response(_COMMIT_API)
+        assert commit.parents == ["parent1sha", "parent2sha"]
+
+    def test_malformed_parents_entries_skipped(self):
+        """Non-dict / id-less parent entries are skipped, not raised on."""
+        data = {**_COMMIT_API, "parents": [{"id": "ok"}, {"displayId": "x"}, "junk"]}
+        commit = BitbucketCommit.from_api_response(data)
+        assert commit.parents == ["ok"]
+
+    def test_from_api_response_empty_returns_default(self):
+        commit = BitbucketCommit.from_api_response({})
+        assert commit.id == ""
+        assert commit.display_id == ""
+        assert commit.message == ""
+        assert commit.parents == []
+        assert commit.author is None
+        assert commit.committer is None
+        assert commit.author_timestamp is None
+
+    def test_from_api_response_non_dict_returns_default(self):
+        commit = BitbucketCommit.from_api_response("nonsense")  # type: ignore[arg-type]
+        assert commit.id == ""
+
+    def test_to_simplified_dict_omits_absent_optionals(self):
+        commit = BitbucketCommit.from_api_response(
+            {"id": "sha", "displayId": "sha7", "message": "msg"}
+        )
+        result = commit.to_simplified_dict()
+        assert result == {"id": "sha", "display_id": "sha7", "message": "msg"}
+        assert "author" not in result
+        assert "committer" not in result
+        assert "author_timestamp" not in result
+        assert "parents" not in result
+
+    def test_to_simplified_dict_full(self):
+        result = BitbucketCommit.from_api_response(_COMMIT_API).to_simplified_dict()
+        assert result["id"] == "abc123def456abc123def456abc123def456abcd"
+        assert result["display_id"] == "abc123d"
+        assert result["author"] == {"name": "Jane Dev"}
+        assert result["committer"] == {"name": "Repo Bot"}
+        assert result["author_timestamp"] == 1700000000000
+        assert result["committer_timestamp"] == 1700000100000
+        assert result["parents"] == ["parent1sha", "parent2sha"]
+
+    def test_to_summary_dict_is_triage_only(self):
+        result = BitbucketCommit.from_api_response(_COMMIT_API).to_summary_dict()
+        assert result == {
+            "display_id": "abc123d",
+            "author": "Jane Dev",
+            "author_timestamp": 1700000000000,
+            # only the first line of a multi-line message
+            "message": "Add feature X",
+        }
 
 
 # Shapes mirror the pinned Bitbucket DC REST spec (RestPullRequest).
@@ -929,6 +1027,55 @@ class TestBitbucketVersionPortability:
         assert tag.latest_commit == "def456"
         assert tag.hash == "objsha"
         assert "latest_changeset" not in tag.to_simplified_dict()
+
+    @pytest.mark.parametrize(
+        ("label", "data"),
+        [
+            # 8.x and 9.x both return inline {name, emailAddress} author/committer
+            # objects and epoch-ms timestamps; the model reads `name`, drops the
+            # email, and passes the timestamps through unchanged.
+            (
+                "v8",
+                {
+                    "id": "sha8",
+                    "displayId": "sha8a",
+                    "message": "msg8",
+                    "author": {"name": "Dev8", "emailAddress": "dev8@x"},
+                    "authorTimestamp": 1600000000000,
+                    "parents": [{"id": "p8", "displayId": "p8s"}],
+                },
+            ),
+            (
+                "v9",
+                {
+                    "id": "sha9",
+                    "displayId": "sha9a",
+                    "message": "msg9",
+                    "author": {"name": "Dev9", "emailAddress": "dev9@x"},
+                    "authorTimestamp": 1700000000000,
+                    "parents": [{"id": "p9", "displayId": "p9s"}],
+                },
+            ),
+        ],
+    )
+    def test_commit_parses_across_versions(self, label, data):
+        commit = BitbucketCommit.from_api_response(data)
+        assert commit.display_id == data["displayId"]
+        assert commit.author is not None
+        assert commit.author.name == data["author"]["name"]
+        assert commit.author_timestamp == data["authorTimestamp"]
+        assert commit.parents == [data["parents"][0]["id"]]
+        # The inline email is never surfaced on any version.
+        assert "emailAddress" not in str(commit.to_simplified_dict())
+
+    def test_commit_additive_and_unknown_wire_fields_are_ignored(self):
+        """Additive/unknown commit wire keys are dropped, not breaking parsing."""
+        commit = BitbucketCommit.from_api_response(
+            {**_COMMIT_API, "properties": {"jira-key": ["X-1"]}, "futureField": True}
+        )
+        assert commit.display_id == "abc123d"
+        assert "properties" not in commit.to_simplified_dict()
+        assert "futureField" not in commit.to_simplified_dict()
 
     def test_ref_additive_and_unknown_wire_fields_are_ignored(self):
         """Additive/unknown ref wire keys are dropped, not breaking parsing."""

@@ -71,35 +71,6 @@ class RefsMixin(BitbucketClient):
     """Mixin for Bitbucket Data Center branch and tag operations."""
 
     @staticmethod
-    def _refs_base_path(project_key: str, repository_slug: str, collection: str) -> str:
-        """Validate and percent-encode a repo-scoped refs collection path.
-
-        Args:
-            project_key: The project key (e.g. ``"PROJ"``).
-            repository_slug: The repository slug (e.g. ``"my-repo"``).
-            collection: The collection segment (``"branches"`` or ``"tags"``).
-
-        Returns:
-            ``/projects/{key}/repos/{slug}/{collection}`` with both caller
-            segments percent-encoded (no unescaped slashes) to prevent path
-            traversal.
-
-        Raises:
-            ValueError: If either caller segment is blank.
-        """
-        key = project_key.strip()
-        slug = repository_slug.strip()
-        if not key:
-            raise ValueError("project_key must be a non-empty Bitbucket project key.")
-        if not slug:
-            raise ValueError(
-                "repository_slug must be a non-empty Bitbucket repository slug."
-            )
-        return (
-            f"/projects/{quote(key, safe='')}/repos/{quote(slug, safe='')}/{collection}"
-        )
-
-    @staticmethod
     def _ref_list_params(
         filter_text: str | None,
         order_by: str | None,
@@ -181,7 +152,7 @@ class RefsMixin(BitbucketClient):
                 is not accessible.
             MCPAtlassianAuthenticationError: If the bearer token is rejected.
         """
-        path = self._refs_base_path(project_key, repository_slug, "branches")
+        path = f"{self._repo_base_path(project_key, repository_slug)}/branches"
         limit = max(1, min(limit, MAX_REFS_LIMIT))
         params = self._ref_list_params(filter_text, order_by, boost_matches)
         # Single window: one upstream request, cursor surfaced for resumption.
@@ -243,7 +214,7 @@ class RefsMixin(BitbucketClient):
                 is not accessible.
             MCPAtlassianAuthenticationError: If the bearer token is rejected.
         """
-        path = self._refs_base_path(project_key, repository_slug, "tags")
+        path = f"{self._repo_base_path(project_key, repository_slug)}/tags"
         limit = max(1, min(limit, MAX_REFS_LIMIT))
         params = self._ref_list_params(filter_text, order_by)
         # Single window: one upstream request, cursor surfaced for resumption.
@@ -286,7 +257,7 @@ class RefsMixin(BitbucketClient):
                 accessible.
             MCPAtlassianAuthenticationError: If the bearer token is rejected.
         """
-        base = self._refs_base_path(project_key, repository_slug, "tags")
+        base = f"{self._repo_base_path(project_key, repository_slug)}/tags"
         tag_name = name.strip()
         if not tag_name:
             raise ValueError("name must be a non-empty Bitbucket tag name.")
@@ -322,7 +293,7 @@ class RefsMixin(BitbucketClient):
                 not accessible, or has no default branch.
             MCPAtlassianAuthenticationError: If the bearer token is rejected.
         """
-        path = self._refs_base_path(project_key, repository_slug, "default-branch")
+        path = f"{self._repo_base_path(project_key, repository_slug)}/default-branch"
         data = self._get(path)
         if not isinstance(data, dict):
             raise ValueError(
