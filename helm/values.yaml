@@ -115,6 +115,17 @@ autoscaling:
 volumes: []
 volumeMounts: []
 
+# Additional sidecar containers appended to the pod's container list, e.g. a log
+# shipper. Rendered verbatim as Kubernetes container specs, so each entry needs
+# at least `name` and `image`. Share data with the main container by declaring a
+# volume under `volumes` and mounting it from both here and `volumeMounts`.
+extraContainers: []
+  # - name: log-shipper
+  #   image: fluent/fluent-bit:3.1
+  #   volumeMounts:
+  #     - name: varlog
+  #       mountPath: /var/log
+
 nodeSelector: {}
 tolerations: []
 affinity: {}

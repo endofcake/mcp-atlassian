@@ -391,6 +391,9 @@ spec:
         {{- with .Values.volumeMounts }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
+      {{- with .Values.extraContainers }}
+      {{- toYaml . | nindent 6 }}
+      {{- end }}
       volumes:
       {{- if and (eq .Values.authMode "oauth") .Values.persistence.enabled }}
       - name: oauth-tokens

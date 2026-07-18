@@ -2,7 +2,7 @@ apiVersion: v2
 name: mcp-atlassian
 description: A Helm chart for deploying MCP Atlassian server - Model Context Protocol server for Jira and Confluence
 type: application
-version: 1.1.0
+version: 1.2.0
 appVersion: "0.20.0"
 keywords:
   - mcp
