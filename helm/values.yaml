@@ -115,6 +115,18 @@ autoscaling:
 volumes: []
 volumeMounts: []
 
+# Additional init containers rendered verbatim as Kubernetes container specs.
+# For a Kubernetes native sidecar, set `restartPolicy: Always` on an entry (on
+# cluster versions that support sidecar containers). Volumes can be shared by
+# declaring them under `volumes` and mounting them from each container.
+extraInitContainers: []
+  # - name: log-shipper
+  #   image: fluent/fluent-bit:3.1
+  #   restartPolicy: Always
+  #   volumeMounts:
+  #     - name: varlog
+  #       mountPath: /var/log
+
 # Additional sidecar containers appended to the pod's container list, e.g. a log
 # shipper. Rendered verbatim as Kubernetes container specs, so each entry needs
 # at least `name` and `image`. Share data with the main container by declaring a

@@ -38,17 +38,21 @@ def _helm_template(*set_json: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _containers(rendered_deployment: str) -> list[dict]:
-    """Return containers from the rendered Deployment pod spec."""
+def _pod_spec(rendered_deployment: str) -> dict:
+    """Return the rendered Deployment pod spec."""
     document = yaml.safe_load(rendered_deployment)
-    return document["spec"]["template"]["spec"]["containers"]
+    return document["spec"]["template"]["spec"]
 
 
 def test_chart_declares_extra_containers_defaulting_empty():
     """The values and Deployment templates expose the sidecar contract."""
     values = yaml.safe_load(_VALUES.read_text())
     assert values["extraContainers"] == []
-    assert ".Values.extraContainers" in _DEPLOYMENT_TEMPLATE.read_text()
+    assert values["extraInitContainers"] == []
+
+    template = _DEPLOYMENT_TEMPLATE.read_text()
+    assert ".Values.extraContainers" in template
+    assert ".Values.extraInitContainers" in template
 
 
 @requires_helm
@@ -57,7 +61,9 @@ def test_default_render_has_only_main_container():
     result = _helm_template()
     assert result.returncode == 0, result.stderr
 
-    containers = _containers(result.stdout)
+    pod_spec = _pod_spec(result.stdout)
+    assert "initContainers" not in pod_spec
+    containers = pod_spec["containers"]
     assert [container["name"] for container in containers] == ["mcp-atlassian"]
 
 
@@ -74,7 +80,7 @@ def test_extra_containers_are_appended_verbatim():
     result = _helm_template(sidecars, volumes)
     assert result.returncode == 0, result.stderr
 
-    containers = _containers(result.stdout)
+    containers = _pod_spec(result.stdout)["containers"]
     assert [container["name"] for container in containers] == [
         "mcp-atlassian",
         "log-shipper",
@@ -86,3 +92,32 @@ def test_extra_containers_are_appended_verbatim():
         "env": [{"name": "LOG_LEVEL", "value": "info"}],
         "volumeMounts": [{"name": "varlog", "mountPath": "/var/log"}],
     }
+
+
+@requires_helm
+def test_extra_init_containers_are_rendered_verbatim():
+    """Init containers support both run-to-completion and native sidecars."""
+    init_containers = (
+        'extraInitContainers=[{"name":"log-shipper","image":'
+        '"fluent/fluent-bit:3.1","restartPolicy":"Always","env":'
+        '[{"name":"LOG_LEVEL","value":"info"}],"volumeMounts":'
+        '[{"name":"varlog","mountPath":"/var/log"}]}]'
+    )
+    volumes = 'volumes=[{"name":"varlog","emptyDir":{}}]'
+
+    result = _helm_template(init_containers, volumes)
+    assert result.returncode == 0, result.stderr
+
+    pod_spec = _pod_spec(result.stdout)
+    assert [container["name"] for container in pod_spec["containers"]] == [
+        "mcp-atlassian"
+    ]
+    assert pod_spec["initContainers"] == [
+        {
+            "name": "log-shipper",
+            "image": "fluent/fluent-bit:3.1",
+            "restartPolicy": "Always",
+            "env": [{"name": "LOG_LEVEL", "value": "info"}],
+            "volumeMounts": [{"name": "varlog", "mountPath": "/var/log"}],
+        }
+    ]
