@@ -50,6 +50,51 @@ service:
   targetPort: 9000
   annotations: {}
 
+# Server TLS (HTTPS listener)
+# Serve the HTTP transports (sse/streamable-http) over HTTPS by terminating TLS
+# at the MCP server itself — useful for end-to-end encryption to the pod. The
+# chart does NOT create or manage certificates: provide an existing Secret (for
+# example one issued by cert-manager) holding the cert and key; it is mounted
+# read-only into the container and passed to the server via --ssl-certfile /
+# --ssl-keyfile. The chart also sets MCP_ATLASSIAN_USE_SYSTEM_TRUSTSTORE=false,
+# which the HTTPS listener requires (the OS trust store injection is
+# client-side only and would reject every inbound TLS handshake). See caBundle
+# below for outbound verification against a private CA. Not valid with the
+# 'stdio' transport (no network listener).
+# NOTE: requires an image that includes the --ssl-certfile/--ssl-keyfile
+# options and the outbound CA-bundle handling; older tags crashloop on the
+# unknown options. Keep image.tag/appVersion at or above the release that
+# ships them.
+tls:
+  enabled: false
+  # Name of an existing Secret (PEM cert + key). Required when tls.enabled.
+  secretName: ""
+  # Keys within that Secret. Defaults match a kubernetes.io/tls Secret.
+  certFileKey: tls.crt
+  keyFileKey: tls.key
+  # Where the Secret is mounted in the container. Must NOT be under /app
+  # (the container workdir), which is the confinement root for
+  # caller-supplied file paths; the render enforces this.
+  mountPath: /etc/mcp-atlassian/tls
+  # File mode for the mounted key material (octal 0400: owner read-only).
+  # Readability relies on podSecurityContext.fsGroup (kubelet group-owns the
+  # projected files); if you remove fsGroup, the pod cannot read the key and
+  # crashloops at the TLS preflight.
+  defaultMode: 0400
+
+# Outbound private-CA bundle (optional)
+# With the OS trust store injection disabled (automatic when tls.enabled),
+# outbound SSL verification uses the bundled certifi CAs. If your Atlassian
+# instance is signed by a private CA, provide an existing Secret holding the CA
+# bundle (PEM); it is mounted read-only and exposed via REQUESTS_CA_BUNDLE (the
+# requests-based Jira/Confluence clients) and SSL_CERT_FILE (the httpx-based
+# OAuth proxy paths). Include public roots in the bundle if you also talk to
+# Atlassian Cloud. Setting secretName enables the mount.
+caBundle:
+  secretName: ""
+  key: ca.crt
+  mountPath: /etc/mcp-atlassian/ca
+
 ingress:
   enabled: false
   className: ""

@@ -1,3 +1,46 @@
+{{- /* TLS/CA locals: defaulted so chart-1.0 value shapes (helm upgrade
+     --reuse-values from a release without these maps) render, and mount
+     paths canonicalized so the /app boundary cannot be bypassed with a
+     noncanonical spelling. /app is the container workdir and the
+     confinement root for caller-supplied file paths. */}}
+{{- $tls := .Values.tls | default dict }}
+{{- $caBundle := .Values.caBundle | default dict }}
+{{- $tlsMount := clean ($tls.mountPath | default "/etc/mcp-atlassian/tls") }}
+{{- $tlsCert := $tls.certFileKey | default "tls.crt" }}
+{{- $tlsKey := $tls.keyFileKey | default "tls.key" }}
+{{- $tlsMode := $tls.defaultMode | default 256 }}
+{{- $caMount := clean ($caBundle.mountPath | default "/etc/mcp-atlassian/ca") }}
+{{- $caKey := $caBundle.key | default "ca.crt" }}
+{{- if $tls.enabled }}
+{{- if not $tls.secretName }}
+{{- fail "tls.secretName is required when tls.enabled is true; the chart mounts an existing Secret (e.g. from cert-manager) and does not create one." }}
+{{- end }}
+{{- if eq .Values.transport "stdio" }}
+{{- fail "tls.enabled requires an HTTP transport (sse or streamable-http); stdio has no network listener for TLS to terminate on." }}
+{{- end }}
+{{- range $k := list $tlsCert $tlsKey }}
+{{- if or (not $k) (eq $k ".") (eq $k "..") (contains "/" $k) }}
+{{- fail "tls.certFileKey and tls.keyFileKey must be plain file names within the Secret (non-empty, no '/', not '.' or '..')." }}
+{{- end }}
+{{- end }}
+{{- if not (isAbs $tlsMount) }}
+{{- fail "tls.mountPath must be an absolute path." }}
+{{- end }}
+{{- if or (eq $tlsMount "/app") (hasPrefix "/app/" $tlsMount) }}
+{{- fail "tls.mountPath must not be /app or a path under /app: the container workdir is the confinement root for caller-supplied file paths, so a key mounted there would be readable through the attachment/page-content tools." }}
+{{- end }}
+{{- end }}
+{{- if $caBundle.secretName }}
+{{- if or (not $caKey) (eq $caKey ".") (eq $caKey "..") (contains "/" $caKey) }}
+{{- fail "caBundle.key must be a plain file name within the Secret (non-empty, no '/', not '.' or '..')." }}
+{{- end }}
+{{- if not (isAbs $caMount) }}
+{{- fail "caBundle.mountPath must be an absolute path." }}
+{{- end }}
+{{- if or (eq $caMount "/app") (hasPrefix "/app/" $caMount) }}
+{{- fail "caBundle.mountPath must not be /app or a path under /app: the container workdir is the confinement root for caller-supplied file paths." }}
+{{- end }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -50,6 +93,12 @@ spec:
         - {{ .Values.transport }}
         - --port
         - "{{ .Values.port }}"
+        {{- if $tls.enabled }}
+        - --ssl-certfile
+        - {{ printf "%s/%s" $tlsMount $tlsCert | quote }}
+        - --ssl-keyfile
+        - {{ printf "%s/%s" $tlsMount $tlsKey | quote }}
+        {{- end }}
         {{- end }}
         {{- if .Values.config.verbose }}
         - -v
@@ -62,6 +111,19 @@ spec:
         - {{ .Values.config.enabledTools | quote }}
         {{- end }}
         env:
+        {{- if $tls.enabled }}
+        # Required by the HTTPS listener: the OS trust store injection is
+        # client-side only and would reject every inbound TLS handshake, so
+        # the server refuses to start with both enabled.
+        - name: MCP_ATLASSIAN_USE_SYSTEM_TRUSTSTORE
+          value: "false"
+        {{- end }}
+        {{- if $caBundle.secretName }}
+        - name: REQUESTS_CA_BUNDLE
+          value: {{ printf "%s/%s" $caMount $caKey | quote }}
+        - name: SSL_CERT_FILE
+          value: {{ printf "%s/%s" $caMount $caKey | quote }}
+        {{- end }}
         {{- if eq .Values.authMode "external" }}
         - name: ATLASSIAN_EXTERNAL_AUTH_ENABLE
           value: "true"
@@ -330,7 +392,15 @@ spec:
 
         {{- if ne .Values.transport "stdio" }}
         readinessProbe:
+          {{- if and $tls.enabled ((.Values.readinessProbe | default dict).httpGet) }}
+          {{- /* The pod serves HTTPS, so the probe must too. Default the
+                 scheme to HTTPS but let an explicit value win. */}}
+          {{- $probe := deepCopy .Values.readinessProbe }}
+          {{- $_ := set $probe.httpGet "scheme" (default "HTTPS" $probe.httpGet.scheme) }}
+          {{- toYaml $probe | nindent 12 }}
+          {{- else }}
           {{- toYaml .Values.readinessProbe | nindent 12 }}
+          {{- end }}
         {{- end }}
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
@@ -338,6 +408,16 @@ spec:
         {{- if and (eq .Values.authMode "oauth") .Values.persistence.enabled }}
         - name: oauth-tokens
           mountPath: /home/app/.mcp-atlassian
+        {{- end }}
+        {{- if $tls.enabled }}
+        - name: tls-certs
+          mountPath: {{ $tlsMount | quote }}
+          readOnly: true
+        {{- end }}
+        {{- if $caBundle.secretName }}
+        - name: ca-bundle
+          mountPath: {{ $caMount | quote }}
+          readOnly: true
         {{- end }}
         {{- with .Values.volumeMounts }}
         {{- toYaml . | nindent 8 }}
@@ -347,6 +427,27 @@ spec:
       - name: oauth-tokens
         persistentVolumeClaim:
           claimName: {{ if .Values.persistence.existingClaim }}{{ .Values.persistence.existingClaim }}{{- else }}{{ include "mcp-atlassian.fullname" . }}{{- end }}
+      {{- end }}
+      {{- if $tls.enabled }}
+      - name: tls-certs
+        secret:
+          secretName: {{ $tls.secretName | quote }}
+          defaultMode: {{ $tlsMode }}
+          # Project only the cert/key entries; a reused Secret may hold
+          # unrelated keys that must not reach the pod filesystem.
+          items:
+          {{- range $k := uniq (list $tlsCert $tlsKey) }}
+          - key: {{ $k | quote }}
+            path: {{ $k | quote }}
+          {{- end }}
+      {{- end }}
+      {{- if $caBundle.secretName }}
+      - name: ca-bundle
+        secret:
+          secretName: {{ $caBundle.secretName | quote }}
+          items:
+          - key: {{ $caKey | quote }}
+            path: {{ $caKey | quote }}
       {{- end }}
       {{- with .Values.volumes }}
       {{- toYaml . | nindent 6 }}

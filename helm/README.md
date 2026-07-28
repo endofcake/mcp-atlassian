@@ -189,6 +189,70 @@ readinessProbe:
   failureThreshold: 5
 ```
 
+### Server TLS (HTTPS listener)
+
+For end-to-end encryption to the pod, the server can terminate TLS itself instead of
+relying on the ingress. Provide an **existing** Secret holding the certificate and key
+(for example one issued by cert-manager) — the chart never creates or manages
+certificates:
+
+```yaml
+transport: streamable-http
+tls:
+  enabled: true
+  secretName: mcp-atlassian-server-tls   # existing kubernetes.io/tls Secret
+  # certFileKey: tls.crt                 # defaults match a kubernetes.io/tls Secret
+  # keyFileKey: tls.key
+```
+
+The Secret is mounted read-only (file mode `0400`) and passed to the server via
+`--ssl-certfile`/`--ssl-keyfile`. The chart sets
+`MCP_ATLASSIAN_USE_SYSTEM_TRUSTSTORE=false` automatically — the HTTPS listener
+requires it — and defaults the readiness probe scheme to `HTTPS` (an explicitly set
+scheme wins). Enabling TLS with `stdio` transport, without a `secretName`, or with a
+blank cert/key key name fails the render loudly.
+
+With the OS trust store disabled, outbound SSL verification uses the bundled certifi
+CAs. If your Atlassian instance uses a private CA, mount a CA bundle from an existing
+Secret:
+
+```yaml
+caBundle:
+  secretName: mcp-atlassian-corp-ca      # existing Secret holding the bundle (PEM)
+  # key: ca.crt
+```
+
+This exposes the bundle via `REQUESTS_CA_BUNDLE` (Jira/Confluence REST clients) and
+`SSL_CERT_FILE` (OAuth proxy paths). Include public roots in the bundle if the
+deployment also talks to Atlassian Cloud.
+
+Two operational notes:
+
+- **Certificate rotation requires a restart.** The pair is loaded once at startup, and
+  the chart cannot watch an external Secret. Pair the deployment with something like
+  [Stakater Reloader](https://github.com/stakater/Reloader) (add
+  `secret.reloader.stakater.com/reload: <secretName>` via `podAnnotations`) or schedule
+  a `kubectl rollout restart` inside the certificate's renewal window.
+- **Behind an ingress, the controller must speak HTTPS to the backend — and verify
+  it.** `backend-protocol: "HTTPS"` alone only encrypts the ingress-to-pod hop; by
+  default ingress-nginx does **not** verify the backend certificate, so the hop is not
+  authenticated. For ingress-nginx, provide the CA (and enable verification) as well:
+
+  ```yaml
+  ingress:
+    annotations:
+      nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+      # Authenticate the backend, not just encrypt the hop:
+      nginx.ingress.kubernetes.io/proxy-ssl-secret: "<namespace>/<ca-secret>"
+      nginx.ingress.kubernetes.io/proxy-ssl-verify: "on"
+      nginx.ingress.kubernetes.io/proxy-ssl-server-name: "on"
+      nginx.ingress.kubernetes.io/proxy-ssl-name: "<service-dns-name>"
+  ```
+
+  Other controllers have equivalent backend-verification settings; without them an
+  in-cluster man-in-the-middle could intercept the credentials the listener exists to
+  protect.
+
 ## Upgrading
 
 ```bash

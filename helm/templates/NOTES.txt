@@ -26,6 +26,8 @@ Note: No HTTP endpoints or health checks are available in stdio mode.
 ═══════════════════════════════════════════════════════════════════════════════
 
 The server is running in {{ .Values.transport }} mode on port {{ .Values.port }}.
+{{- $tlsEnabled := ((.Values.tls | default dict).enabled) | default false }}
+{{- $scheme := ternary "https" "http" $tlsEnabled }}
 
 {{- if .Values.ingress.enabled }}
 
@@ -45,11 +47,11 @@ Option 1 - Port Forward (for local testing):
   kubectl port-forward -n {{ .Release.Namespace }} \
     svc/{{ include "mcp-atlassian.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
 
-  Then access at: http://localhost:{{ .Values.service.port }}
+  Then access at: {{ $scheme }}://localhost:{{ .Values.service.port }}
 
 Option 2 - Within Cluster:
 
-  Service URL: http://{{ include "mcp-atlassian.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
+  Service URL: {{ $scheme }}://{{ include "mcp-atlassian.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}
 
 {{- end }}
 
@@ -57,7 +59,8 @@ Option 2 - Within Cluster:
 
   The /healthz endpoint is available for readiness probes:
 
-  curl http://<service-address>:{{ .Values.service.port }}/healthz
+  curl {{ if $tlsEnabled }}--cacert <your-ca.pem> {{ end }}{{ $scheme }}://<service-address>:{{ .Values.service.port }}/healthz{{ if $tlsEnabled }}
+  # (use -k instead of --cacert only while bootstrapping with a self-signed cert){{ end }}
   # Expected response: {"status": "ok"}
 
 {{- end }}
