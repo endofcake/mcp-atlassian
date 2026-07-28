@@ -17,7 +17,10 @@ kind: Ingress
 metadata:
   name: {{ $fullName }}
   labels:
-    {{- include "mcp-atlassian.labels" . | nindent 4 }}
+    {{- /* Merge custom labels under the chart's standard labels; on a key
+         collision the chart's label wins, and each key is emitted once. */}}
+    {{- $standard := include "mcp-atlassian.labels" . | fromYaml }}
+    {{- merge $standard (.Values.ingress.labels | default dict) | toYaml | nindent 4 }}
   {{- with .Values.ingress.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}

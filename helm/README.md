@@ -253,6 +253,21 @@ Two operational notes:
   in-cluster man-in-the-middle could intercept the credentials the listener exists to
   protect.
 
+### Ingress labels
+
+Custom labels can be merged into the Ingress metadata (in addition to the chart's
+standard labels), alongside the existing annotation support. On a key collision with a
+standard label, the chart's label wins and the key is emitted once:
+
+```yaml
+ingress:
+  enabled: true
+  labels:
+    team: platform
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+```
+
 ## Upgrading
 
 ```bash

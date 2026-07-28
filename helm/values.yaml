@@ -98,6 +98,9 @@ caBundle:
 ingress:
   enabled: false
   className: ""
+  # Custom labels merged into the Ingress metadata alongside the chart's
+  # standard labels; on a key collision the chart's label wins.
+  labels: {}
   annotations: {}
     # kubernetes.io/ingress.class: nginx
     # cert-manager.io/cluster-issuer: letsencrypt-prod

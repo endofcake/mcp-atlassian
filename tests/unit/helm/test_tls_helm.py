@@ -334,3 +334,72 @@ class TestCaBundleHelmContract:
         result = _helm_template(values, tmp_path)
         assert result.returncode != 0
         assert "caBundle.key must be a plain file name" in result.stderr
+
+
+class TestIngressLabelsHelmContract:
+    """Custom labels merge into the Ingress metadata."""
+
+    @staticmethod
+    def _ingress_values(**ingress_overrides: object) -> dict:
+        ingress = {
+            "enabled": True,
+            "hosts": [
+                {
+                    "host": "mcp.example.com",
+                    "paths": [{"path": "/", "pathType": "Prefix"}],
+                }
+            ],
+        }
+        ingress.update(ingress_overrides)
+        return {
+            "transport": "streamable-http",
+            "authMode": "api-token",
+            "ingress": ingress,
+        }
+
+    @requires_helm
+    def test_render_ingress_custom_labels_merge(self, tmp_path):
+        """ingress.labels entries appear alongside the chart's standard
+        labels."""
+        result = _helm_template(
+            self._ingress_values(labels={"team": "platform", "tier": "edge"}),
+            tmp_path,
+            show_only="templates/ingress.yaml",
+        )
+        assert result.returncode == 0, result.stderr
+        labels = yaml.safe_load(result.stdout)["metadata"]["labels"]
+        assert labels["team"] == "platform"
+        assert labels["tier"] == "edge"
+        assert "app.kubernetes.io/name" in labels  # standard labels retained
+
+    @requires_helm
+    def test_render_ingress_label_collision_chart_wins_single_key(self, tmp_path):
+        """A custom label colliding with a standard one must not emit a
+        duplicate YAML key (strict consumers reject it), and the chart's value
+        wins. Checked textually — yaml.safe_load would mask a duplicate."""
+        result = _helm_template(
+            self._ingress_values(labels={"app.kubernetes.io/name": "custom"}),
+            tmp_path,
+            show_only="templates/ingress.yaml",
+        )
+        assert result.returncode == 0, result.stderr
+        name_lines = [
+            line
+            for line in result.stdout.splitlines()
+            if line.strip().startswith("app.kubernetes.io/name:")
+        ]
+        assert len(name_lines) == 1
+        assert "custom" not in name_lines[0]
+
+    @requires_helm
+    def test_render_ingress_without_custom_labels_unchanged(self, tmp_path):
+        """Without ingress.labels the metadata carries only standard labels."""
+        result = _helm_template(
+            self._ingress_values(),
+            tmp_path,
+            show_only="templates/ingress.yaml",
+        )
+        assert result.returncode == 0, result.stderr
+        labels = yaml.safe_load(result.stdout)["metadata"]["labels"]
+        assert "team" not in labels
+        assert "app.kubernetes.io/name" in labels
