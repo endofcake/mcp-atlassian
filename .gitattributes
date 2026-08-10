@@ -1,0 +1,9 @@
+# These files were introduced with CRLF endings and are kept that way to
+# avoid a noisy full-file rewrite: -text stops git from converting them, and
+# whitespace=cr-at-eol stops `git diff --check` from flagging every line.
+# Drop these lines to renormalize deliberately.
+scripts/oauth_authorize.py -text whitespace=cr-at-eol
+src/mcp_atlassian/utils/oauth.py -text whitespace=cr-at-eol
+tests/unit/confluence/test_client_oauth.py -text whitespace=cr-at-eol
+tests/unit/jira/test_client_oauth.py -text whitespace=cr-at-eol
+tests/unit/utils/test_oauth.py -text whitespace=cr-at-eol
