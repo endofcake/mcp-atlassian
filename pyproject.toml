@@ -72,7 +72,7 @@ markers = [
     "integration: mark test as requiring integration with real services",
     "dc_e2e: mark test as requiring DC instances (Jira DC + Confluence DC)",
     "cloud_e2e: mark test as requiring Cloud instances (Jira Cloud + Confluence Cloud)",
-    "security_regression: SP5 security regression test (xfail-strict until the Phase B root fix lands; see plan)",
+    "security_regression: regression test for a previously fixed security defect",
 ]
 
 [tool.ruff]
