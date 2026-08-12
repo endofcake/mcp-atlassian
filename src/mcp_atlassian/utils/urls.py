@@ -60,7 +60,9 @@ def is_atlassian_cloud_url(url: str) -> bool:
         return False
 
     parsed_url = urlparse(url)
-    hostname = parsed_url.hostname or ""
+    # Strip a trailing dot: a fully-qualified form like "example.atlassian.net."
+    # names the same host but would otherwise dodge the suffix checks below.
+    hostname = (parsed_url.hostname or "").rstrip(".")
 
     # Check for localhost or IP address
     if (
@@ -108,7 +110,9 @@ def is_bitbucket_cloud_url(url: str) -> bool:
     """
     if not url:
         return False
-    hostname = (urlparse(url).hostname or "").lower()
+    # rstrip(".") folds the fully-qualified trailing-dot form ("bitbucket.org.")
+    # into the same host, so it cannot dodge the exact match.
+    hostname = (urlparse(url).hostname or "").lower().rstrip(".")
     return hostname in {"bitbucket.org", "api.bitbucket.org"}
 
 

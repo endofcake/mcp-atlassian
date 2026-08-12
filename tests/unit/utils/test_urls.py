@@ -187,6 +187,8 @@ def test_is_atlassian_cloud_url_with_protocols():
         "http://bitbucket.org",
         "https://api.bitbucket.org",
         "https://api.bitbucket.org/2.0/repositories",
+        "https://bitbucket.org./myworkspace",  # trailing-dot FQDN, same host
+        "https://api.bitbucket.org.",
     ],
 )
 def test_is_bitbucket_cloud_url_cloud(url: str) -> None:
@@ -212,6 +214,19 @@ def test_is_bitbucket_cloud_url_not_cloud(url: str) -> None:
 def test_is_bitbucket_cloud_url_none() -> None:
     """is_bitbucket_cloud_url returns False for None input."""
     assert is_bitbucket_cloud_url(None) is False  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.atlassian.net./jira",
+        "https://api.atlassian.com.",
+        "https://company.atlassian-us-gov.net.",
+    ],
+)
+def test_is_atlassian_cloud_url_trailing_dot(url: str) -> None:
+    """A trailing-dot FQDN names the same Cloud host and must still match."""
+    assert is_atlassian_cloud_url(url) is True
 
 
 class TestValidateUrlForSsrf:
