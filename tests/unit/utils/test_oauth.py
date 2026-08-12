@@ -1,5 +1,6 @@
 """Tests for the OAuth utilities."""
 
+import hashlib
 import json
 import time
 import urllib.parse
@@ -514,7 +515,9 @@ class TestOAuthConfig:
         mock_get_password.assert_called_once()
 
         # Should have fallen back to file
-        mock_load_from_file.assert_called_once_with("test-client-id")
+        mock_load_from_file.assert_called_once_with(
+            "test-client-id", usernames=["oauth-test-client-id"]
+        )
 
         # Check result contains file data
         assert result["refresh_token"] == "file-refresh-token"
@@ -543,12 +546,68 @@ class TestOAuthConfig:
         mock_get_password.assert_called_once()
 
         # Should have fallen back to file
-        mock_load_from_file.assert_called_once_with("test-client-id")
+        mock_load_from_file.assert_called_once_with(
+            "test-client-id", usernames=["oauth-test-client-id"]
+        )
 
         # Check result contains file data
         assert result["refresh_token"] == "file-refresh-token"
         assert result["access_token"] == "file-access-token"
         assert result["expires_at"] == 9876543210
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_context_isolation(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """Tokens from one context never satisfy a load for another context.
+
+        When one client_id string is registered with two products (e.g. a
+        Cloud site and a Data Center instance), each save writes a
+        context-specific key plus the shared base key (last save wins). A
+        context-keyed load must return its own context's tokens, not
+        whatever the base key happens to hold.
+        """
+        dc_base_url = "https://scm.example.com"
+        url_hash = hashlib.sha256(dc_base_url.encode()).hexdigest()[:8]
+        store = {
+            f"oauth-test-client-id-dc-{url_hash}": json.dumps(
+                {"access_token": "dc-access-token"}
+            ),
+            "oauth-test-client-id-cloud-test-cloud-id": json.dumps(
+                {"access_token": "cloud-access-token"}
+            ),
+            # Base key holds whichever context saved last (here: Cloud)
+            "oauth-test-client-id": json.dumps({"access_token": "cloud-access-token"}),
+        }
+        mock_get_password.side_effect = lambda service, username: store.get(username)
+
+        dc_result = OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url)
+        assert dc_result["access_token"] == "dc-access-token"
+
+        cloud_result = OAuthConfig.load_tokens(
+            "test-client-id", cloud_id="test-cloud-id"
+        )
+        assert cloud_result["access_token"] == "cloud-access-token"
+
+        mock_load_from_file.assert_not_called()
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_context_falls_back_to_base_key(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """A context-keyed load falls back to the base key for legacy entries."""
+        store = {
+            "oauth-test-client-id": json.dumps({"access_token": "legacy-token"}),
+        }
+        mock_get_password.side_effect = lambda service, username: store.get(username)
+
+        result = OAuthConfig.load_tokens(
+            "test-client-id", base_url="https://scm.example.com"
+        )
+        assert result["access_token"] == "legacy-token"
+        mock_load_from_file.assert_not_called()
 
     @patch("pathlib.Path.exists")
     @patch("json.load")
@@ -1203,6 +1262,25 @@ class TestDataCenterOAuth:
             )
         assert config is not None
         assert config.client_id == "shared-id"
+
+    def test_disallow_shared_fallback_mixed_creds_not_completed_by_shared(self):
+        """A service-scoped client_id is not completed by a shared secret.
+
+        Suppression is per-field: with fallback disallowed, the missing
+        client_secret must not be filled from ATLASSIAN_OAUTH_CLIENT_SECRET, so
+        no config is built.
+        """
+        env = {
+            "BITBUCKET_OAUTH_CLIENT_ID": "bb-id",
+            "ATLASSIAN_OAUTH_CLIENT_SECRET": "shared-secret",
+        }
+        with patch.dict("os.environ", env, clear=True):
+            config = OAuthConfig.from_env(
+                service_url="https://bitbucket.corp.com",
+                service_type="bitbucket",
+                disallow_shared_fallback=True,
+            )
+        assert config is None
 
     def test_byo_disallow_shared_fallback_ignores_shared_token(self):
         """With fallback disallowed, a shared ATLASSIAN_OAUTH_ACCESS_TOKEN is ignored."""

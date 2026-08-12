@@ -152,11 +152,33 @@ CONFLUENCE_TOOLSETS: dict[str, ToolsetDefinition] = {
     ),
 }
 
+# --- Bitbucket toolsets (3) ---
+
+BITBUCKET_TOOLSETS: dict[str, ToolsetDefinition] = {
+    "bitbucket_projects": ToolsetDefinition(
+        name="bitbucket_projects",
+        description="Bitbucket Data Center project listing",
+        default=False,
+    ),
+    "bitbucket_repositories": ToolsetDefinition(
+        name="bitbucket_repositories",
+        description="Bitbucket Data Center repository and ref (branch, tag) operations",
+        default=False,
+    ),
+    "bitbucket_pull_requests": ToolsetDefinition(
+        name="bitbucket_pull_requests",
+        description="Bitbucket Data Center pull-request review (list, diff, "
+        "activities, comments)",
+        default=False,
+    ),
+}
+
 # --- Combined registry ---
 
 ALL_TOOLSETS: dict[str, ToolsetDefinition] = {
     **JIRA_TOOLSETS,
     **CONFLUENCE_TOOLSETS,
+    **BITBUCKET_TOOLSETS,
     "legacy": ToolsetDefinition(
         name="legacy",
         description="Deprecated tools retained for migration compatibility",

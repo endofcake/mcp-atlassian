@@ -9,6 +9,7 @@ import requests
 
 from mcp_atlassian.utils.urls import (
     is_atlassian_cloud_url,
+    is_bitbucket_cloud_url,
     make_ssrf_redirect_hook,
     resolve_relative_url,
     validate_url_for_ssrf,
@@ -176,6 +177,41 @@ def test_is_atlassian_cloud_url_with_protocols():
     assert (
         is_atlassian_cloud_url("ftp://example.atlassian.net") is True
     )  # URL parsing still works
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://bitbucket.org",
+        "https://bitbucket.org/myworkspace",
+        "http://bitbucket.org",
+        "https://api.bitbucket.org",
+        "https://api.bitbucket.org/2.0/repositories",
+    ],
+)
+def test_is_bitbucket_cloud_url_cloud(url: str) -> None:
+    """is_bitbucket_cloud_url returns True for Bitbucket Cloud hosts."""
+    assert is_bitbucket_cloud_url(url) is True
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://bitbucket.example.com",  # self-hosted Data Center
+        "https://bitbucket.corp.example.com",
+        "https://example.atlassian.net",  # Atlassian Cloud host
+        "https://notbitbucket.org",  # exact match only, no substring bypass
+        "",
+    ],
+)
+def test_is_bitbucket_cloud_url_not_cloud(url: str) -> None:
+    """is_bitbucket_cloud_url returns False for DC, other, and empty hosts."""
+    assert is_bitbucket_cloud_url(url) is False
+
+
+def test_is_bitbucket_cloud_url_none() -> None:
+    """is_bitbucket_cloud_url returns False for None input."""
+    assert is_bitbucket_cloud_url(None) is False  # type: ignore[arg-type]
 
 
 class TestValidateUrlForSsrf:

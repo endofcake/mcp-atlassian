@@ -332,21 +332,44 @@ class OAuthConfig:
         except Exception as e:
             logger.error(f"Failed to get cloud ID: {e}")
 
-    def _get_keyring_username(self) -> str:
-        """Get the keyring username for storing tokens.
+    @staticmethod
+    def _context_keyring_username(
+        client_id: str,
+        *,
+        cloud_id: str | None = None,
+        base_url: str | None = None,
+    ) -> str:
+        """Build the context-specific keyring username for a token entry.
 
         Includes context (cloud_id or base_url hash) to prevent collisions
-        when the same client_id is used across Cloud and Data Center.
+        when the same client_id is used across Cloud and Data Center — or
+        across two Data Center products (e.g. Jira and Bitbucket) that were
+        registered with the same client_id string.
+
+        Args:
+            client_id: The OAuth client ID.
+            cloud_id: The Atlassian Cloud ID, if this is a Cloud context.
+            base_url: The instance base URL, if this is a Data Center context.
+
+        Returns:
+            A username string for keyring.
+        """
+        if base_url and not is_atlassian_cloud_url(base_url):
+            url_hash = hashlib.sha256(base_url.encode()).hexdigest()[:8]
+            return f"oauth-{client_id}-dc-{url_hash}"
+        if cloud_id:
+            return f"oauth-{client_id}-cloud-{cloud_id}"
+        return f"oauth-{client_id}"
+
+    def _get_keyring_username(self) -> str:
+        """Get the keyring username for storing this config's tokens.
 
         Returns:
             A username string for keyring
         """
-        if self.is_data_center and self.base_url:
-            url_hash = hashlib.sha256(self.base_url.encode()).hexdigest()[:8]
-            return f"oauth-{self.client_id}-dc-{url_hash}"
-        if self.cloud_id:
-            return f"oauth-{self.client_id}-cloud-{self.cloud_id}"
-        return f"oauth-{self.client_id}"
+        return self._context_keyring_username(
+            self.client_id, cloud_id=self.cloud_id, base_url=self.base_url
+        )
 
     def _save_tokens(self) -> None:
         """Save the tokens securely using keyring for later use.
@@ -403,8 +426,13 @@ class OAuthConfig:
             token_dir.mkdir(exist_ok=True)
             os.chmod(token_dir, 0o700)
 
-            # Save the tokens to a file
-            token_path = token_dir / f"oauth-{self.client_id}.json"
+            # Save under the context-specific name so a context-keyed load can
+            # find the right entry, and under the base name for compatibility
+            # with loads that carry no context.
+            token_paths = [token_dir / f"{self._get_keyring_username()}.json"]
+            base_path = token_dir / f"oauth-{self.client_id}.json"
+            if base_path not in token_paths:
+                token_paths.append(base_path)
 
             if token_data is None:
                 token_data = {
@@ -417,66 +445,97 @@ class OAuthConfig:
 
             # Persisted tokens are secrets: create/truncate owner-only so they are
             # never group/world-readable, independent of the process umask.
-            fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            with os.fdopen(fd, "w") as f:
-                json.dump(token_data, f)
-            os.chmod(token_path, 0o600)
-
-            logger.debug(f"Saved OAuth tokens to file {token_path} (fallback storage)")
+            for token_path in token_paths:
+                fd = os.open(token_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
+                    json.dump(token_data, f)
+                os.chmod(token_path, 0o600)
+                logger.debug(
+                    f"Saved OAuth tokens to file {token_path} (fallback storage)"
+                )
         except Exception as e:
             logger.error(f"Failed to save tokens to file: {e}")
 
     @staticmethod
-    def load_tokens(client_id: str) -> dict[str, Any]:
+    def load_tokens(
+        client_id: str,
+        *,
+        cloud_id: str | None = None,
+        base_url: str | None = None,
+    ) -> dict[str, Any]:
         """Load tokens securely from keyring.
+
+        Tokens are saved under a context-specific key (cloud_id or base_url
+        hash), so the load must be context-keyed too: without it, two products
+        registered with the same client_id string (e.g. Jira Data Center and
+        Bitbucket Data Center) would read each other's tokens through the
+        shared base key. The base ``oauth-{client_id}`` key is consulted only
+        as a fallback for entries saved before context-keyed storage existed.
 
         Args:
             client_id: The OAuth client ID
+            cloud_id: The Atlassian Cloud ID, if loading for a Cloud context
+            base_url: The instance base URL, if loading for a Data Center
+                context
 
         Returns:
             Dict with the token data or empty dict if no tokens found
         """
-        username = f"oauth-{client_id}"
+        context_username = OAuthConfig._context_keyring_username(
+            client_id, cloud_id=cloud_id, base_url=base_url
+        )
+        base_username = f"oauth-{client_id}"
+        usernames = [context_username]
+        if base_username != context_username:
+            usernames.append(base_username)
 
         # Try to load tokens from keyring first
         try:
-            token_json = keyring.get_password(KEYRING_SERVICE_NAME, username)
-            if token_json:
-                logger.debug(f"Loaded OAuth tokens from keyring for {username}")
-                return json.loads(token_json)
+            for username in usernames:
+                token_json = keyring.get_password(KEYRING_SERVICE_NAME, username)
+                if token_json:
+                    logger.debug(f"Loaded OAuth tokens from keyring for {username}")
+                    return json.loads(token_json)
         except Exception as e:
             logger.warning(
                 f"Failed to load tokens from keyring: {e}. Trying file fallback."
             )
 
         # Fall back to loading from file if keyring fails or returns None
-        return OAuthConfig._load_tokens_from_file(client_id)
+        return OAuthConfig._load_tokens_from_file(client_id, usernames=usernames)
 
     @staticmethod
-    def _load_tokens_from_file(client_id: str) -> dict[str, Any]:
+    def _load_tokens_from_file(
+        client_id: str, usernames: list[str] | None = None
+    ) -> dict[str, Any]:
         """Load tokens from a file as fallback.
 
         Args:
             client_id: The OAuth client ID
+            usernames: Candidate file basenames in priority order; defaults to
+                the base ``oauth-{client_id}`` name.
 
         Returns:
             Dict with the token data or empty dict if no tokens found
         """
-        token_path = Path.home() / ".mcp-atlassian" / f"oauth-{client_id}.json"
+        token_dir = Path.home() / ".mcp-atlassian"
+        for username in usernames or [f"oauth-{client_id}"]:
+            token_path = token_dir / f"{username}.json"
 
-        if not token_path.exists():
-            return {}
+            if not token_path.exists():
+                continue
 
-        try:
-            with open(token_path) as f:
-                token_data = json.load(f)
-                logger.debug(
-                    f"Loaded OAuth tokens from file {token_path} (fallback storage)"
-                )
-                return token_data
-        except Exception as e:
-            logger.error(f"Failed to load tokens from file: {e}")
-            return {}
+            try:
+                with open(token_path) as f:
+                    token_data = json.load(f)
+                    logger.debug(
+                        f"Loaded OAuth tokens from file {token_path} (fallback storage)"
+                    )
+                    return token_data
+            except Exception as e:
+                logger.error(f"Failed to load tokens from file: {e}")
+                return {}
+        return {}
 
     @classmethod
     def from_env(
@@ -554,8 +613,11 @@ class OAuthConfig:
                 base_url=base_url,
             )
 
-            # Try to load existing tokens
-            token_data = cls.load_tokens(client_id or "")
+            # Try to load existing tokens for this service's context, so two
+            # products sharing a client_id string never read each other's cache
+            token_data = cls.load_tokens(
+                client_id or "", cloud_id=cloud_id, base_url=base_url
+            )
             if token_data:
                 config.refresh_token = token_data.get("refresh_token")
                 config.access_token = token_data.get("access_token")

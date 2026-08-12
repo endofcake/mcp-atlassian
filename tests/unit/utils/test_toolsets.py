@@ -34,12 +34,12 @@ class TestGetEnabledToolsets:
         assert result == expected
 
     def test_all_keyword(self, monkeypatch):
-        """Test 'all' keyword returns all 25 toolset names."""
+        """Test 'all' keyword returns all 28 toolset names."""
         monkeypatch.setenv("TOOLSETS", "all")
         result = get_enabled_toolsets()
         assert result is not None
         assert result == set(ALL_TOOLSETS.keys())
-        assert len(result) == 25
+        assert len(result) == 28
 
     def test_all_keyword_case_insensitive(self, monkeypatch):
         """Test 'ALL' keyword is case-insensitive."""
@@ -47,7 +47,7 @@ class TestGetEnabledToolsets:
         result = get_enabled_toolsets()
         assert result is not None
         assert result == set(ALL_TOOLSETS.keys())
-        assert len(result) == 25
+        assert len(result) == 28
 
     def test_default_keyword(self, monkeypatch):
         """Test 'default' keyword returns 6 default toolset names."""
@@ -98,8 +98,8 @@ class TestGetEnabledToolsets:
         assert DEFAULT_TOOLSETS == expected_defaults
 
     def test_all_toolsets_count(self):
-        """Verify ALL_TOOLSETS has exactly 25 entries."""
-        assert len(ALL_TOOLSETS) == 25
+        """Verify ALL_TOOLSETS has exactly 28 entries."""
+        assert len(ALL_TOOLSETS) == 28
 
     def test_all_toolsets_contains_jira_and_confluence(self):
         """Verify ALL_TOOLSETS has both Jira and Confluence toolsets."""
@@ -107,6 +107,25 @@ class TestGetEnabledToolsets:
         confluence_toolsets = {k for k in ALL_TOOLSETS if k.startswith("confluence_")}
         assert len(jira_toolsets) == 16
         assert len(confluence_toolsets) == 8
+
+    def test_all_toolsets_contains_bitbucket(self):
+        """Verify ALL_TOOLSETS has the three Bitbucket toolsets."""
+        bitbucket_toolsets = {k for k in ALL_TOOLSETS if k.startswith("bitbucket_")}
+        assert bitbucket_toolsets == {
+            "bitbucket_projects",
+            "bitbucket_repositories",
+            "bitbucket_pull_requests",
+        }
+
+    def test_bitbucket_toolsets_not_default(self):
+        """Bitbucket toolsets are opt-in and absent from the default set."""
+        assert not any(name.startswith("bitbucket_") for name in DEFAULT_TOOLSETS)
+
+    def test_bitbucket_toolset_enabled_explicitly(self, monkeypatch):
+        """A Bitbucket toolset can be enabled by name."""
+        monkeypatch.setenv("TOOLSETS", "bitbucket_projects")
+        result = get_enabled_toolsets()
+        assert result == {"bitbucket_projects"}
 
 
 class TestShouldIncludeToolByToolset:
