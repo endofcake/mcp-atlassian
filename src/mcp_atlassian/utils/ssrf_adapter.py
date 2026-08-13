@@ -11,17 +11,19 @@ exactly once, rejects any candidate address that is not globally routable
 address — there is no separate re-resolution to rebind. The original hostname is
 preserved for TLS SNI and certificate verification, so HTTPS is unaffected.
 
-Operator-trusted hosts — the configured ``JIRA_URL`` / ``CONFLUENCE_URL`` hosts
-and ``MCP_ALLOWED_URL_DOMAINS`` entries — are exempt from the non-global
-rejection (on-prem DC instances legitimately live on private networks or
-localhost). Those values come from the server environment, which an attacker
-cannot influence through a request, so the rebinding guard is not weakened for
-caller-supplied URLs. The single-resolution pin still applies to every host.
+Operator-trusted hosts (the configured ``JIRA_URL`` / ``CONFLUENCE_URL`` /
+``BITBUCKET_URL`` hosts and ``MCP_ALLOWED_URL_DOMAINS`` entries) are exempt
+from the non-global rejection (on-prem DC instances legitimately live on
+private networks or localhost). Those values come from the server environment,
+which an attacker cannot influence through a request, so the rebinding guard is
+not weakened for caller-supplied URLs. Service URL hosts are matched exactly;
+only explicit ``MCP_ALLOWED_URL_DOMAINS`` entries extend trust to their
+subdomains. The single-resolution pin still applies to every host.
 """
 
 import os
 import socket
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -32,20 +34,40 @@ from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
 from urllib3.exceptions import NewConnectionError
 from urllib3.poolmanager import PoolManager
 
-from .urls import _check_ip_address, _get_domain_allowlist, _hostname_matches_allowlist
+from .urls import (
+    _check_ip_address,
+    _get_domain_allowlist,
+    _hostname_matches_allowlist,
+    _normalize_host,
+)
 
 
-def _operator_trusted_hosts() -> list[str]:
-    """Hosts the operator explicitly configured or allowlisted via environment."""
-    hosts = []
-    for env in ("JIRA_URL", "CONFLUENCE_URL"):
+def _service_url_hosts() -> set[str]:
+    """Hosts of the operator-configured service URLs, matched exactly."""
+    hosts = set()
+    for env in ("JIRA_URL", "CONFLUENCE_URL", "BITBUCKET_URL"):
         raw = os.environ.get(env, "").strip()
         if raw:
             hostname = urlparse(raw).hostname
             if hostname:
-                hosts.append(hostname.lower())
-    hosts.extend(_get_domain_allowlist() or [])
+                hosts.add(_normalize_host(hostname))
     return hosts
+
+
+def _host_is_operator_trusted(
+    hostname: str, extra_exact_hosts: Collection[str] = ()
+) -> bool:
+    """Whether the operator explicitly configured or allowlisted ``hostname``.
+
+    Service URL hosts (and any ``extra_exact_hosts``) must match exactly, so a
+    configured ``bitbucket.example.com`` says nothing about
+    ``anything.bitbucket.example.com``. Only explicit
+    ``MCP_ALLOWED_URL_DOMAINS`` entries also cover their subdomains.
+    """
+    host = _normalize_host(hostname)
+    if host in _service_url_hosts() or host in extra_exact_hosts:
+        return True
+    return _hostname_matches_allowlist(host, _get_domain_allowlist() or [])
 
 
 def _pinned_create_connection(
@@ -61,7 +83,7 @@ def _pinned_create_connection(
     connection.
     """
     host, port = address
-    host_trusted = _hostname_matches_allowlist(host, _operator_trusted_hosts())
+    host_trusted = _host_is_operator_trusted(host)
     err: Exception | None = None
     for af, socktype, proto, _canonname, sa in socket.getaddrinfo(
         host, port, 0, socket.SOCK_STREAM
@@ -140,7 +162,7 @@ class SsrfPinningAdapter(HTTPAdapter):
         for url in urls:
             hostname = urlparse(url).hostname
             if hostname:
-                self._trusted_hosts.add(hostname.lower())
+                self._trusted_hosts.add(_normalize_host(hostname))
 
     def send(
         self,
@@ -160,9 +182,7 @@ class SsrfPinningAdapter(HTTPAdapter):
         adapter's validating pool.
         """
         hostname = urlparse(request.url or "").hostname or ""
-        if proxies and not _hostname_matches_allowlist(
-            hostname, [*_operator_trusted_hosts(), *self._trusted_hosts]
-        ):
+        if proxies and not _host_is_operator_trusted(hostname, self._trusted_hosts):
             proxies = {}
         return super().send(
             request,

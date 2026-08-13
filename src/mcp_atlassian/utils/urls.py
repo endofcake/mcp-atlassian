@@ -199,6 +199,11 @@ def _check_ip_address(hostname: str) -> str | None:
     return None
 
 
+def _normalize_host(hostname: str) -> str:
+    """Normalize a hostname for comparison: lowercase, no trailing FQDN dot."""
+    return hostname.lower().rstrip(".")
+
+
 def _get_domain_allowlist() -> list[str] | None:
     """Get domain allowlist from environment variable.
 
@@ -208,7 +213,7 @@ def _get_domain_allowlist() -> list[str] | None:
     raw = os.environ.get("MCP_ALLOWED_URL_DOMAINS", "").strip()
     if not raw:
         return None
-    return [d.strip().lower() for d in raw.split(",") if d.strip()]
+    return [_normalize_host(d.strip()) for d in raw.split(",") if d.strip()]
 
 
 def _hostname_matches_allowlist(

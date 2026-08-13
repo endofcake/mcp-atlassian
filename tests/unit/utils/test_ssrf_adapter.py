@@ -137,15 +137,20 @@ class _FakeConnectSock:
     "env",
     [
         {"JIRA_URL": "http://jira.internal:8080"},
+        # A trailing FQDN dot in the configured URL is normalized away.
+        {"JIRA_URL": "http://jira.internal.:8080"},
         {"CONFLUENCE_URL": "https://jira.internal/wiki"},
+        {"BITBUCKET_URL": "https://jira.internal/scm"},
         {"MCP_ALLOWED_URL_DOMAINS": "jira.internal"},
+        # Allowlist entries (unlike service URLs) also cover subdomains.
+        {"MCP_ALLOWED_URL_DOMAINS": "internal"},
     ],
 )
 def test_operator_configured_host_may_resolve_private(env, monkeypatch):
     """The operator-configured base host (or an allowlisted domain) may live on a
     private network — the non-global rejection is waived, but the connection is
     still pinned to the single resolved address."""
-    for k in ("JIRA_URL", "CONFLUENCE_URL", "MCP_ALLOWED_URL_DOMAINS"):
+    for k in ("JIRA_URL", "CONFLUENCE_URL", "BITBUCKET_URL", "MCP_ALLOWED_URL_DOMAINS"):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -164,6 +169,35 @@ def test_operator_configured_host_may_resolve_private(env, monkeypatch):
         _pinned_create_connection(("jira.internal", 8080))
 
     assert connected["addr"][0] == "10.0.0.5"
+
+
+@pytest.mark.security_regression
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"JIRA_URL": "http://jira.internal:8080"},
+        {"CONFLUENCE_URL": "https://jira.internal/wiki"},
+        {"BITBUCKET_URL": "https://jira.internal/scm"},
+    ],
+)
+def test_child_of_service_host_is_not_trusted(env, monkeypatch):
+    """A service URL host is trusted as an exact match only.
+
+    Configuring ``jira.internal`` must not waive the non-global rejection for
+    ``attacker.jira.internal``, since an attacker who controls a child name (or its
+    DNS) would otherwise inherit the private-network exemption.
+    """
+    for k in ("JIRA_URL", "CONFLUENCE_URL", "BITBUCKET_URL", "MCP_ALLOWED_URL_DOMAINS"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    with patch(
+        "mcp_atlassian.utils.ssrf_adapter.socket.getaddrinfo",
+        side_effect=_gai_returning("10.0.0.5"),
+    ):
+        with pytest.raises(OSError, match="non-global"):
+            _pinned_create_connection(("attacker.jira.internal", 443))
 
 
 @pytest.mark.security_regression
