@@ -11,6 +11,7 @@ from ..utils.oauth import (
     OAuthConfig,
     get_oauth_config_from_env,
 )
+from ..utils.proxy import get_proxy_settings_from_env
 from ..utils.urls import is_atlassian_cloud_url, is_bitbucket_cloud_url
 
 # Connection timeout in seconds when BITBUCKET_TIMEOUT is unset or invalid.
@@ -32,11 +33,15 @@ class BitbucketConfig:
     auth_type: Literal["oauth"]  # Only OAuth is wired up; DC also supports PAT/basic
     oauth_config: OAuthConfig | BYOAccessTokenOAuthConfig | None = None
     ssl_verify: bool = True  # Whether to verify SSL certificates
-    projects_filter: str | None = None  # Comma-separated project keys to filter
+    # Comma-separated project keys limiting project discovery/listing only
+    # (see ProjectsMixin._projects_filter_keys for the scope of the filter)
+    projects_filter: str | None = None
     http_proxy: str | None = None  # HTTP proxy URL
     https_proxy: str | None = None  # HTTPS proxy URL
     no_proxy: str | None = None  # Comma-separated list of hosts to bypass proxy
     socks_proxy: str | None = None  # SOCKS proxy URL (optional)
+    proxy_wpad_enable: bool = False  # Whether to load PAC/WPAD configuration
+    proxy_wpad_url: str | None = None  # PAC URL used when WPAD is enabled
     custom_headers: dict[str, str] | None = None  # Custom HTTP headers
     timeout: int = DEFAULT_TIMEOUT_SECONDS
 
@@ -60,9 +65,8 @@ class BitbucketConfig:
             )
             raise ValueError(error_msg)
 
-        # Cloud is not handled, and this config only builds DC-shaped
-        # endpoints. Reject a Cloud URL rather than silently building DC
-        # endpoints against a Cloud host.
+        # This config builds only Data Center endpoints, so a Cloud URL is
+        # rejected rather than used to build them against a Cloud host.
         # is_bitbucket_cloud_url covers bitbucket.org (the host a Bitbucket user
         # would actually type); is_atlassian_cloud_url covers Jira/Confluence
         # Cloud hosts, which the Bitbucket check does not match.
@@ -78,8 +82,8 @@ class BitbucketConfig:
         # Data Center OAuth only. A BYO access token takes precedence over the
         # full OAuth config (matches get_oauth_config_from_env order).
         # Bitbucket is a separate OAuth provider on a separate host, so the
-        # shared ATLASSIAN_OAUTH_* credentials must not satisfy it — keep the
-        # loader aligned with the availability gate in utils.environment.
+        # shared ATLASSIAN_OAUTH_* credentials must not satisfy it, which keeps
+        # the loader aligned with the availability gate in utils.environment.
         oauth_config = get_oauth_config_from_env(
             service_url=url,
             service_type="bitbucket",
@@ -99,10 +103,7 @@ class BitbucketConfig:
 
         projects_filter = os.getenv("BITBUCKET_PROJECTS_FILTER")
 
-        http_proxy = os.getenv("BITBUCKET_HTTP_PROXY", os.getenv("HTTP_PROXY"))
-        https_proxy = os.getenv("BITBUCKET_HTTPS_PROXY", os.getenv("HTTPS_PROXY"))
-        no_proxy = os.getenv("BITBUCKET_NO_PROXY", os.getenv("NO_PROXY"))
-        socks_proxy = os.getenv("BITBUCKET_SOCKS_PROXY", os.getenv("SOCKS_PROXY"))
+        proxy_settings = get_proxy_settings_from_env("BITBUCKET")
 
         custom_headers = get_custom_headers("BITBUCKET_CUSTOM_HEADERS")
 
@@ -129,16 +130,24 @@ class BitbucketConfig:
             oauth_config=oauth_config,
             ssl_verify=ssl_verify,
             projects_filter=projects_filter,
-            http_proxy=http_proxy,
-            https_proxy=https_proxy,
-            no_proxy=no_proxy,
-            socks_proxy=socks_proxy,
+            http_proxy=proxy_settings["http_proxy"],
+            https_proxy=proxy_settings["https_proxy"],
+            no_proxy=proxy_settings["no_proxy"],
+            socks_proxy=proxy_settings["socks_proxy"],
+            proxy_wpad_enable=bool(proxy_settings["proxy_wpad_enable"]),
+            proxy_wpad_url=proxy_settings["proxy_wpad_url"],
             custom_headers=custom_headers,
             timeout=timeout,
         )
 
     def is_auth_configured(self) -> bool:
         """Check whether the OAuth configuration is complete enough to use.
+
+        Client id + secret alone count as configured even though they cannot
+        mint an access token by themselves; the failure is deferred to the
+        first client construction, which raises when no token source (OAuth
+        proxy, per-request bearer, or a pre-seeded token cache) supplies one.
+        This mirrors the Jira/Confluence DC OAuth contract.
 
         Returns:
             True if authentication is configured, False otherwise.

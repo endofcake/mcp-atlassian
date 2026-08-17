@@ -396,10 +396,11 @@ class OAuthConfig:
             keyring.set_password(KEYRING_SERVICE_NAME, username, token_json)
             logger.debug(f"Saved OAuth tokens to keyring for {username}")
 
-            # Also save to base username for compatibility with load_tokens()
-            # which uses the simpler oauth-{client_id} pattern.
-            # Note: If the same client_id is used for both Cloud and DC (rare),
-            # the base key will be overwritten by whichever saves last.
+            # Also save to the base username so loads that carry no context
+            # (and older versions that read only the base key) keep working.
+            # If the same client_id is used across contexts, the base key is
+            # overwritten by whichever saves last; context-keyed loads validate
+            # the entry's recorded context before accepting it.
             if username != base_username:
                 keyring.set_password(KEYRING_SERVICE_NAME, base_username, token_json)
                 logger.debug(f"Saved OAuth tokens to keyring for {base_username}")
@@ -470,7 +471,10 @@ class OAuthConfig:
         registered with the same client_id string (e.g. Jira Data Center and
         Bitbucket Data Center) would read each other's tokens through the
         shared base key. The base ``oauth-{client_id}`` key is consulted only
-        as a fallback for entries saved before context-keyed storage existed.
+        as a fallback, and an entry found there is accepted only when the
+        context it recorded at save time matches the requested one (entries
+        carrying no context fields cannot be validated and are accepted for
+        continuity).
 
         Args:
             client_id: The OAuth client ID
@@ -493,20 +497,61 @@ class OAuthConfig:
         try:
             for username in usernames:
                 token_json = keyring.get_password(KEYRING_SERVICE_NAME, username)
-                if token_json:
-                    logger.debug(f"Loaded OAuth tokens from keyring for {username}")
-                    return json.loads(token_json)
+                if not token_json:
+                    continue
+                token_data = json.loads(token_json)
+                if username == base_username and not OAuthConfig._tokens_match_context(
+                    token_data, cloud_id=cloud_id, base_url=base_url
+                ):
+                    logger.debug(
+                        f"Ignoring keyring entry {username}: saved for a "
+                        "different service context"
+                    )
+                    continue
+                logger.debug(f"Loaded OAuth tokens from keyring for {username}")
+                return token_data
         except Exception as e:
             logger.warning(
                 f"Failed to load tokens from keyring: {e}. Trying file fallback."
             )
 
         # Fall back to loading from file if keyring fails or returns None
-        return OAuthConfig._load_tokens_from_file(client_id, usernames=usernames)
+        return OAuthConfig._load_tokens_from_file(
+            client_id, usernames=usernames, cloud_id=cloud_id, base_url=base_url
+        )
+
+    @staticmethod
+    def _tokens_match_context(
+        token_data: dict[str, Any],
+        *,
+        cloud_id: str | None = None,
+        base_url: str | None = None,
+    ) -> bool:
+        """Whether a stored token entry belongs to the requested context.
+
+        Saved entries record the ``cloud_id``/``base_url`` they were issued
+        for, and the shared base key is rewritten by whichever context saved
+        last — so a base-key entry holding another context's tokens must not
+        satisfy this load. Entries carrying no context fields predate context
+        recording, cannot be validated, and are accepted.
+        """
+        stored_cloud_id = token_data.get("cloud_id")
+        stored_base_url = token_data.get("base_url")
+        if not stored_cloud_id and not stored_base_url:
+            return True
+        if base_url:
+            return stored_base_url == base_url
+        if cloud_id:
+            return stored_cloud_id == cloud_id
+        return True
 
     @staticmethod
     def _load_tokens_from_file(
-        client_id: str, usernames: list[str] | None = None
+        client_id: str,
+        usernames: list[str] | None = None,
+        *,
+        cloud_id: str | None = None,
+        base_url: str | None = None,
     ) -> dict[str, Any]:
         """Load tokens from a file as fallback.
 
@@ -514,12 +559,16 @@ class OAuthConfig:
             client_id: The OAuth client ID
             usernames: Candidate file basenames in priority order; defaults to
                 the base ``oauth-{client_id}`` name.
+            cloud_id: The Atlassian Cloud ID, if loading for a Cloud context
+            base_url: The instance base URL, if loading for a Data Center
+                context
 
         Returns:
             Dict with the token data or empty dict if no tokens found
         """
         token_dir = Path.home() / ".mcp-atlassian"
-        for username in usernames or [f"oauth-{client_id}"]:
+        base_name = f"oauth-{client_id}"
+        for username in usernames or [base_name]:
             token_path = token_dir / f"{username}.json"
 
             if not token_path.exists():
@@ -528,13 +577,21 @@ class OAuthConfig:
             try:
                 with open(token_path) as f:
                     token_data = json.load(f)
-                    logger.debug(
-                        f"Loaded OAuth tokens from file {token_path} (fallback storage)"
-                    )
-                    return token_data
             except Exception as e:
                 logger.error(f"Failed to load tokens from file: {e}")
-                return {}
+                continue
+            if username == base_name and not OAuthConfig._tokens_match_context(
+                token_data, cloud_id=cloud_id, base_url=base_url
+            ):
+                logger.debug(
+                    f"Ignoring token file {token_path.name}: saved for a "
+                    "different service context"
+                )
+                continue
+            logger.debug(
+                f"Loaded OAuth tokens from file {token_path} (fallback storage)"
+            )
+            return token_data
         return {}
 
     @classmethod

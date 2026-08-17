@@ -516,7 +516,10 @@ class TestOAuthConfig:
 
         # Should have fallen back to file
         mock_load_from_file.assert_called_once_with(
-            "test-client-id", usernames=["oauth-test-client-id"]
+            "test-client-id",
+            usernames=["oauth-test-client-id"],
+            cloud_id=None,
+            base_url=None,
         )
 
         # Check result contains file data
@@ -547,7 +550,10 @@ class TestOAuthConfig:
 
         # Should have fallen back to file
         mock_load_from_file.assert_called_once_with(
-            "test-client-id", usernames=["oauth-test-client-id"]
+            "test-client-id",
+            usernames=["oauth-test-client-id"],
+            cloud_id=None,
+            base_url=None,
         )
 
         # Check result contains file data
@@ -608,6 +614,53 @@ class TestOAuthConfig:
         )
         assert result["access_token"] == "legacy-token"
         mock_load_from_file.assert_not_called()
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_rejects_base_key_saved_for_other_context(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """A base-key entry recorded for another context never satisfies the load.
+
+        The base key is rewritten by whichever context saved last, so on a
+        first run for a new context (no context-keyed entry yet) the fallback
+        must not hand over the other context's tokens.
+        """
+        store = {
+            "oauth-test-client-id": json.dumps(
+                {"access_token": "cloud-token", "cloud_id": "some-cloud-id"}
+            ),
+        }
+        mock_get_password.side_effect = lambda service, username: store.get(username)
+        mock_load_from_file.return_value = {}
+
+        result = OAuthConfig.load_tokens(
+            "test-client-id", base_url="https://scm.example.com"
+        )
+        assert result == {}
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_keyring_error_passes_both_names_to_file_fallback(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """A keyring failure falls back to files with both candidate names."""
+        mock_get_password.side_effect = Exception("Keyring error")
+        mock_load_from_file.return_value = {}
+        dc_base_url = "https://scm.example.com"
+        url_hash = hashlib.sha256(dc_base_url.encode()).hexdigest()[:8]
+
+        OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url)
+
+        mock_load_from_file.assert_called_once_with(
+            "test-client-id",
+            usernames=[
+                f"oauth-test-client-id-dc-{url_hash}",
+                "oauth-test-client-id",
+            ],
+            cloud_id=None,
+            base_url=dc_base_url,
+        )
 
     @patch("pathlib.Path.exists")
     @patch("json.load")
