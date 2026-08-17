@@ -9,6 +9,28 @@ simplified dictionaries for API responses.
 # Re-export models for easier imports
 from .base import ApiModel, TimestampMixin
 
+# Bitbucket models
+from .bitbucket import (
+    BitbucketActivity,
+    BitbucketBranch,
+    BitbucketChange,
+    BitbucketComment,
+    BitbucketCommit,
+    BitbucketDiffHunk,
+    BitbucketDiffLine,
+    BitbucketDiffSegment,
+    BitbucketDirectoryEntry,
+    BitbucketFileDiff,
+    BitbucketParticipant,
+    BitbucketProject,
+    BitbucketPullRequest,
+    BitbucketPullRequestDiff,
+    BitbucketRef,
+    BitbucketRepository,
+    BitbucketTag,
+    BitbucketUser,
+)
+
 # Confluence models (Import from the new structure)
 from .confluence import (
     ConfluenceAttachment,
@@ -104,4 +126,23 @@ __all__ = [
     "ConfluenceVersion",
     "ConfluenceSearchResult",
     "ConfluenceAttachment",
+    # Bitbucket models
+    "BitbucketActivity",
+    "BitbucketBranch",
+    "BitbucketChange",
+    "BitbucketComment",
+    "BitbucketCommit",
+    "BitbucketDiffHunk",
+    "BitbucketDiffLine",
+    "BitbucketDiffSegment",
+    "BitbucketDirectoryEntry",
+    "BitbucketFileDiff",
+    "BitbucketParticipant",
+    "BitbucketProject",
+    "BitbucketPullRequest",
+    "BitbucketPullRequestDiff",
+    "BitbucketRef",
+    "BitbucketRepository",
+    "BitbucketTag",
+    "BitbucketUser",
 ]
