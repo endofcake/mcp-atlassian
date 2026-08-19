@@ -8,11 +8,12 @@ mirroring the Jira/Confluence architecture.
 
 from .config import BitbucketConfig
 from .projects import ProjectsMixin
+from .pull_requests import PullRequestsMixin
 from .refs import RefsMixin
 from .repositories import ReposMixin
 
 
-class BitbucketFetcher(ProjectsMixin, ReposMixin, RefsMixin):
+class BitbucketFetcher(ProjectsMixin, ReposMixin, RefsMixin, PullRequestsMixin):
     """Bitbucket Data Center client composing all domain mixins.
 
     Inherits the session, ``_get`` error taxonomy, and shared pagination helper
@@ -24,6 +25,8 @@ class BitbucketFetcher(ProjectsMixin, ReposMixin, RefsMixin):
       listing.
     - :class:`~mcp_atlassian.bitbucket.refs.RefsMixin`: branch/tag listing, tag
       lookup, and default-branch resolution.
+    - :class:`~mcp_atlassian.bitbucket.pull_requests.PullRequestsMixin`:
+      pull-request listing, metadata, structured diff, and activity timeline.
     """
 
     pass
