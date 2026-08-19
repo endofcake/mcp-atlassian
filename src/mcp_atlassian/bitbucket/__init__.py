@@ -1,12 +1,35 @@
 """Bitbucket Data Center API module for mcp_atlassian.
 
-Exposes ``BitbucketConfig`` for authenticating to a Bitbucket Data Center
-instance with an OAuth 2.0 bearer token. The client and domain operations
-build on this configuration, mirroring the Jira/Confluence architecture.
+Exposes ``BitbucketConfig`` and ``BitbucketFetcher`` for authenticating to a
+Bitbucket Data Center instance with an OAuth 2.0 bearer token. ``BitbucketFetcher``
+composes single-responsibility domain mixins over the ``BitbucketClient`` base,
+mirroring the Jira/Confluence architecture.
 """
 
 from .config import BitbucketConfig
+from .projects import ProjectsMixin
+from .refs import RefsMixin
+from .repositories import ReposMixin
+
+
+class BitbucketFetcher(ProjectsMixin, ReposMixin, RefsMixin):
+    """Bitbucket Data Center client composing all domain mixins.
+
+    Inherits the session, ``_get`` error taxonomy, and shared pagination helper
+    from :class:`~mcp_atlassian.bitbucket.client.BitbucketClient`, and the
+    domain operations from each mixin:
+
+    - :class:`~mcp_atlassian.bitbucket.projects.ProjectsMixin`: project listing.
+    - :class:`~mcp_atlassian.bitbucket.repositories.ReposMixin`: repository
+      listing.
+    - :class:`~mcp_atlassian.bitbucket.refs.RefsMixin`: branch/tag listing, tag
+      lookup, and default-branch resolution.
+    """
+
+    pass
+
 
 __all__ = [
+    "BitbucketFetcher",
     "BitbucketConfig",
 ]
