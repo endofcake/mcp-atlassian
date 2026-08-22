@@ -1,0 +1,84 @@
+{
+  "lines": [
+    {
+      "text": "# Example service"
+    },
+    {
+      "text": ""
+    },
+    {
+      "text": "Deploys the example service into the demo namespace."
+    },
+    {
+      "text": "See the chart values files for per-environment overrides."
+    },
+    {
+      "text": "## Prerequisites"
+    },
+    {
+      "text": ""
+    },
+    {
+      "text": "Helm 3 or later with the chart repository already added."
+    },
+    {
+      "text": ""
+    },
+    {
+      "text": "Run the standard upgrade command to install the release."
+    },
+    {
+      "text": "Charts are organised as one umbrella chart per service."
+    },
+    {
+      "text": "Refer to the pipeline definition for deployment stages."
+    },
+    {
+      "text": "# Example service"
+    },
+    {
+      "text": "Deploys the example service into the demo namespace."
+    },
+    {
+      "text": "See the chart values files for per-environment overrides."
+    },
+    {
+      "text": "## Prerequisites"
+    },
+    {
+      "text": ""
+    },
+    {
+      "text": "Helm 3 or later with the chart repository already added."
+    },
+    {
+      "text": ""
+    },
+    {
+      "text": "Run the standard upgrade command to install the release."
+    },
+    {
+      "text": ""
+    },
+    {
+      "text": "Charts are organised as one umbrella chart per service."
+    },
+    {
+      "text": "Refer to the pipeline definition for deployment stages."
+    },
+    {
+      "text": "# Example service"
+    },
+    {
+      "text": "Deploys the example service into the demo namespace."
+    },
+    {
+      "text": "See the chart values files for per-environment overrides."
+    }
+  ],
+  "start": 0,
+  "size": 50,
+  "isLastPage": false,
+  "limit": 50,
+  "nextPageStart": 50
+}

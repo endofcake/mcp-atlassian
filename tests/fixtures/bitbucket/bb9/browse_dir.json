@@ -1,0 +1,97 @@
+{
+  "path": {
+    "components": [],
+    "name": "",
+    "toString": ""
+  },
+  "revision": "refs/heads/main",
+  "children": {
+    "size": 6,
+    "limit": 25,
+    "isLastPage": true,
+    "values": [
+      {
+        "path": {
+          "components": [
+            ".editorconfig"
+          ],
+          "parent": "",
+          "name": ".editorconfig",
+          "extension": "editorconfig",
+          "toString": ".editorconfig"
+        },
+        "contentId": "f1ceee1bc400a0135d8dcdfe3553e2af2dbc7edd",
+        "type": "FILE",
+        "size": 262
+      },
+      {
+        "path": {
+          "components": [
+            ".gitignore"
+          ],
+          "parent": "",
+          "name": ".gitignore",
+          "extension": "gitignore",
+          "toString": ".gitignore"
+        },
+        "contentId": "f1ce3b44fe7ef890ff2b12a839c4bcfca19a5fad46cd",
+        "type": "FILE",
+        "size": 272
+      },
+      {
+        "path": {
+          "components": [
+            "AGENTS.md"
+          ],
+          "parent": "",
+          "name": "AGENTS.md",
+          "extension": "md",
+          "toString": "AGENTS.md"
+        },
+        "contentId": "f1ce55e3d944361831d1c5e264e80a9f0579265a",
+        "type": "FILE",
+        "size": 5602
+      },
+      {
+        "path": {
+          "components": [
+            "Jenkinsfile"
+          ],
+          "parent": "",
+          "name": "Jenkinsfile",
+          "toString": "Jenkinsfile"
+        },
+        "contentId": "f1cee4f4bb2a5e9603fd70213fa1d70c4fd79e42",
+        "type": "FILE",
+        "size": 4023
+      },
+      {
+        "path": {
+          "components": [
+            "README.md"
+          ],
+          "parent": "",
+          "name": "README.md",
+          "extension": "md",
+          "toString": "README.md"
+        },
+        "contentId": "f1ce61cd61879c735fbe8f7b7825af5dbf6dc7f9",
+        "type": "FILE",
+        "size": 2890
+      },
+      {
+        "path": {
+          "components": [
+            "charts"
+          ],
+          "parent": "",
+          "name": "charts",
+          "toString": "charts"
+        },
+        "node": "f1ce0eec53bc3f8e7cff50e166e20621ffe05026",
+        "type": "DIRECTORY"
+      }
+    ],
+    "start": 0
+  }
+}

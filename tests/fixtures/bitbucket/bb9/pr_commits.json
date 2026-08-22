@@ -1,0 +1,76 @@
+{
+  "values": [
+    {
+      "id": "f1cea6b8c02c5fb48679be3985db11408c277c39",
+      "displayId": "f1ce472e7f0",
+      "author": {
+        "name": "UB00002",
+        "emailAddress": "user.two@example.com",
+        "active": true,
+        "displayName": "Fixture User Two",
+        "id": 730005,
+        "slug": "u100002",
+        "type": "NORMAL"
+      },
+      "authorTimestamp": 1612483200000,
+      "committer": {
+        "name": "U100001",
+        "emailAddress": "user.one@example.com",
+        "active": true,
+        "displayName": "Fixture User One",
+        "id": 730004,
+        "slug": "u100001",
+        "type": "NORMAL"
+      },
+      "committerTimestamp": 1612483200000,
+      "message": "chore: mention envbeta overrides",
+      "parents": [
+        {
+          "id": "f1ced7ca392958754a0764bb0f8ec35697c477fd",
+          "displayId": "f1ced7ca392"
+        }
+      ]
+    },
+    {
+      "id": "f1ced7ca392958754a0764bb0f8ec35697c477fd",
+      "displayId": "f1ced7ca392",
+      "author": {
+        "name": "U100001",
+        "emailAddress": "user.one@example.com",
+        "active": true,
+        "displayName": "Fixture User One",
+        "id": 730004,
+        "slug": "u100001",
+        "type": "NORMAL"
+      },
+      "authorTimestamp": 1612310400000,
+      "committer": {
+        "name": "U100001",
+        "emailAddress": "user.one@example.com",
+        "active": true,
+        "displayName": "Fixture User One",
+        "id": 730004,
+        "slug": "u100001",
+        "type": "NORMAL"
+      },
+      "committerTimestamp": 1612310400000,
+      "message": "docs: fix state references in README\n\nJira: DEMO-178",
+      "parents": [
+        {
+          "id": "f1cef8c84cd04cb1546a977c5f6b6abf2cb19de",
+          "displayId": "f1cef8c84cd"
+        }
+      ],
+      "properties": {
+        "jira-key": [
+          "DEMO-178"
+        ]
+      }
+    }
+  ],
+  "size": 2,
+  "isLastPage": true,
+  "start": 0,
+  "limit": 25,
+  "nextPageStart": null
+}

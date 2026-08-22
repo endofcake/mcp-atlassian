@@ -1,0 +1,12 @@
+{
+  "binary": true,
+  "path": {
+    "components": [
+      "screenshot.png"
+    ],
+    "parent": "...",
+    "name": "screenshot.png",
+    "extension": "png",
+    "toString": "screenshot.png"
+  }
+}

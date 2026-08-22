@@ -1,0 +1,95 @@
+{
+  "id": 1,
+  "version": 1,
+  "title": "Update service configuration defaults",
+  "state": "OPEN",
+  "open": true,
+  "closed": false,
+  "fromRef": {
+    "id": "refs/heads/feature-desc",
+    "repository": {
+      "slug": "demo-utilities-display",
+      "id": null,
+      "name": null,
+      "project": {
+        "key": "DEMOP",
+        "id": null,
+        "name": null,
+        "public": false,
+        "type": "NORMAL"
+      }
+    }
+  },
+  "toRef": {
+    "id": "refs/heads/main",
+    "repository": {
+      "slug": "demo-utilities-display",
+      "name": null,
+      "project": {
+        "key": "DEMOP",
+        "id": null,
+        "name": null,
+        "public": false,
+        "type": "NORMAL"
+      }
+    }
+  },
+  "locked": false,
+  "author": {
+    "user": {
+      "name": "testuser",
+      "emailAddress": "testuser@example.com",
+      "id": 730001,
+      "slug": "testuser",
+      "active": true
+    },
+    "role": "AUTHOR",
+    "approved": true,
+    "status": "APPROVED"
+  },
+  "reviewers": [
+    {
+      "user": {
+        "name": "reviewer1",
+        "emailAddress": "reviewer1@example.com",
+        "id": 730002,
+        "slug": "reviewer1",
+        "active": true
+      },
+      "role": "REVIEWER",
+      "approved": true,
+      "status": "APPROVED"
+    }
+  ],
+  "participants": [
+    {
+      "user": {
+        "name": "participant1",
+        "emailAddress": "participant1@example.com",
+        "id": 730003,
+        "slug": "participant1",
+        "active": true
+      },
+      "role": "PARTICIPANT",
+      "approved": false,
+      "status": "UNAPPROVED"
+    }
+  ],
+  "description": "Example pull request description.",
+  "createdDate": 1612137600000,
+  "updatedDate": 1612137600000,
+  "pullRequestLinks": {
+    "self": [
+      {
+        "href": "https://stash-test.example.com/projects/DEMOP/repos/demo-utilities-display/pull-requests/1"
+      }
+    ]
+  },
+  "links": {
+    "self": [
+      {
+        "href": "https://stash-test.example.com/projects/DEMOP/repos/demo-utilities-display/pull-requests/1"
+      }
+    ]
+  }
+}

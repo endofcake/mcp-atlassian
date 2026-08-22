@@ -1,0 +1,146 @@
+{
+  "size": 4,
+  "limit": 25,
+  "isLastPage": true,
+  "values": [
+    {
+      "slug": "repo1",
+      "id": 1,
+      "name": "repo1",
+      "project": {
+        "key": "PROJECT_KEY",
+        "id": 1,
+        "name": "Project Name",
+        "public": true,
+        "type": "NORMAL"
+      },
+      "public": true,
+      "links": {
+        "clone": [
+          {
+            "href": "https://stash-test.example.com/scm/project/repo1.git",
+            "name": "http"
+          },
+          {
+            "href": "ssh://git@stash-test.example.com/project/repo1.git",
+            "name": "ssh"
+          }
+        ],
+        "self": [
+          {
+            "href": "https://stash-test.example.com/projects/PROJECT_KEY/repos/repo1/browse"
+          }
+        ]
+      },
+      "description": "Example repository for integration testing.",
+      "forkable": true,
+      "archived": false,
+      "scalable": true,
+      "defaultBranch": "main"
+    },
+    {
+      "slug": "repo2",
+      "id": 2,
+      "name": "repo2",
+      "project": {
+        "key": "PROJECT_KEY",
+        "id": 1,
+        "name": "Project Name",
+        "public": true,
+        "type": "NORMAL"
+      },
+      "public": true,
+      "links": {
+        "clone": [
+          {
+            "href": "https://stash-test.example.com/scm/project/repo2.git",
+            "name": "http"
+          },
+          {
+            "href": "ssh://git@stash-test.example.com/project/repo2.git",
+            "name": "ssh"
+          }
+        ],
+        "self": [
+          {
+            "href": "https://stash-test.example.com/projects/PROJECT_KEY/repos/repo2/browse"
+          }
+        ]
+      },
+      "description": "Holds deployment charts for the demo service.",
+      "forkable": true,
+      "archived": false,
+      "scalable": true,
+      "defaultBranch": "main"
+    },
+    {
+      "slug": "repo3",
+      "id": 3,
+      "name": "repo3",
+      "project": {
+        "key": "PROJECT_KEY",
+        "id": 1,
+        "name": "Project Name",
+        "public": true,
+        "type": "NORMAL"
+      },
+      "public": true,
+      "links": {
+        "clone": [
+          {
+            "href": "https://stash-test.example.com/scm/project/repo3.git",
+            "name": "http"
+          },
+          {
+            "href": "ssh://git@stash-test.example.com/project/repo3.git",
+            "name": "ssh"
+          }
+        ],
+        "self": [
+          {
+            "href": "https://stash-test.example.com/projects/PROJECT_KEY/repos/repo3/browse"
+          }
+        ]
+      },
+      "forkable": true,
+      "archived": false,
+      "scalable": true,
+      "defaultBranch": "main"
+    },
+    {
+      "slug": "repo4",
+      "id": 4,
+      "name": "repo4",
+      "project": {
+        "key": "PROJECT_KEY",
+        "id": 1,
+        "name": "Project Name",
+        "public": true,
+        "type": "NORMAL"
+      },
+      "public": true,
+      "links": {
+        "clone": [
+          {
+            "href": "https://stash-test.example.com/scm/project_key/repo4.git",
+            "name": "http"
+          },
+          {
+            "href": "ssh://git@stash-test.example.com/project_key/repo4.git",
+            "name": "ssh"
+          }
+        ],
+        "self": [
+          {
+            "href": "https://stash-test.example.com/projects/PROJECT_KEY/repos/repo4/browse"
+          }
+        ]
+      },
+      "forkable": true,
+      "archived": false,
+      "scalable": true,
+      "defaultBranch": "main"
+    }
+  ],
+  "start": 0
+}

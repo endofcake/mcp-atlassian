@@ -1,0 +1,490 @@
+{
+  "size": 20,
+  "limit": 25,
+  "isLastPage": true,
+  "values": [
+    {
+      "id": 710001,
+      "createdDate": 1612144800,
+      "user": {
+        "name": "username",
+        "emailAddress": "user@example.com",
+        "id": 730009,
+        "slug": "username",
+        "active": true
+      },
+      "action": "OPENED",
+      "commentAction": null,
+      "commentCount": 1,
+      "links": {
+        "self": [
+          {
+            "href": "https://stash-test.example.com/users/username"
+          }
+        ]
+      }
+    },
+    {
+      "id": 710002,
+      "createdDate": 1612144800,
+      "user": {
+        "name": "username2",
+        "emailAddress": "user2@example.com",
+        "id": 730010,
+        "slug": "username2",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720001,
+        "version": 1,
+        "text": "Looks good to me, approving.",
+        "author": {
+          "name": "username2",
+          "emailAddress": "user2@example.com",
+          "id": 730010,
+          "slug": "username2",
+          "active": true
+        },
+        "createdDate": 1612144800,
+        "updatedDate": 1612144800,
+        "comments": [
+          {
+            "id": 720015,
+            "version": 0,
+            "text": "Replying in thread: split out in the next push.",
+            "author": {
+              "name": "reviewer1",
+              "emailAddress": "reviewer1@example.com",
+              "id": 730011,
+              "slug": "reviewer1",
+              "active": true
+            },
+            "createdDate": 1612227600,
+            "updatedDate": 1612227600,
+            "comments": []
+          }
+        ],
+        "tasks": [
+          {
+            "id": 720014,
+            "text": "Could you extract this into a shared helper?",
+            "state": "OPEN"
+          }
+        ]
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710003,
+      "createdDate": 1612148400,
+      "user": {
+        "name": "reviewer1",
+        "emailAddress": "reviewer1@example.com",
+        "id": 730011,
+        "slug": "reviewer1",
+        "active": true
+      },
+      "action": "APPROVED",
+      "approved": true,
+      "status": "APPROVED"
+    },
+    {
+      "id": 710004,
+      "createdDate": 1612152000,
+      "user": {
+        "name": "author",
+        "emailAddress": "author@example.com",
+        "id": 730009,
+        "slug": "author",
+        "active": true
+      },
+      "action": "RESCOPED",
+      "addedReviewers": [],
+      "removedReviewers": [],
+      "fromHash": "f1cee2c829c2a6a2cb0e7d0474b850d51528d1e8",
+      "toHash": "f1cea347bfae2d16bcf9559611e18ae554ad9986"
+    },
+    {
+      "id": 710005,
+      "createdDate": 1612155600,
+      "user": {
+        "name": "reviewer2",
+        "emailAddress": "reviewer2@example.com",
+        "id": 730012,
+        "slug": "reviewer2",
+        "active": true
+      },
+      "action": "REVIEWED",
+      "approved": false,
+      "status": "NEEDS_WORK"
+    },
+    {
+      "id": 710006,
+      "createdDate": 1612159200,
+      "user": {
+        "name": "username2",
+        "emailAddress": "user2@example.com",
+        "id": 730010,
+        "slug": "username2",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720002,
+        "version": 0,
+        "text": "Nit: trailing whitespace on this line.",
+        "author": {
+          "name": "username2",
+          "emailAddress": "user2@example.com",
+          "id": 730010,
+          "slug": "username2",
+          "active": true
+        },
+        "createdDate": 1612159200,
+        "updatedDate": 1612159200,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710007,
+      "createdDate": 1612162800,
+      "user": {
+        "name": "reviewer1",
+        "emailAddress": "reviewer1@example.com",
+        "id": 730011,
+        "slug": "reviewer1",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720003,
+        "version": 0,
+        "text": "Agreed, folding this into the next commit.",
+        "author": {
+          "name": "reviewer1",
+          "emailAddress": "reviewer1@example.com",
+          "id": 730011,
+          "slug": "reviewer1",
+          "active": true
+        },
+        "createdDate": 1612162800,
+        "updatedDate": 1612162800,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710008,
+      "createdDate": 1612166400,
+      "user": {
+        "name": "author",
+        "emailAddress": "author@example.com",
+        "id": 730009,
+        "slug": "author",
+        "active": true
+      },
+      "action": "MERGED",
+      "commit": {
+        "id": "f1cef2518b8aa4a5d5603fe9e3e2fb45bdb5e597",
+        "displayId": "f1cef25"
+      }
+    },
+    {
+      "id": 710009,
+      "createdDate": 1612170000,
+      "user": {
+        "name": "reviewer3",
+        "emailAddress": "reviewer3@example.com",
+        "id": 730013,
+        "slug": "reviewer3",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720004,
+        "version": 0,
+        "text": "Please add a regression test for this branch.",
+        "author": {
+          "name": "reviewer3",
+          "emailAddress": "reviewer3@example.com",
+          "id": 730013,
+          "slug": "reviewer3",
+          "active": true
+        },
+        "createdDate": 1612170000,
+        "updatedDate": 1612170000,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710010,
+      "createdDate": 1612173600,
+      "user": {
+        "name": "bot",
+        "emailAddress": "bot@example.com",
+        "id": 730014,
+        "slug": "bot",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720005,
+        "version": 0,
+        "text": "This matches the pattern used elsewhere, approving.",
+        "author": {
+          "name": "bot",
+          "emailAddress": "bot@example.com",
+          "id": 730014,
+          "slug": "bot",
+          "active": true
+        },
+        "createdDate": 1612173600,
+        "updatedDate": 1612173600,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710011,
+      "createdDate": 1612177200,
+      "user": {
+        "name": "reviewer2",
+        "emailAddress": "reviewer2@example.com",
+        "id": 730012,
+        "slug": "reviewer2",
+        "active": true
+      },
+      "action": "APPROVED",
+      "approved": true,
+      "status": "APPROVED"
+    },
+    {
+      "id": 710012,
+      "createdDate": 1612180800,
+      "user": {
+        "name": "username",
+        "emailAddress": "user@example.com",
+        "id": 730009,
+        "slug": "username",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720006,
+        "version": 0,
+        "text": "Resolved via the suggested change.",
+        "author": {
+          "name": "username",
+          "emailAddress": "user@example.com",
+          "id": 730009,
+          "slug": "username",
+          "active": true
+        },
+        "createdDate": 1612180800,
+        "updatedDate": 1612180800,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710013,
+      "createdDate": 1612184400,
+      "user": {
+        "name": "reviewer3",
+        "emailAddress": "reviewer3@example.com",
+        "id": 730013,
+        "slug": "reviewer3",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720007,
+        "version": 0,
+        "text": "Good catch, fixed in the latest push.",
+        "author": {
+          "name": "reviewer3",
+          "emailAddress": "reviewer3@example.com",
+          "id": 730013,
+          "slug": "reviewer3",
+          "active": true
+        },
+        "createdDate": 1612184400,
+        "updatedDate": 1612184400,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710014,
+      "createdDate": 1612188000,
+      "user": {
+        "name": "reviewer1",
+        "emailAddress": "reviewer1@example.com",
+        "id": 730011,
+        "slug": "reviewer1",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720008,
+        "version": 0,
+        "text": "Looks good to me, approving.",
+        "author": {
+          "name": "reviewer1",
+          "emailAddress": "reviewer1@example.com",
+          "id": 730011,
+          "slug": "reviewer1",
+          "active": true
+        },
+        "createdDate": 1612188000,
+        "updatedDate": 1612188000,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710015,
+      "createdDate": 1612191600,
+      "user": {
+        "name": "username2",
+        "emailAddress": "user2@example.com",
+        "id": 730010,
+        "slug": "username2",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720009,
+        "version": 0,
+        "text": "Could you extract this into a shared helper?",
+        "author": {
+          "name": "username2",
+          "emailAddress": "user2@example.com",
+          "id": 730010,
+          "slug": "username2",
+          "active": true
+        },
+        "createdDate": 1612191600,
+        "updatedDate": 1612191600,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710016,
+      "createdDate": 1612195200,
+      "user": {
+        "name": "author",
+        "emailAddress": "author@example.com",
+        "id": 730009,
+        "slug": "author",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720010,
+        "version": 0,
+        "text": "Nit: trailing whitespace on this line.",
+        "author": {
+          "name": "author",
+          "emailAddress": "author@example.com",
+          "id": 730009,
+          "slug": "author",
+          "active": true
+        },
+        "createdDate": 1612195200,
+        "updatedDate": 1612195200,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710017,
+      "createdDate": 1612198800,
+      "user": {
+        "name": "reviewer2",
+        "emailAddress": "reviewer2@example.com",
+        "id": 730012,
+        "slug": "reviewer2",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720011,
+        "version": 0,
+        "text": "Agreed, folding this into the next commit.",
+        "author": {
+          "name": "reviewer2",
+          "emailAddress": "reviewer2@example.com",
+          "id": 730012,
+          "slug": "reviewer2",
+          "active": true
+        },
+        "createdDate": 1612198800,
+        "updatedDate": 1612198800,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710018,
+      "createdDate": 1612202400,
+      "user": {
+        "name": "bot",
+        "emailAddress": "bot@example.com",
+        "id": 730014,
+        "slug": "bot",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720012,
+        "version": 0,
+        "text": "Please add a regression test for this branch.",
+        "author": {
+          "name": "bot",
+          "emailAddress": "bot@example.com",
+          "id": 730014,
+          "slug": "bot",
+          "active": true
+        },
+        "createdDate": 1612202400,
+        "updatedDate": 1612202400,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    },
+    {
+      "id": 710019,
+      "createdDate": 1612206000,
+      "user": {
+        "name": "reviewer3",
+        "emailAddress": "reviewer3@example.com",
+        "id": 730013,
+        "slug": "reviewer3",
+        "active": true
+      },
+      "action": "COMMENTED",
+      "comment": {
+        "id": 720013,
+        "version": 0,
+        "text": "This matches the pattern used elsewhere, approving.",
+        "author": {
+          "name": "reviewer3",
+          "emailAddress": "reviewer3@example.com",
+          "id": 730013,
+          "slug": "reviewer3",
+          "active": true
+        },
+        "createdDate": 1612206000,
+        "updatedDate": 1612206000,
+        "comments": []
+      },
+      "commentAction": "ADDED"
+    }
+  ],
+  "start": 0
+}

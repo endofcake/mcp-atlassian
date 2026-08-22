@@ -1,0 +1,170 @@
+{
+  "size": 1,
+  "limit": 25,
+  "isLastPage": true,
+  "values": [
+    {
+      "id": 16,
+      "version": 0,
+      "title": "Update service configuration defaults",
+      "description": "Example pull request description.",
+      "state": "OPEN",
+      "open": true,
+      "closed": false,
+      "fromRef": {
+        "id": "refs/heads/fix/clean-stale-refs",
+        "repository": {
+          "slug": "stash-test-example",
+          "name": null,
+          "project": {
+            "key": "PROJD",
+            "id": 2,
+            "name": null,
+            "public": false,
+            "type": "NORMAL",
+            "links": {
+              "self": [
+                {
+                  "href": "https://stash-test.example.com/projects/PROJD"
+                }
+              ]
+            }
+          },
+          "public": false,
+          "links": {
+            "clone": [
+              {
+                "href": "https://stash-test.example.com/scm/projd/stash-test-example.git",
+                "name": "http"
+              },
+              {
+                "href": "ssh://git@stash-test.example.com:7999/projd/stash-test-example.git",
+                "name": "ssh"
+              }
+            ],
+            "self": [
+              {
+                "href": "https://stash-test.example.com/projects/PROJD/repos/stash-test-example/browse"
+              }
+            ]
+          }
+        }
+      },
+      "toRef": {
+        "id": "refs/heads/main",
+        "repository": {
+          "slug": "stash-test-example",
+          "name": null,
+          "project": {
+            "key": "PROJD",
+            "id": 2,
+            "name": null,
+            "public": false,
+            "type": "NORMAL",
+            "links": {
+              "self": [
+                {
+                  "href": "https://stash-test.example.com/projects/PROJD"
+                }
+              ]
+            }
+          },
+          "public": false,
+          "links": {
+            "clone": [
+              {
+                "href": "https://stash-test.example.com/scm/projd/stash-test-example.git",
+                "name": "http"
+              },
+              {
+                "href": "ssh://git@stash-test.example.com:7999/projd/stash-test-example.git",
+                "name": "ssh"
+              }
+            ],
+            "self": [
+              {
+                "href": "https://stash-test.example.com/projects/PROJD/repos/stash-test-example/browse"
+              }
+            ]
+          }
+        }
+      },
+      "locked": false,
+      "author": {
+        "user": {
+          "name": "devuser",
+          "emailAddress": "devuser@example.com",
+          "id": 730006,
+          "slug": "devuser",
+          "active": true,
+          "displayName": "Dev User",
+          "links": {
+            "self": [
+              {
+                "href": "https://stash-test.example.com/users/devuser"
+              }
+            ]
+          }
+        },
+        "role": "AUTHOR",
+        "approved": false,
+        "status": "UNAPPROVED"
+      },
+      "reviewers": [
+        {
+          "user": {
+            "name": "reviewer1",
+            "emailAddress": "reviewer1@example.com",
+            "id": 730007,
+            "slug": "reviewer1",
+            "active": true,
+            "displayName": "Reviewer One",
+            "links": {
+              "self": [
+                {
+                  "href": "https://stash-test.example.com/users/reviewer1"
+                }
+              ]
+            }
+          },
+          "role": "REVIEWER",
+          "approved": false,
+          "status": "UNAPPROVED"
+        }
+      ],
+      "participants": [
+        {
+          "user": {
+            "name": "participant1",
+            "emailAddress": "participant1@example.com",
+            "id": 730008,
+            "slug": "participant1",
+            "active": true,
+            "displayName": "Participant One",
+            "links": {
+              "self": [
+                {
+                  "href": "https://stash-test.example.com/users/participant1"
+                }
+              ]
+            }
+          },
+          "role": "PARTICIPANT",
+          "approved": true,
+          "status": "APPROVED"
+        }
+      ],
+      "links": {
+        "self": [
+          {
+            "href": "https://stash-test.example.com/projects/PROJD/repos/stash-test-example/pull-requests/16"
+          }
+        ]
+      },
+      "createdDate": 1612137600,
+      "updatedDate": 1612141200
+    }
+  ],
+  "pagelen": 25,
+  "start": 0
+}

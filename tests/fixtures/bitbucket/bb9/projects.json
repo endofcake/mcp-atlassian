@@ -1,0 +1,39 @@
+{
+  "size": 2,
+  "limit": 25,
+  "isLastPage": true,
+  "values": [
+    {
+      "key": "PROJA",
+      "id": 1,
+      "name": "Example Project Alpha",
+      "public": true,
+      "type": "NORMAL",
+      "links": {
+        "self": [
+          {
+            "href": "https://stash-test.example.com/projects/PROJA"
+          }
+        ]
+      }
+    },
+    {
+      "key": "PROJB",
+      "id": 2,
+      "name": "Example Project Beta",
+      "public": false,
+      "type": "NORMAL",
+      "links": {
+        "self": [
+          {
+            "href": "https://stash-test.example.com/projects/PROJB"
+          }
+        ]
+      }
+    }
+  ],
+  "start": 0,
+  "pagelen": 25,
+  "page": 1,
+  "previous": false
+}

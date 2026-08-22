@@ -1,0 +1,370 @@
+{
+  "diffs": [
+    {
+      "fromCommit": {
+        "id": "f1ce1950563e9cbd309c6d94a68bf86eafd61a3e",
+        "repository": {
+          "slug": "....",
+          "name": null,
+          "project": {
+            "key": "..."
+          }
+        }
+      },
+      "toCommit": {
+        "id": "f1ce781b05e305814156e4622d219b2b4eb78657",
+        "repository": {
+          "slug": "....",
+          "name": null,
+          "project": {
+            "key": "..."
+          }
+        }
+      },
+      "locked": false,
+      "author": {
+        "role": "AUTHOR",
+        "approved": false,
+        "status": "UNAPPROVED"
+      },
+      "reviewers": [],
+      "comments": [],
+      "tasks": [],
+      "hunks": [
+        {
+          "sourceLine": 1,
+          "sourceSpan": 1,
+          "destinationLine": 1,
+          "destinationSpan": 1,
+          "undoable": true,
+          "segments": [
+            {
+              "type": "CONTEXT",
+              "size": 8,
+              "lines": [
+                {
+                  "destination": 1,
+                  "source": 1,
+                  "line": "# Example service",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "ADDED",
+              "size": 5,
+              "lines": [
+                {
+                  "destination": 2,
+                  "source": null,
+                  "line": "Deploys the example service into the demo namespace.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "REMOVED",
+              "size": 22,
+              "lines": [
+                {
+                  "destination": null,
+                  "source": 2,
+                  "line": "See the chart values files for per-environment overrides.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": 7,
+              "lines": [
+                {
+                  "destination": 3,
+                  "source": 3,
+                  "line": "## Prerequisites",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "ADDED",
+              "size": 13,
+              "lines": [
+                {
+                  "destination": 4,
+                  "source": null,
+                  "line": "Helm 3 or later with the chart repository already added.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": 13,
+              "lines": [
+                {
+                  "destination": 5,
+                  "source": 4,
+                  "line": "Run the standard upgrade command to install the release.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "ADDED",
+              "size": 14,
+              "lines": [
+                {
+                  "destination": 6,
+                  "source": null,
+                  "line": "Charts are organised as one umbrella chart per service.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 20,
+              "lines": [
+                {
+                  "destination": 7,
+                  "source": null,
+                  "line": "Refer to the pipeline definition for deployment stages.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 18,
+              "lines": [
+                {
+                  "destination": 8,
+                  "source": null,
+                  "line": "# Example service",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 17,
+              "lines": [
+                {
+                  "destination": 9,
+                  "source": null,
+                  "line": "Deploys the example service into the demo namespace.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 18,
+              "lines": [
+                {
+                  "destination": 10,
+                  "source": null,
+                  "line": "See the chart values files for per-environment overrides.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 20,
+              "lines": [
+                {
+                  "destination": 11,
+                  "source": null,
+                  "line": "## Prerequisites",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 21,
+              "lines": [
+                {
+                  "destination": 12,
+                  "source": null,
+                  "line": "Helm 3 or later with the chart repository already added.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 22,
+              "lines": [
+                {
+                  "destination": 13,
+                  "source": null,
+                  "line": "Run the standard upgrade command to install the release.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 24,
+              "lines": [
+                {
+                  "destination": 14,
+                  "source": null,
+                  "line": "Charts are organised as one umbrella chart per service.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 25,
+              "lines": [
+                {
+                  "destination": 15,
+                  "source": null,
+                  "line": "Refer to the pipeline definition for deployment stages.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 26,
+              "lines": [
+                {
+                  "destination": 16,
+                  "source": null,
+                  "line": "# Example service",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 28,
+              "lines": [
+                {
+                  "destination": 17,
+                  "source": null,
+                  "line": "Deploys the example service into the demo namespace.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 29,
+              "lines": [
+                {
+                  "destination": 18,
+                  "source": null,
+                  "line": "See the chart values files for per-environment overrides.",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 30,
+              "lines": [
+                {
+                  "destination": 19,
+                  "source": null,
+                  "line": "## Prerequisites",
+                  "truncated": false
+                }
+              ]
+            },
+            {
+              "type": "CONTEXT",
+              "size": false,
+              "lines": []
+            },
+            {
+              "type": "ADDED",
+              "size": 31,
+              "lines": [
+                {
+                  "destination": 20,
+                  "source": null,
+                  "line": "Helm 3 or later with the chart repository already added.",
+                  "truncated": false
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "truncated": false
+    }
+  ],
+  "truncated": false
+}
