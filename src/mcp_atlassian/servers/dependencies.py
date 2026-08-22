@@ -1,6 +1,7 @@
-"""Dependency providers for JiraFetcher and ConfluenceFetcher with context awareness.
+"""Dependency providers for service fetchers with context awareness.
 
-Provides get_jira_fetcher and get_confluence_fetcher for use in tool functions.
+Provides get_jira_fetcher, get_confluence_fetcher, and get_bitbucket_fetcher
+for use in tool functions.
 """
 
 from __future__ import annotations
@@ -11,13 +12,14 @@ import logging
 import os
 import threading
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeAlias
 
 from cachetools import TTLCache
 from fastmcp import Context
 from fastmcp.server.dependencies import get_access_token, get_http_request
 from starlette.requests import Request
 
+from mcp_atlassian.bitbucket import BitbucketConfig, BitbucketFetcher
 from mcp_atlassian.confluence import ConfluenceConfig, ConfluenceFetcher
 from mcp_atlassian.jira import JiraConfig, JiraFetcher
 from mcp_atlassian.servers.context import MainAppContext
@@ -31,12 +33,17 @@ from mcp_atlassian.utils.proxy import get_proxy_settings_from_env
 from mcp_atlassian.utils.urls import validate_url_for_ssrf
 
 if TYPE_CHECKING:
+    from mcp_atlassian.bitbucket.config import (
+        BitbucketConfig as UserBitbucketConfigType,
+    )
     from mcp_atlassian.confluence.config import (
         ConfluenceConfig as UserConfluenceConfigType,
     )
     from mcp_atlassian.jira.config import JiraConfig as UserJiraConfigType
 
 logger = logging.getLogger("mcp-atlassian.servers.dependencies")
+
+ServiceConfig: TypeAlias = JiraConfig | ConfluenceConfig | BitbucketConfig
 
 
 # ---------------------------------------------------------------------------
@@ -48,9 +55,9 @@ logger = logging.getLogger("mcp-atlassian.servers.dependencies")
 class _ServiceSpec:
     """Per-service parameters for the generic fetcher dependency logic."""
 
-    name: str  # "Jira" or "Confluence"
-    fetcher_class: type  # JiraFetcher / ConfluenceFetcher
-    config_class: type  # JiraConfig / ConfluenceConfig
+    name: str  # "Jira", "Confluence", or "Bitbucket"
+    fetcher_class: type  # JiraFetcher / ConfluenceFetcher / BitbucketFetcher
+    config_class: type  # JiraConfig / ConfluenceConfig / BitbucketConfig
     state_key: str  # request.state attribute for caching
     config_attr: str  # MainAppContext attribute for global config
     url_header: str  # X-Atlassian-{Service}-Url
@@ -62,6 +69,16 @@ class _ServiceSpec:
     on_validated: Callable[
         [str, Request, Any, str, str | None], None
     ]  # logging + email backfill
+    # Whether the service accepts per-request header PAT auth
+    # (X-Atlassian-{Service}-Url + -Personal-Token). Bitbucket's config has no
+    # personal_token field, so the header-PAT branch must never build one.
+    supports_header_pat: bool = True
+    # Whether the per-request OAuth bearer may be sourced from the server-wide
+    # OAuth proxy's auth context (a proxy-minted token). The proxy fronts one
+    # provider; its tokens must only reach fetchers for that provider's
+    # services — otherwise the bearer comes solely from the client-presented
+    # request token.
+    forward_proxy_oauth_token: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -116,12 +133,17 @@ class _ValidationInFlight:
 _validation_inflight: dict[tuple[str, str], _ValidationInFlight] = {}
 
 
-def _credential_for_cache(config: JiraConfig | ConfluenceConfig) -> str | None:
+def _credential_for_cache(config: ServiceConfig) -> str | None:
     """Extract the secret that authenticates ``config``, for cache-key hashing.
 
     Returns None when no credential-bearing field is set, so the caller can
     skip caching rather than key on an empty/ambiguous value.
     """
+    if isinstance(config, BitbucketConfig):
+        # OAuth bearer is the only Bitbucket credential; the pat/basic arms
+        # below touch fields BitbucketConfig does not have.
+        oauth_cfg = config.oauth_config
+        return getattr(oauth_cfg, "access_token", None) if oauth_cfg else None
     if config.auth_type == "oauth":
         oauth_cfg = getattr(config, "oauth_config", None)
         return getattr(oauth_cfg, "access_token", None) if oauth_cfg else None
@@ -149,7 +171,7 @@ def _validation_cache_key(
     return (spec.name, digest)
 
 
-def _validation_cache_scope(config: JiraConfig | ConfluenceConfig) -> str:
+def _validation_cache_scope(config: ServiceConfig) -> str:
     """Return the target identity to include in a validation cache key.
 
     Cloud OAuth requests share the same API hostname, so the configured URL
@@ -308,6 +330,17 @@ def _confluence_on_validated(
             request.state.user_atlassian_email = validation_data["email"]
 
 
+def _bitbucket_on_validated(
+    fn_name: str,
+    request: Request,
+    validation_data: Any,
+    auth_branch: str,
+    user_email: str | None,
+) -> None:
+    """Post-validation logging for Bitbucket (OAuth forwarding only)."""
+    logger.debug(f"{fn_name}: Validated Bitbucket OAuth token.")
+
+
 def _jira_spec() -> _ServiceSpec:
     """Build Jira service spec.
 
@@ -352,6 +385,36 @@ def _confluence_spec() -> _ServiceSpec:
     )
 
 
+def _bitbucket_spec() -> _ServiceSpec:
+    """Build Bitbucket service spec.
+
+    This service is wired for OAuth 2.0 bearer auth only; header-based PAT and
+    basic auth are not handled (Bitbucket DC supports them, but BitbucketConfig
+    does not wire them up). Deferred to a function so test patches on
+    ``BitbucketFetcher`` / ``BitbucketConfig`` are picked up at call time.
+    """
+    return _ServiceSpec(
+        name="Bitbucket",
+        fetcher_class=BitbucketFetcher,
+        config_class=BitbucketConfig,
+        state_key="bitbucket_fetcher",
+        config_attr="full_bitbucket_config",
+        url_header="X-Atlassian-Bitbucket-Url",
+        token_header="X-Atlassian-Bitbucket-Personal-Token",  # noqa: S106
+        passthrough_env_var="BITBUCKET_PASSTHROUGH_HEADERS",
+        filter_kwargs={"projects_filter": None},
+        get_session=lambda f: f._session,
+        validate_fn=lambda f: f.get_current_user(),
+        on_validated=_bitbucket_on_validated,
+        supports_header_pat=False,
+        # Bitbucket DC is a separate OAuth provider on a separate host; the
+        # server-wide OAuth proxy fronts the Jira/Confluence provider, so a
+        # proxy-minted token is never a Bitbucket token. Only the
+        # client-presented request bearer may reach a Bitbucket fetcher.
+        forward_proxy_oauth_token=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -367,9 +430,7 @@ def _get_app_lifespan_ctx(ctx: Context) -> MainAppContext | None:
     )
 
 
-def _get_global_config(
-    ctx: Context, spec: _ServiceSpec
-) -> JiraConfig | ConfluenceConfig:
+def _get_global_config(ctx: Context, spec: _ServiceSpec) -> ServiceConfig:
     """Get global config from lifespan context.
 
     Raises:
@@ -615,7 +676,7 @@ def _make_ssrf_safe_hook(
 
 
 def _resolve_bearer_auth_type(
-    base_config: JiraConfig | ConfluenceConfig,
+    base_config: ServiceConfig,
     middleware_auth_type: str,
     cloud_id: str | None = None,
 ) -> str:
@@ -629,7 +690,7 @@ def _resolve_bearer_auth_type(
     * Otherwise → fall back to "pat" (Server/DC Bearer-prefixed PAT)
 
     Args:
-        base_config: The global JiraConfig or ConfluenceConfig.
+        base_config: The global JiraConfig, ConfluenceConfig, or BitbucketConfig.
         middleware_auth_type: The auth_type set by the middleware ("oauth" or "pat").
         cloud_id: Optional per-request cloud_id from headers.
 
@@ -662,21 +723,22 @@ def _resolve_bearer_auth_type(
 
 
 def _create_user_config_for_fetcher(
-    base_config: JiraConfig | ConfluenceConfig,
+    base_config: ServiceConfig,
     auth_type: str,
     credentials: dict[str, Any],
     cloud_id: str | None = None,
-) -> JiraConfig | ConfluenceConfig:
-    """Create a user-specific configuration for Jira or Confluence fetchers.
+) -> ServiceConfig:
+    """Create a user-specific configuration for a service fetcher.
 
     Args:
-        base_config: The base JiraConfig or ConfluenceConfig to clone and modify.
+        base_config: The base JiraConfig, ConfluenceConfig, or BitbucketConfig
+            to clone and modify.
         auth_type: The authentication type ('oauth', 'pat', or 'basic').
         credentials: Dictionary of credentials (token, email, etc).
         cloud_id: Optional cloud ID to override the base config cloud ID.
 
     Returns:
-        JiraConfig or ConfluenceConfig with user-specific credentials.
+        A service config with user-specific credentials.
 
     Raises:
         ValueError: If required credentials are missing or auth_type is unsupported.
@@ -801,7 +863,31 @@ def _create_user_config_for_fetcher(
             }
         )
 
-    if isinstance(base_config, JiraConfig):
+    if isinstance(base_config, BitbucketConfig):
+        # Bitbucket DC forwards OAuth bearer tokens only; its config has no
+        # username/api_token/personal_token fields, so replace only the
+        # supported subset of common_args. dataclasses.replace carries over
+        # every unspecified field (projects_filter included) from base_config.
+        if auth_type != "oauth":
+            raise ValueError(
+                f"Bitbucket Data Center supports only OAuth auth_type, got "
+                f"{auth_type!r}"
+            )
+        user_bitbucket_config: UserBitbucketConfigType = dataclasses.replace(
+            base_config,
+            url=common_args["url"],
+            auth_type="oauth",
+            ssl_verify=common_args["ssl_verify"],
+            http_proxy=common_args["http_proxy"],
+            https_proxy=common_args["https_proxy"],
+            no_proxy=common_args["no_proxy"],
+            socks_proxy=common_args["socks_proxy"],
+            proxy_wpad_enable=common_args["proxy_wpad_enable"],
+            proxy_wpad_url=common_args["proxy_wpad_url"],
+            oauth_config=common_args["oauth_config"],
+        )
+        return user_bitbucket_config
+    elif isinstance(base_config, JiraConfig):
         user_jira_config: UserJiraConfigType = dataclasses.replace(
             base_config, **common_args
         )
@@ -853,7 +939,8 @@ async def _get_fetcher(ctx: Context, spec: _ServiceSpec) -> Any:
 
         # --- Branch 1: header-based PAT ---
         if (
-            user_auth_type == "pat"
+            spec.supports_header_pat
+            and user_auth_type == "pat"
             and url_header_val
             and token_header_val
             and not hasattr(request.state, "user_atlassian_token")
@@ -935,9 +1022,15 @@ async def _get_fetcher(ctx: Context, spec: _ServiceSpec) -> Any:
                 "user_email_context": user_email,
             }
             if resolved_auth_type == "oauth":
-                credentials["oauth_access_token"] = _resolve_oauth_access_token(
-                    user_token, spec.name
-                )
+                if spec.forward_proxy_oauth_token:
+                    credentials["oauth_access_token"] = _resolve_oauth_access_token(
+                        user_token, spec.name
+                    )
+                else:
+                    # The proxy-minted token belongs to a different provider;
+                    # forward only the client-presented request bearer. (See
+                    # forward_proxy_oauth_token in the *_spec builders.)
+                    credentials["oauth_access_token"] = user_token
             else:
                 credentials["personal_access_token"] = user_token
 
@@ -1078,3 +1171,21 @@ async def get_confluence_fetcher(ctx: Context) -> ConfluenceFetcher:
         ValueError: If configuration or credentials are invalid.
     """
     return await _get_fetcher(ctx, _confluence_spec())
+
+
+async def get_bitbucket_fetcher(ctx: Context) -> BitbucketFetcher:
+    """Returns a BitbucketFetcher instance appropriate for the current request context.
+
+    Resolves a per-user fetcher from the forwarded OAuth bearer token, falling
+    back to the global config outside an HTTP context.
+
+    Args:
+        ctx: The FastMCP context.
+
+    Returns:
+        BitbucketFetcher instance for the current user or global config.
+
+    Raises:
+        ValueError: If configuration or credentials are invalid.
+    """
+    return await _get_fetcher(ctx, _bitbucket_spec())

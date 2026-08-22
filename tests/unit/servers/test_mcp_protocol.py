@@ -1340,3 +1340,194 @@ class TestMCPProtocolIntegration:
         # Execute tool and verify error handling
         with pytest.raises(MCPAtlassianAuthenticationError):
             await mock_failing_tool(ctx)
+
+
+@pytest.mark.anyio
+class TestBitbucketServiceWiring:
+    """Bitbucket lifespan config load and service-availability filtering."""
+
+    @pytest.fixture
+    async def server(self):
+        """Create an AtlassianMCP server instance for testing."""
+        return AtlassianMCP(name="Test Atlassian MCP", lifespan=main_lifespan)
+
+    def _make_dummy_tool(self, name, tags):
+        tool = MagicMock(spec=FastMCPTool)
+        tool.name = name
+        tool.tags = tags
+        tool.to_mcp_tool.return_value = MCPTool(
+            name=name,
+            description=f"Tool {name}",
+            inputSchema={"type": "object", "properties": {}},
+        )
+        return tool
+
+    def _wire_context(self, server, app_context):
+        request_context = MagicMock()
+        request_context.lifespan_context = {"app_lifespan_context": app_context}
+        # request=None prevents MagicMock auto-creating service headers that
+        # would falsely mark services header-available.
+        request_context.request = None
+        server._mcp_server = MagicMock()
+        server._mcp_server.request_context = request_context
+
+    def _install_tools(self, server, tools):
+        async def mock_list_tools():
+            return tools
+
+        server.list_tools = mock_list_tools
+
+    async def test_lifespan_loads_bitbucket_config(self):
+        """With Bitbucket configured in the env, the lifespan loads its config."""
+        env_vars = {
+            "BITBUCKET_URL": "https://bitbucket.dc.example.com",
+            "BITBUCKET_OAUTH_ACCESS_TOKEN": "startup-token",
+        }
+        with MockEnvironment.clean_env():
+            with patch.dict(os.environ, env_vars, clear=False):
+                with patch(
+                    "mcp_atlassian.bitbucket.config.BitbucketConfig.from_env"
+                ) as mock_from_env:
+                    bitbucket_config = MagicMock()
+                    bitbucket_config.is_auth_configured.return_value = True
+                    mock_from_env.return_value = bitbucket_config
+
+                    app = MagicMock()
+                    async with main_lifespan(app) as context:
+                        app_context = context["app_lifespan_context"]
+                        assert app_context.full_bitbucket_config == bitbucket_config
+                        assert app_context.full_jira_config is None
+                        assert app_context.full_confluence_config is None
+
+    async def test_lifespan_skips_bitbucket_when_not_configured(self):
+        """Without Bitbucket env config, the lifespan does not build its config."""
+        with MockEnvironment.clean_env():
+            with patch(
+                "mcp_atlassian.bitbucket.config.BitbucketConfig.from_env"
+            ) as mock_from_env:
+                app = MagicMock()
+                async with main_lifespan(app) as context:
+                    app_context = context["app_lifespan_context"]
+                    assert app_context.full_bitbucket_config is None
+                mock_from_env.assert_not_called()
+
+    async def test_lifespan_handles_bitbucket_auth_not_configured(self):
+        """A loaded config that fails is_auth_configured is not published."""
+        env_vars = {
+            "BITBUCKET_URL": "https://bitbucket.dc.example.com",
+            "BITBUCKET_OAUTH_ACCESS_TOKEN": "startup-token",
+        }
+        with MockEnvironment.clean_env():
+            with patch.dict(os.environ, env_vars, clear=False):
+                with patch(
+                    "mcp_atlassian.bitbucket.config.BitbucketConfig.from_env"
+                ) as mock_from_env:
+                    bitbucket_config = MagicMock()
+                    bitbucket_config.is_auth_configured.return_value = False
+                    mock_from_env.return_value = bitbucket_config
+
+                    app = MagicMock()
+                    async with main_lifespan(app) as context:
+                        app_context = context["app_lifespan_context"]
+                        assert app_context.full_bitbucket_config is None
+
+    async def test_bitbucket_tool_hidden_when_service_not_configured(self, server):
+        """A bitbucket-tagged tool is hidden while a configured Jira stays listed."""
+        with MockEnvironment.clean_env():
+            jira_config = MagicMock(spec=JiraConfig)
+            app_context = MainAppContext(
+                full_jira_config=jira_config,
+                full_confluence_config=None,
+                full_bitbucket_config=None,
+                read_only=False,
+                enabled_tools=None,
+            )
+            self._wire_context(server, app_context)
+            self._install_tools(
+                server,
+                [
+                    self._make_dummy_tool("jira_get_issue", {"jira", "read"}),
+                    self._make_dummy_tool(
+                        "bitbucket_list_projects", {"bitbucket", "read"}
+                    ),
+                ],
+            )
+
+            tools = await server._list_tools_mcp()
+
+            assert [t.name for t in tools] == ["jira_get_issue"]
+
+    async def test_bitbucket_tool_listed_when_service_configured(self, server):
+        """A bitbucket-tagged tool is listed once the global config is loaded."""
+        with MockEnvironment.clean_env():
+            from mcp_atlassian.bitbucket.config import BitbucketConfig
+
+            bitbucket_config = MagicMock(spec=BitbucketConfig)
+            app_context = MainAppContext(
+                full_jira_config=None,
+                full_confluence_config=None,
+                full_bitbucket_config=bitbucket_config,
+                read_only=False,
+                enabled_tools=None,
+            )
+            self._wire_context(server, app_context)
+            self._install_tools(
+                server,
+                [
+                    self._make_dummy_tool("jira_get_issue", {"jira", "read"}),
+                    self._make_dummy_tool(
+                        "bitbucket_list_projects", {"bitbucket", "read"}
+                    ),
+                ],
+            )
+
+            tools = await server._list_tools_mcp()
+
+            assert [t.name for t in tools] == ["bitbucket_list_projects"]
+
+    @pytest.mark.security_regression
+    async def test_call_tool_mcp_read_only_blocks_bitbucket_write(self, server):
+        """The call-time gate applies to bitbucket-tagged tools like any other."""
+        from unittest.mock import AsyncMock
+
+        from fastmcp import FastMCP
+        from fastmcp.exceptions import NotFoundError
+
+        from mcp_atlassian.bitbucket.config import BitbucketConfig
+
+        with MockEnvironment.clean_env():
+            bitbucket_config = MagicMock(spec=BitbucketConfig)
+            app_context = MainAppContext(
+                full_jira_config=None,
+                full_confluence_config=None,
+                full_bitbucket_config=bitbucket_config,
+                read_only=True,
+                enabled_tools=None,
+            )
+            self._wire_context(server, app_context)
+
+            read_tool = self._make_dummy_tool(
+                "bitbucket_list_projects", {"bitbucket", "read"}
+            )
+            write_tool = self._make_dummy_tool(
+                "bitbucket_merge_pull_request", {"bitbucket", "write"}
+            )
+            tools_by_name = {t.name: t for t in (read_tool, write_tool)}
+
+            async def mock_get_tool(name, version=None):
+                return tools_by_name.get(name)
+
+            server.get_tool = mock_get_tool
+
+            with patch.object(
+                FastMCP, "_call_tool_mcp", new_callable=AsyncMock
+            ) as mock_super:
+                mock_super.return_value = "EXECUTED"
+
+                with pytest.raises(NotFoundError):
+                    await server._call_tool_mcp("bitbucket_merge_pull_request", {})
+                mock_super.assert_not_called()
+
+                result = await server._call_tool_mcp("bitbucket_list_projects", {})
+                assert result == "EXECUTED"
+                mock_super.assert_called_once()
