@@ -14,7 +14,13 @@ from fastmcp.server.auth.auth import AccessToken, TokenVerifier
 
 
 class AtlassianOpaqueTokenVerifier(TokenVerifier):
-    """Accept opaque Atlassian tokens and wrap them in AccessToken."""
+    """Accept opaque Atlassian tokens and wrap them in AccessToken.
+
+    The ``client_id`` on the issued token is a fixed label; nothing reads it.
+    Code that needs to know whether the proxy authenticated a request checks
+    for the presence of a verified auth context, which is the contract the
+    proxy guard relies on.
+    """
 
     async def verify_token(self, token: str) -> AccessToken | None:  # noqa: D401
         if not token:

@@ -28,19 +28,13 @@ from mcp_atlassian.utils.env import is_env_truthy
 from mcp_atlassian.utils.environment import get_available_services
 from mcp_atlassian.utils.io import is_read_only_mode
 from mcp_atlassian.utils.logging import mask_sensitive
-from mcp_atlassian.utils.oauth import (
-    CLOUD_AUTHORIZE_URL,
-    CLOUD_TOKEN_URL,
-    DC_AUTHORIZE_PATH,
-    DC_TOKEN_PATH,
-)
 from mcp_atlassian.utils.token_verifier import AtlassianOpaqueTokenVerifier
 from mcp_atlassian.utils.tools import get_enabled_tools, should_include_tool
 from mcp_atlassian.utils.toolsets import (
     get_enabled_toolsets,
     should_include_tool_by_toolset,
 )
-from mcp_atlassian.utils.urls import is_atlassian_cloud_url, validate_url_for_ssrf
+from mcp_atlassian.utils.urls import validate_url_for_ssrf
 
 from .client_storage import build_oauth_client_storage_from_env
 from .confluence import confluence_mcp
@@ -48,6 +42,7 @@ from .context import MainAppContext
 from .error_handling import ErrorPreservingFastMCP
 from .jira import jira_mcp
 from .oauth_proxy import HardenedOAuthProxy, parse_env_list
+from .oauth_upstream import OAUTH_PROXY_ENABLE_ENV, resolve_proxy_upstream
 
 logger = logging.getLogger("mcp-atlassian.server.main")
 
@@ -59,7 +54,6 @@ DEFAULT_ALLOWED_REDIRECT_URIS = [
     "https://chat.openai.com/connector_platform_oauth_redirect",
 ]
 DEFAULT_ALLOWED_GRANT_TYPES = ["authorization_code", "refresh_token"]
-OAUTH_PROXY_ENABLE_ENV = "ATLASSIAN_OAUTH_PROXY_ENABLE"
 
 
 def _sanitize_schema_for_compatibility(tool: MCPTool) -> MCPTool:
@@ -341,9 +335,9 @@ class AtlassianMCP(ErrorPreservingFastMCP[MainAppContext]):
             confluence_available = (
                 app_lifespan_state.full_confluence_config is not None
             ) or header_based_services.get("confluence", False)
-            # Bitbucket has no header-PAT mode, so availability is
-            # env-config-only; the header-based arm stays for shape parity and
-            # is always False today.
+            # Bitbucket has no header-PAT mode; this arm reflects env-based
+            # availability from get_available_services, mirroring the
+            # Jira/Confluence checks.
             bitbucket_available = (
                 app_lifespan_state.full_bitbucket_config is not None
             ) or header_based_services.get("bitbucket", False)
@@ -812,26 +806,15 @@ def _get_allowed_grant_types() -> list[str]:
     return parsed
 
 
-def _resolve_upstream_oauth_endpoints(instance_url: str) -> tuple[str, str]:
-    parsed_host = (urlparse(instance_url).hostname or "").lower()
-    is_cloud = (
-        is_atlassian_cloud_url(instance_url) or parsed_host == "auth.atlassian.com"
-    )
-
-    if is_cloud:
-        return CLOUD_AUTHORIZE_URL, CLOUD_TOKEN_URL
-
-    base_url = instance_url.rstrip("/")
-    return f"{base_url}{DC_AUTHORIZE_PATH}", f"{base_url}{DC_TOKEN_PATH}"
-
-
-def _is_cloud_instance(instance_url: str) -> bool:
-    parsed_host = (urlparse(instance_url).hostname or "").lower()
-    return is_atlassian_cloud_url(instance_url) or parsed_host == "auth.atlassian.com"
-
-
 def _build_auth_provider() -> HardenedOAuthProxy | None:
-    """Create an opt-in OAuth proxy auth provider with DCR + discovery support."""
+    """Create an opt-in OAuth proxy auth provider with DCR + discovery support.
+
+    The upstream provider (Atlassian or Bitbucket) is resolved from the
+    environment by :func:`resolve_proxy_upstream`, which fails closed if more
+    than one provider is configured. The deployment-level configuration (public
+    base URL, redirect path, allowed client redirect URIs, consent) is the same
+    regardless of which provider the proxy fronts.
+    """
     if not is_env_truthy(OAUTH_PROXY_ENABLE_ENV, "false"):
         logger.info(
             "OAuth proxy auth provider disabled; set %s=true to enable DCR/proxy routes.",
@@ -839,36 +822,12 @@ def _build_auth_provider() -> HardenedOAuthProxy | None:
         )
         return None
 
-    instance_url = (
-        os.getenv("ATLASSIAN_OAUTH_INSTANCE_URL")
-        or os.getenv("JIRA_URL")
-        or os.getenv("CONFLUENCE_URL")
-    )
-    client_id = (
-        os.getenv("ATLASSIAN_OAUTH_CLIENT_ID")
-        or os.getenv("JIRA_OAUTH_CLIENT_ID")
-        or os.getenv("CONFLUENCE_OAUTH_CLIENT_ID")
-    )
-    client_secret = (
-        os.getenv("ATLASSIAN_OAUTH_CLIENT_SECRET")
-        or os.getenv("JIRA_OAUTH_CLIENT_SECRET")
-        or os.getenv("CONFLUENCE_OAUTH_CLIENT_SECRET")
-    )
-    redirect_uri = os.getenv("ATLASSIAN_OAUTH_REDIRECT_URI")
-    scope_env = os.getenv("ATLASSIAN_OAUTH_SCOPE", "")
-
-    if not all([instance_url, client_id, client_secret, redirect_uri]):
-        logger.warning(
-            "OAuth proxy requested but required vars are missing. "
-            "Need instance URL + client credentials + redirect URI."
-        )
+    upstream = resolve_proxy_upstream()
+    if upstream is None:
         return None
+    logger.info("OAuth proxy upstream provider: %s", upstream.provider)
 
-    scopes = [s for part in scope_env.replace(",", " ").split() if (s := part)]
-    is_cloud = _is_cloud_instance(instance_url)
-    upstream_authorize, upstream_token = _resolve_upstream_oauth_endpoints(instance_url)
-
-    parsed_redirect = urlparse(redirect_uri)
+    parsed_redirect = urlparse(upstream.redirect_uri)
     raw_redirect_path = parsed_redirect.path or "/callback"
 
     base_url = os.getenv("PUBLIC_BASE_URL")
@@ -896,24 +855,22 @@ def _build_auth_provider() -> HardenedOAuthProxy | None:
     allowed_client_redirect_uris = _get_allowed_redirect_uris()
     allowed_grant_types = _get_allowed_grant_types()
     require_consent = is_env_truthy("ATLASSIAN_OAUTH_REQUIRE_CONSENT", "true")
-    verifier = AtlassianOpaqueTokenVerifier(required_scopes=scopes)
+    verifier = AtlassianOpaqueTokenVerifier(required_scopes=upstream.scopes)
 
     return HardenedOAuthProxy(
-        upstream_authorization_endpoint=upstream_authorize,
-        upstream_token_endpoint=upstream_token,
-        upstream_client_id=client_id,
-        upstream_client_secret=client_secret,
+        upstream_authorization_endpoint=upstream.authorization_endpoint,
+        upstream_token_endpoint=upstream.token_endpoint,
+        upstream_client_id=upstream.client_id,
+        upstream_client_secret=upstream.client_secret,
         token_verifier=verifier,
         base_url=base_url,
         redirect_path=redirect_path,
         allowed_client_redirect_uris=allowed_client_redirect_uris,
-        valid_scopes=scopes or None,
+        valid_scopes=upstream.scopes or None,
         allowed_grant_types=allowed_grant_types,
-        forced_scopes=scopes or None,
+        forced_scopes=upstream.scopes or None,
         token_endpoint_auth_method="client_secret_post",  # noqa: S106
-        extra_authorize_params=(
-            {"audience": "api.atlassian.com", "prompt": "consent"} if is_cloud else None
-        ),
+        extra_authorize_params=upstream.extra_authorize_params,
         client_storage=build_oauth_client_storage_from_env(),
         require_authorization_consent=require_consent,
     )

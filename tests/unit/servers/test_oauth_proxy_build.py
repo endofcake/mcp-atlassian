@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from mcp.server.auth.provider import RegistrationError
 from mcp.shared.auth import OAuthClientInformationFull
 
 from mcp_atlassian.servers.main import _build_auth_provider
@@ -10,6 +11,9 @@ from mcp_atlassian.utils.oauth import CLOUD_AUTHORIZE_URL, CLOUD_TOKEN_URL
 
 
 def _set_required_oauth_env(monkeypatch, *, redirect_uri: str) -> None:
+    # The proxy fronts exactly one provider: an ambient Bitbucket client id
+    # in the shell would otherwise trip the two-families refusal.
+    monkeypatch.delenv("BITBUCKET_OAUTH_CLIENT_ID", raising=False)
     monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
     monkeypatch.setenv("ATLASSIAN_OAUTH_CLIENT_ID", "client-id")
     monkeypatch.setenv("ATLASSIAN_OAUTH_CLIENT_SECRET", "client-secret")
@@ -310,3 +314,95 @@ async def test_register_client_hardens_grant_types_and_scopes(monkeypatch):
     assert stored is not None
     assert stored.grant_types == ["authorization_code"]
     assert stored.scope == "read:jira-work"
+
+
+def _set_bitbucket_oauth_env(monkeypatch, *, redirect_uri: str) -> None:
+    # The proxy fronts exactly one provider: make sure no Atlassian-family
+    # client id is visible, then configure the Bitbucket family.
+    for name in (
+        "ATLASSIAN_OAUTH_CLIENT_ID",
+        "ATLASSIAN_OAUTH_CLIENT_SECRET",
+        "JIRA_OAUTH_CLIENT_ID",
+        "JIRA_OAUTH_CLIENT_SECRET",
+        "CONFLUENCE_OAUTH_CLIENT_ID",
+        "CONFLUENCE_OAUTH_CLIENT_SECRET",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+    monkeypatch.setenv("BITBUCKET_URL", "https://bitbucket.example.com")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_SECRET", "bb-client-secret")
+    monkeypatch.setenv("BITBUCKET_OAUTH_REDIRECT_URI", redirect_uri)
+    monkeypatch.setenv("BITBUCKET_OAUTH_SCOPE", "REPO_READ")
+
+
+def test_build_auth_provider_fronts_bitbucket_data_center(monkeypatch):
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    _set_bitbucket_oauth_env(
+        monkeypatch, redirect_uri="https://mcp.example.com/mcp-atlassian/callback"
+    )
+
+    provider = _build_auth_provider()
+
+    assert provider is not None
+    assert provider._upstream_client_id == "bb-client-id"
+    assert provider._upstream_client_secret.get_secret_value() == "bb-client-secret"
+    assert (
+        provider._upstream_authorization_endpoint
+        == "https://bitbucket.example.com/rest/oauth2/latest/authorize"
+    )
+    assert (
+        provider._upstream_token_endpoint
+        == "https://bitbucket.example.com/rest/oauth2/latest/token"
+    )
+    # Bitbucket Data Center is self-hosted, so no Cloud audience/prompt params.
+    assert not provider._extra_authorize_params
+    assert str(provider.base_url) == "https://mcp.example.com/mcp-atlassian"
+    assert provider._redirect_path == "/callback"
+
+
+def test_build_auth_provider_rejects_two_provider_families(monkeypatch):
+    monkeypatch.setenv("JIRA_URL", "https://jira.example.com")
+    _set_required_oauth_env(monkeypatch, redirect_uri="http://localhost:3000/callback")
+    monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+
+    with pytest.raises(RuntimeError, match="more than one upstream provider"):
+        _build_auth_provider()
+
+
+@pytest.mark.anyio
+async def test_register_client_hardening_applies_to_bitbucket_provider(monkeypatch):
+    # The DCR hardening (self-callback rejection, grant filtering, forced
+    # scopes) is provider-independent and must hold when the proxy fronts
+    # Bitbucket exactly as it does for the Atlassian provider.
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    monkeypatch.setenv("ATLASSIAN_OAUTH_ALLOWED_GRANT_TYPES", "authorization_code")
+    _set_bitbucket_oauth_env(
+        monkeypatch, redirect_uri="https://mcp.example.com/mcp-atlassian/callback"
+    )
+
+    provider = _build_auth_provider()
+
+    assert provider is not None
+    self_targeting = OAuthClientInformationFull(
+        client_id="client-evil",
+        client_secret="secret",
+        redirect_uris=["https://mcp.example.com/mcp-atlassian/callback"],
+        grant_types=["authorization_code"],
+    )
+    with pytest.raises(RegistrationError):
+        await provider.register_client(self_targeting)
+
+    client = OAuthClientInformationFull(
+        client_id="client-456",
+        client_secret="secret",
+        redirect_uris=["http://localhost:1234/callback"],
+        grant_types=["refresh_token", "authorization_code"],
+        scope="REPO_READ REPO_WRITE",
+    )
+    await provider.register_client(client)
+    stored = await provider._client_store.get(key="client-456")
+
+    assert stored is not None
+    assert stored.grant_types == ["authorization_code"]
+    assert stored.scope == "REPO_READ"

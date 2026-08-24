@@ -18,6 +18,7 @@ async def test_verify_token_returns_fastmcp_access_token() -> None:
     assert token is not None
     assert token.token == "opaque-token"
     assert token.scopes == ["read:jira-work"]
+    assert token.client_id == "atlassian"
 
 
 @pytest.mark.anyio
