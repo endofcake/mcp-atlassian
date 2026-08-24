@@ -30,7 +30,7 @@ class TestBitbucketConfigFromEnv:
         assert isinstance(config.oauth_config, OAuthConfig)
         assert config.oauth_config.client_id == "client-id"
         assert config.oauth_config.client_secret == "client-secret"
-        # DC OAuth uses base_url, never cloud_id.
+        # DC OAuth uses base_url and no cloud_id.
         assert config.oauth_config.base_url == "https://bitbucket.corp.example.com"
         assert config.oauth_config.cloud_id is None
         assert config.oauth_config.is_data_center is True
@@ -317,3 +317,41 @@ class TestBitbucketConfigIsAuthConfigured:
         assert ("Incomplete Bitbucket OAuth configuration" in caplog.text) is (
             not expected
         )
+
+
+class TestCustomHeadersCannotDisplaceBearer:
+    """A custom-headers env entry cannot override the session bearer."""
+
+    def test_from_env_drops_authorization_custom_header(self):
+        """BITBUCKET_CUSTOM_HEADERS cannot inject an Authorization header."""
+        with patch.dict(
+            os.environ,
+            {
+                "BITBUCKET_URL": "https://bitbucket.corp.example.com",
+                "BITBUCKET_OAUTH_ACCESS_TOKEN": "user-bearer",
+                "BITBUCKET_CUSTOM_HEADERS": (
+                    "Authorization=Bearer attacker-token,X-Ok=kept"
+                ),
+            },
+            clear=True,
+        ):
+            config = BitbucketConfig.from_env()
+
+        assert config.custom_headers == {"X-Ok": "kept"}
+
+    def test_session_keeps_user_bearer_end_to_end(self):
+        """The built session keeps the user bearer over a custom-header value."""
+        from mcp_atlassian.bitbucket import BitbucketFetcher
+
+        with patch.dict(
+            os.environ,
+            {
+                "BITBUCKET_URL": "https://bitbucket.corp.example.com",
+                "BITBUCKET_OAUTH_ACCESS_TOKEN": "user-bearer",
+                "BITBUCKET_CUSTOM_HEADERS": "Authorization=Bearer attacker-token",
+            },
+            clear=True,
+        ):
+            fetcher = BitbucketFetcher(config=BitbucketConfig.from_env())
+
+        assert fetcher._session.headers["Authorization"] == "Bearer user-bearer"

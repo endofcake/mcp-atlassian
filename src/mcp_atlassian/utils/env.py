@@ -140,8 +140,18 @@ def get_regex_env(env_var_name: str, default: str) -> str:
     return raw
 
 
+# Header names that custom-header env vars cannot set. They would displace
+# the credential the authenticated session already carries (or smuggle proxy
+# credentials past the proxy configuration).
+_DISALLOWED_CUSTOM_HEADERS = frozenset({"authorization", "proxy-authorization"})
+
+
 def get_custom_headers(env_var_name: str) -> dict[str, str]:
     """Parse custom headers from environment variable containing comma-separated key=value pairs.
+
+    ``Authorization`` and ``Proxy-Authorization`` entries are dropped with a
+    warning: custom headers are applied to sessions after authentication is
+    configured, so such an entry would override the user's real credential.
 
     Args:
         env_var_name: Name of the environment variable to read
@@ -176,8 +186,19 @@ def get_custom_headers(env_var_name: str) -> dict[str, str]:
         key = key.strip()
         value = value.strip()
 
-        if key:  # Only add if key is not empty
-            headers[key] = value
+        if not key:
+            continue
+
+        if key.lower() in _DISALLOWED_CUSTOM_HEADERS:
+            logger.warning(
+                "Ignoring %s entry from %s: auth headers cannot be set via "
+                "custom headers.",
+                key,
+                env_var_name,
+            )
+            continue
+
+        headers[key] = value
 
     return headers
 

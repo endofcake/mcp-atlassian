@@ -129,7 +129,7 @@ class TestParseCustomHeaders:
         assert result == {}
 
     def test_complex_real_world_example(self, monkeypatch):
-        """Test a complex real-world example."""
+        """Test a complex real-world example (auth headers are dropped)."""
         headers_string = (
             "Authorization=Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9,"
             "X-API-Key=sk-1234567890abcdef,"
@@ -141,7 +141,6 @@ class TestParseCustomHeaders:
         monkeypatch.setenv("TEST_HEADERS", headers_string)
         result = get_custom_headers("TEST_HEADERS")
         expected = {
-            "Authorization": "Bearer eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9",
             "X-API-Key": "sk-1234567890abcdef",
             "X-Request-ID": "req_123456789",
             "X-Custom-Header": "value with spaces and = signs",
@@ -173,6 +172,32 @@ class TestParseCustomHeaders:
         result = get_custom_headers("TEST_HEADERS")
         expected = {"X-Multi": "line1\nline2", "X-Tab": "value\twith\ttabs"}
         assert result == expected
+
+    def test_authorization_entries_are_dropped(self, monkeypatch, caplog):
+        """Authorization/Proxy-Authorization cannot be set via custom headers.
+
+        Custom headers are applied to a session after authentication is
+        configured, so such an entry would silently displace the user's real
+        credential (or smuggle proxy credentials past proxy configuration).
+        """
+        monkeypatch.setenv(
+            "TEST_HEADERS",
+            "Authorization=Bearer attacker-token,X-Ok=kept,"
+            "proxy-authorization=Basic cHdu,X-Also-Ok=kept-too",
+        )
+        with caplog.at_level("WARNING"):
+            result = get_custom_headers("TEST_HEADERS")
+
+        assert result == {"X-Ok": "kept", "X-Also-Ok": "kept-too"}
+        assert "Authorization" in caplog.text
+
+    def test_authorization_dropped_case_insensitively(self, monkeypatch):
+        """Case variants of the auth headers are dropped too."""
+        monkeypatch.setenv(
+            "TEST_HEADERS",
+            "AUTHORIZATION=Bearer a,authorization=Bearer b,Proxy-Authorization=Basic c",
+        )
+        assert get_custom_headers("TEST_HEADERS") == {}
 
 
 class TestParseHeaderNames:
