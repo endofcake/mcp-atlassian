@@ -19,6 +19,7 @@ from mcp_atlassian.servers.dependencies import (
     _confluence_spec,
     _create_and_validate,
     _create_user_config_for_fetcher,
+    _get_request_passthrough_headers,
     _jira_spec,
     _resolve_bearer_auth_type,
     _validation_cache,
@@ -539,7 +540,7 @@ class TestCreateUserConfigForFetcher:
     def test_bitbucket_oauth_with_byo_global_config(self):
         """Regression: Bitbucket global oauth_config may be a BYO config.
 
-        Mirrors the Jira BYO-global-config fix — a placeholder
+        Mirrors the Jira BYO-global-config fix, where a placeholder
         ``BITBUCKET_OAUTH_ACCESS_TOKEN`` yields a ``BYOAccessTokenOAuthConfig``
         with no client_id/secret/redirect_uri/scope attributes. Reading those
         directly would raise AttributeError; they must fall back to "".
@@ -615,7 +616,7 @@ class TestServiceSpecs:
             assert spec.forward_proxy_oauth_token is True
 
     def test_bitbucket_spec_is_oauth_only(self):
-        """Bitbucket rejects header PAT and never uses proxy-minted tokens."""
+        """Bitbucket rejects header PAT and does not use proxy-minted tokens."""
         spec = _bitbucket_spec()
         assert spec.name == "Bitbucket"
         assert spec.state_key == "bitbucket_fetcher"
@@ -2891,7 +2892,7 @@ class TestGetBitbucketFetcher:
     @patch("mcp_atlassian.servers.dependencies.get_access_token")
     @patch("mcp_atlassian.servers.dependencies.get_http_request")
     @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
-    async def test_does_not_use_proxy_minted_token(
+    async def test_rejects_proxy_minted_bearer_when_proxy_fronts_atlassian(
         self,
         mock_bitbucket_fetcher_class,
         mock_get_http_request,
@@ -2899,19 +2900,57 @@ class TestGetBitbucketFetcher:
         mock_context,
         mock_request,
         config_factory,
+        monkeypatch,
     ):
-        """Confused-deputy guard: the server-wide OAuth proxy fronts the
-        Jira/Confluence provider. A proxy-minted token (from get_access_token)
-        must NEVER be forwarded to Bitbucket (a separate provider on a separate
-        host). The per-user Bitbucket config must carry only the client-
-        presented request bearer.
+        """Confused-deputy guard: when the OAuth proxy fronts Jira/Confluence,
+        every request bearer is a proxy-minted Atlassian-provider token, so a
+        Bitbucket request is refused outright. The credential must not be
+        transmitted to the Bitbucket host at all.
         """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("JIRA_OAUTH_CLIENT_ID", "jira-client-id")
+        monkeypatch.delenv("BITBUCKET_OAUTH_CLIENT_ID", raising=False)
+
+        _setup_bitbucket_request_state(mock_request, token="proxy-minted-token")
+        mock_get_http_request.return_value = mock_request
+        # The FastMCP auth context proves the proxy authenticated this request.
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="jira-confluence-upstream-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        with pytest.raises(ValueError, match="does not front the Bitbucket"):
+            await get_bitbucket_fetcher(mock_context)
+
+        mock_bitbucket_fetcher_class.assert_not_called()
+
+    @pytest.mark.security_regression
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_forwards_request_bearer_when_no_proxy_in_front(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        monkeypatch,
+    ):
+        """Without an OAuth proxy in front there is no FastMCP auth context;
+        the client-presented request bearer is forwarded to Bitbucket as-is.
+        """
+        monkeypatch.delenv("ATLASSIAN_OAUTH_PROXY_ENABLE", raising=False)
+
         _setup_bitbucket_request_state(mock_request, token="client-bitbucket-token")
         mock_get_http_request.return_value = mock_request
-        # The Jira/Confluence OAuth proxy would mint this token.
-        mock_get_access_token.return_value = SimpleNamespace(
-            token="jira-confluence-proxy-token"
-        )
+        # No auth provider configured → no auth context on the request.
+        mock_get_access_token.side_effect = RuntimeError("no auth context")
 
         app_context = config_factory.create_app_context(
             full_bitbucket_config=config_factory.create_bitbucket_config()
@@ -2925,15 +2964,193 @@ class TestGetBitbucketFetcher:
 
         assert result == mock_fetcher
         assert mock_request.state.bitbucket_fetcher == mock_fetcher
-        mock_get_access_token.assert_not_called()
         called_config = mock_bitbucket_fetcher_class.call_args[1]["config"]
         assert isinstance(called_config, BitbucketConfig)
         assert called_config.auth_type == "oauth"
-        # The client-presented token is forwarded; the proxy token is NOT.
         assert called_config.oauth_config.access_token == "client-bitbucket-token"
         assert called_config.oauth_config.base_url == (
             "https://bitbucket.dc.example.com"
         )
+
+    @pytest.mark.security_regression
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_forwards_proxy_token_when_proxy_fronts_bitbucket(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        monkeypatch,
+    ):
+        """When the proxy fronts Bitbucket, the proxy-minted token is a
+        Bitbucket token, so it is forwarded to the Bitbucket fetcher.
+        """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+        monkeypatch.delenv("ATLASSIAN_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CONFLUENCE_OAUTH_CLIENT_ID", raising=False)
+
+        _setup_bitbucket_request_state(mock_request, token="proxy-minted-token")
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="bitbucket-upstream-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_bitbucket_fetcher()
+        mock_bitbucket_fetcher_class.return_value = mock_fetcher
+
+        result = await get_bitbucket_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        called_config = mock_bitbucket_fetcher_class.call_args[1]["config"]
+        # Proxy fronts Bitbucket → the upstream Bitbucket token IS forwarded.
+        assert called_config.oauth_config.access_token == "bitbucket-upstream-token"
+
+    @pytest.mark.security_regression
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.JiraFetcher")
+    async def test_jira_rejects_proxy_minted_bearer_when_proxy_fronts_bitbucket(
+        self,
+        mock_jira_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        auth_scenarios,
+        monkeypatch,
+    ):
+        """Reverse confused-deputy: when the proxy fronts Bitbucket, a Jira
+        request bearing the proxy-minted token is refused. The Bitbucket
+        credential must not be transmitted to the Jira host.
+        """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+        monkeypatch.delenv("ATLASSIAN_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CONFLUENCE_OAUTH_CLIENT_ID", raising=False)
+
+        scenario = auth_scenarios["oauth"].copy()
+        scenario["token"] = "proxy-minted-token"
+        _setup_mock_request_state(mock_request, scenario)
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="bitbucket-upstream-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            jira_config=config_factory.create_jira_config(auth_type="oauth")
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        with pytest.raises(ValueError, match="does not front the Jira"):
+            await get_jira_fetcher(mock_context)
+
+        mock_jira_fetcher_class.assert_not_called()
+
+    @pytest.mark.security_regression
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.JiraFetcher")
+    async def test_rejection_covers_bearer_downgraded_to_pat(
+        self,
+        mock_jira_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        auth_scenarios,
+        monkeypatch,
+    ):
+        """A proxy-minted bearer must be refused even on the PAT-downgrade path.
+
+        When the non-fronted service has no OAuth config,
+        _resolve_bearer_auth_type downgrades the bearer to PAT; without a guard
+        on the whole bearer path the proxy-minted token would be transmitted to
+        that service's host as a personal access token.
+        """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+        monkeypatch.delenv("ATLASSIAN_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CONFLUENCE_OAUTH_CLIENT_ID", raising=False)
+
+        scenario = auth_scenarios["oauth"].copy()
+        scenario["token"] = "proxy-minted-token"
+        _setup_mock_request_state(mock_request, scenario)
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="bitbucket-upstream-token"
+        )
+
+        # Jira configured with PAT credentials only: no oauth_config, so the
+        # bearer resolves to "pat" instead of "oauth".
+        app_context = config_factory.create_app_context(
+            jira_config=config_factory.create_jira_config(
+                auth_type="pat", personal_token="server-pat"
+            )
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        with pytest.raises(ValueError, match="does not front the Jira"):
+            await get_jira_fetcher(mock_context)
+
+        mock_jira_fetcher_class.assert_not_called()
+
+    @pytest.mark.security_regression
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.ConfluenceFetcher")
+    async def test_confluence_rejects_proxy_bearer_when_proxy_fronts_bitbucket(
+        self,
+        mock_confluence_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        auth_scenarios,
+        monkeypatch,
+    ):
+        """Reverse confused-deputy (Confluence): when the proxy fronts
+        Bitbucket, a Confluence request bearing the proxy-minted token is
+        refused.
+        """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bb-client-id")
+        monkeypatch.delenv("ATLASSIAN_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.delenv("CONFLUENCE_OAUTH_CLIENT_ID", raising=False)
+
+        scenario = auth_scenarios["oauth"].copy()
+        scenario["token"] = "proxy-minted-token"
+        _setup_mock_request_state(mock_request, scenario)
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="bitbucket-upstream-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            confluence_config=config_factory.create_confluence_config(auth_type="oauth")
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        with pytest.raises(ValueError, match="does not front the Confluence"):
+            await get_confluence_fetcher(mock_context)
+
+        mock_confluence_fetcher_class.assert_not_called()
 
     @pytest.mark.security_regression
     @patch("mcp_atlassian.servers.dependencies.get_http_request")
@@ -2952,7 +3169,7 @@ class TestGetBitbucketFetcher:
         BitbucketConfig has no personal_token field, so the generic header-PAT
         branch would raise TypeError. With supports_header_pat=False the branch
         is skipped and the request falls through to the global-fallback refusal
-        (no user identity) — a clean ValueError, never a TypeError.
+        (no user identity) with a clean ValueError and no TypeError.
         """
         monkeypatch.delenv("ALLOW_GLOBAL_CRED_FALLBACK", raising=False)
         service_headers = {
@@ -2980,7 +3197,7 @@ class TestGetBitbucketFetcher:
         )
         _setup_mock_context(mock_context, app_context)
 
-        # Branch 1 (header-PAT) must never build a config with personal_token;
+        # Branch 1 (header-PAT) must not build a config with personal_token;
         # the request has no forwarded bearer, so the fallback refuses it.
         with pytest.raises(ValueError, match="refusing to serve"):
             await get_bitbucket_fetcher(mock_context)
@@ -3080,6 +3297,262 @@ class TestGetBitbucketFetcher:
         with pytest.raises(ValueError, match="refusing to serve"):
             await get_bitbucket_fetcher(mock_context)
 
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    async def test_bearer_without_global_config_raises_cleanly(
+        self,
+        mock_get_http_request,
+        mock_context,
+        mock_request,
+        config_factory,
+    ):
+        """A forwarded bearer with no global Bitbucket config yields a clear error."""
+        _setup_bitbucket_request_state(mock_request, token="client-bitbucket-token")
+        mock_get_http_request.return_value = mock_request
+        app_context = config_factory.create_app_context(full_bitbucket_config=None)
+        _setup_mock_context(mock_context, app_context)
+
+        with pytest.raises(ValueError, match="Bitbucket global configuration"):
+            await get_bitbucket_fetcher(mock_context)
+
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    async def test_basic_auth_request_rejected_as_oauth_only(
+        self,
+        mock_get_http_request,
+        mock_context,
+        mock_request,
+        config_factory,
+    ):
+        """A basic-auth request routed to Bitbucket fails with the OAuth-only error."""
+        mock_request.state.bitbucket_fetcher = None
+        mock_request.state.atlassian_service_headers = {}
+        mock_request.state.user_atlassian_auth_type = "basic"
+        mock_request.state.user_atlassian_email = "user@example.com"
+        mock_request.state.user_atlassian_api_token = "basic-api-token"
+        mock_get_http_request.return_value = mock_request
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        with pytest.raises(ValueError, match="only OAuth auth_type"):
+            await get_bitbucket_fetcher(mock_context)
+
+    @pytest.mark.security_regression
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_passthrough_never_carries_authorization_for_oauth_sessions(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        monkeypatch,
+    ):
+        """Authorization in the passthrough set is ignored for OAuth sessions.
+
+        An OAuth session already carries its own upstream bearer; copying the
+        incoming Authorization header into custom_headers would overwrite it.
+        Even when the incoming bearer happens to be the upstream credential
+        (direct-token mode, no proxy), the header is dropped. The bearer is
+        applied through the OAuth config only.
+        """
+        monkeypatch.setenv("BITBUCKET_PASSTHROUGH_HEADERS", "Authorization")
+        _setup_bitbucket_request_state(mock_request, token="client-bitbucket-token")
+        mock_request.headers = Headers(
+            {"Authorization": "Bearer client-bitbucket-token"}
+        )
+        mock_get_http_request.return_value = mock_request
+        mock_get_access_token.side_effect = RuntimeError("no auth context")
+
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_bitbucket_fetcher()
+        mock_bitbucket_fetcher_class.return_value = mock_fetcher
+
+        result = await get_bitbucket_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        called_config = mock_bitbucket_fetcher_class.call_args[1]["config"]
+        assert not (called_config.custom_headers or {}).get("Authorization")
+        # The bearer still reaches the session via the OAuth config.
+        assert called_config.oauth_config.access_token == "client-bitbucket-token"
+
+    @pytest.mark.security_regression
+    @patch("mcp_atlassian.servers.dependencies.get_access_token")
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.BitbucketFetcher")
+    async def test_passthrough_cannot_replace_proxy_resolved_token(
+        self,
+        mock_bitbucket_fetcher_class,
+        mock_get_http_request,
+        mock_get_access_token,
+        mock_context,
+        mock_request,
+        config_factory,
+        monkeypatch,
+    ):
+        """Behind the OAuth proxy, passthrough must not clobber the upstream token.
+
+        The client presents the proxy-minted bearer; the proxy resolves the
+        distinct upstream Bitbucket token from the FastMCP auth context. If
+        Authorization passthrough were honored, custom_headers would overwrite
+        the resolved bearer with the proxy-minted JWT, a credential sent to
+        the wrong audience. The upstream request must carry the resolved token.
+        """
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("BITBUCKET_OAUTH_CLIENT_ID", "bitbucket-client-id")
+        monkeypatch.delenv("JIRA_OAUTH_CLIENT_ID", raising=False)
+        monkeypatch.setenv("BITBUCKET_PASSTHROUGH_HEADERS", "Authorization")
+
+        _setup_bitbucket_request_state(mock_request, token="proxy-minted-jwt")
+        mock_request.headers = Headers({"Authorization": "Bearer proxy-minted-jwt"})
+        mock_get_http_request.return_value = mock_request
+        # The proxy resolves a distinct upstream Bitbucket token.
+        mock_get_access_token.return_value = SimpleNamespace(
+            token="bitbucket-upstream-token"
+        )
+
+        app_context = config_factory.create_app_context(
+            full_bitbucket_config=config_factory.create_bitbucket_config()
+        )
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_bitbucket_fetcher()
+        mock_bitbucket_fetcher_class.return_value = mock_fetcher
+
+        result = await get_bitbucket_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        called_config = mock_bitbucket_fetcher_class.call_args[1]["config"]
+        # The proxy-resolved upstream token wins; the incoming proxy-minted
+        # JWT does not reach the Bitbucket host.
+        assert called_config.oauth_config.access_token == "bitbucket-upstream-token"
+        assert not (called_config.custom_headers or {}).get("Authorization")
+
+
+class TestPassthroughHeaderFiltering:
+    """The passthrough denylist contract, shared by all three services."""
+
+    DENIED = {
+        "Proxy-Authorization": "Basic xyz",
+        "Set-Cookie": "sid=abc",
+        "Host": "evil.example.com",
+        "Connection": "keep-alive",
+        "Content-Length": "999",
+        "Expect": "100-continue",
+        "Proxy-Connection": "keep-alive",
+        "Transfer-Encoding": "chunked",
+        "Keep-Alive": "timeout=5",
+        "Upgrade": "h2c",
+        "TE": "trailers",
+        "Trailer": "Expires",
+    }
+
+    def _request_with(self, headers):
+        request = MagicMock()
+        request.headers = Headers(headers)
+        return request
+
+    @pytest.mark.security_regression
+    def test_denylist_and_authorization_dropped_outside_external_mode(self):
+        """Denylisted headers and Authorization are dropped for OAuth sessions.
+
+        Hop-by-hop framing headers, Host, Set-Cookie, and Proxy-Authorization
+        are not forwarded; Authorization is dropped for any non-external
+        session. Mixed-case configured names must not bypass the filter.
+        """
+        incoming = {
+            "Authorization": "Bearer incoming-token",
+            **self.DENIED,
+            "X-SSO-User": "alice",
+        }
+        request = self._request_with(incoming)
+        # Mixed-case configured names exercise the case-insensitive match.
+        names = [*incoming, "AUTHORIZATION", "Proxy-Authorization"]
+        oauth_config = SimpleNamespace(
+            auth_type="oauth", passthrough_headers=names, custom_headers=None
+        )
+
+        result = _get_request_passthrough_headers(
+            request, _bitbucket_spec(), oauth_config
+        )
+        # Forwarded names keep the configured casing.
+        assert result == {"X-SSO-User": "alice"}
+
+    @pytest.mark.security_regression
+    def test_external_mode_forwards_authorization_but_not_denylist(self):
+        """External auth mode forwards Authorization; the denylist still holds.
+
+        Uses the Jira spec: external mode exists for Jira/Confluence, while
+        BitbucketConfig is OAuth-only by construction.
+        """
+        incoming = {
+            "Authorization": "Bearer incoming-token",
+            **self.DENIED,
+            "X-SSO-User": "alice",
+        }
+        request = self._request_with(incoming)
+        external_config = SimpleNamespace(
+            auth_type="external",
+            passthrough_headers=list(incoming),
+            custom_headers=None,
+        )
+
+        result = _get_request_passthrough_headers(
+            request, _jira_spec(), external_config
+        )
+        assert result == {
+            "Authorization": "Bearer incoming-token",
+            "X-SSO-User": "alice",
+        }
+
+    @pytest.mark.security_regression
+    @patch("mcp_atlassian.servers.dependencies.get_http_request")
+    @patch("mcp_atlassian.servers.dependencies.JiraFetcher")
+    async def test_external_mode_global_fallback_forwards_authorization(
+        self,
+        mock_jira_fetcher_class,
+        mock_get_http_request,
+        mock_context,
+        mock_request,
+        config_factory,
+    ):
+        """End-to-end: a real external-mode JiraConfig forwards Authorization.
+
+        The external-auth global-fallback path is the one place where the
+        incoming bearer is the intended upstream credential; it must land in
+        custom_headers.
+        """
+        _setup_mock_request_state(mock_request)
+        mock_request.headers = Headers(
+            {"Authorization": "Bearer external-upstream-token", "Host": "mcp.internal"}
+        )
+        mock_get_http_request.return_value = mock_request
+
+        jira_config = config_factory.create_jira_config(
+            auth_type="external",
+            passthrough_headers=["Authorization", "Host"],
+        )
+        app_context = config_factory.create_app_context(jira_config=jira_config)
+        _setup_mock_context(mock_context, app_context)
+
+        mock_fetcher = _create_mock_fetcher(JiraFetcher)
+        mock_jira_fetcher_class.return_value = mock_fetcher
+
+        result = await get_jira_fetcher(mock_context)
+
+        assert result == mock_fetcher
+        called_config = mock_jira_fetcher_class.call_args[1]["config"]
+        assert called_config.custom_headers == {
+            "Authorization": "Bearer external-upstream-token"
+        }
+
 
 class TestBitbucketValidationCache:
     """Validation-cache keying for Bitbucket bearer tokens."""
@@ -3152,7 +3625,7 @@ class TestBitbucketValidationCache:
         mock_get_http_request.return_value = request1
         assert await get_bitbucket_fetcher(mock_context) == fetcher1
 
-        # Tenant B's invalid token must NOT ride tenant A's cached success.
+        # Tenant B's invalid token must not ride tenant A's cached success.
         request2 = MockFastMCP.create_request()
         _setup_bitbucket_request_state(request2, token="tenant-b-bearer")
         mock_get_http_request.return_value = request2

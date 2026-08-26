@@ -23,6 +23,7 @@ from mcp_atlassian.bitbucket import BitbucketConfig, BitbucketFetcher
 from mcp_atlassian.confluence import ConfluenceConfig, ConfluenceFetcher
 from mcp_atlassian.jira import JiraConfig, JiraFetcher
 from mcp_atlassian.servers.context import MainAppContext
+from mcp_atlassian.servers.oauth_upstream import proxy_upstream_provider
 from mcp_atlassian.utils.env import (
     get_header_names,
     is_env_ssl_verify,
@@ -44,6 +45,36 @@ if TYPE_CHECKING:
 logger = logging.getLogger("mcp-atlassian.servers.dependencies")
 
 ServiceConfig: TypeAlias = JiraConfig | ConfluenceConfig | BitbucketConfig
+
+# Headers that are not copied from the incoming MCP request to the
+# upstream Atlassian request. Hop-by-hop framing headers (Connection,
+# Transfer-Encoding, Keep-Alive, Upgrade, TE, Trailer, Proxy-Connection)
+# describe the inbound connection; Content-Length and Expect describe the
+# inbound body, and via a requests session they would stick to every
+# subsequent upstream request and corrupt its framing; Host belongs to the
+# upstream URL; Proxy-Authorization is a credential for the inbound hop only;
+# Set-Cookie is a response header. (Cookie stays configurable: forwarding the
+# client's session cookie is the documented cookie-SSO passthrough mechanism.)
+_PASSTHROUGH_DENYLIST = frozenset(
+    {
+        "proxy-authorization",
+        "set-cookie",
+        "host",
+        "connection",
+        "content-length",
+        "expect",
+        "proxy-connection",
+        "transfer-encoding",
+        "keep-alive",
+        "upgrade",
+        "te",
+        "trailer",
+    }
+)
+
+# (service name, lowercased header) pairs already warned about, so a static
+# passthrough misconfiguration logs one warning instead of one per request.
+_passthrough_denials_warned: set[tuple[str, str]] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -71,13 +102,13 @@ class _ServiceSpec:
     ]  # logging + email backfill
     # Whether the service accepts per-request header PAT auth
     # (X-Atlassian-{Service}-Url + -Personal-Token). Bitbucket's config has no
-    # personal_token field, so the header-PAT branch must never build one.
+    # personal_token field, so the header-PAT branch does not build one.
     supports_header_pat: bool = True
     # Whether the per-request OAuth bearer may be sourced from the server-wide
-    # OAuth proxy's auth context (a proxy-minted token). The proxy fronts one
-    # provider; its tokens must only reach fetchers for that provider's
-    # services — otherwise the bearer comes solely from the client-presented
-    # request token.
+    # OAuth proxy's auth context (a proxy-minted token). The proxy fronts
+    # exactly one provider; its tokens must only reach fetchers for that
+    # provider's services. For every other service, a known proxy-minted
+    # bearer is refused outright (see _refuse_proxy_minted_bearer).
     forward_proxy_oauth_token: bool = True
 
 
@@ -341,6 +372,27 @@ def _bitbucket_on_validated(
     logger.debug(f"{fn_name}: Validated Bitbucket OAuth token.")
 
 
+def _forward_atlassian_proxy_token() -> bool:
+    """Whether Jira/Confluence may use the proxy-minted bearer token.
+
+    Atlassian services use the proxy-minted token whenever the proxy is not
+    fronting a different provider. When the proxy fronts Bitbucket, its tokens
+    are Bitbucket tokens and must not reach Jira/Confluence.
+    """
+    return proxy_upstream_provider() != "bitbucket"
+
+
+def _forward_bitbucket_proxy_token() -> bool:
+    """Whether Bitbucket may use the proxy-minted bearer token.
+
+    Bitbucket uses the proxy-minted token only when the proxy fronts Bitbucket
+    (so the token is a Bitbucket token). Otherwise (proxy disabled, or fronting
+    the Atlassian provider) only the client-presented request bearer may reach
+    a Bitbucket fetcher.
+    """
+    return proxy_upstream_provider() == "bitbucket"
+
+
 def _jira_spec() -> _ServiceSpec:
     """Build Jira service spec.
 
@@ -360,6 +412,7 @@ def _jira_spec() -> _ServiceSpec:
         get_session=lambda f: f.jira._session,
         validate_fn=lambda f: f.get_current_user_account_id(),
         on_validated=_jira_on_validated,
+        forward_proxy_oauth_token=_forward_atlassian_proxy_token(),
     )
 
 
@@ -382,6 +435,7 @@ def _confluence_spec() -> _ServiceSpec:
         get_session=lambda f: f.confluence._session,
         validate_fn=lambda f: f.get_current_user_info(),
         on_validated=_confluence_on_validated,
+        forward_proxy_oauth_token=_forward_atlassian_proxy_token(),
     )
 
 
@@ -407,11 +461,7 @@ def _bitbucket_spec() -> _ServiceSpec:
         validate_fn=lambda f: f.get_current_user(),
         on_validated=_bitbucket_on_validated,
         supports_header_pat=False,
-        # Bitbucket DC is a separate OAuth provider on a separate host; the
-        # server-wide OAuth proxy fronts the Jira/Confluence provider, so a
-        # proxy-minted token is never a Bitbucket token. Only the
-        # client-presented request bearer may reach a Bitbucket fetcher.
-        forward_proxy_oauth_token=False,
+        forward_proxy_oauth_token=_forward_bitbucket_proxy_token(),
     )
 
 
@@ -460,11 +510,43 @@ def _get_request_passthrough_headers(
     if request_headers is None:
         return {}
 
+    # Authorization passthrough is only meaningful in external auth mode,
+    # where the incoming bearer IS the intended upstream credential. In every
+    # other mode (OAuth, PAT, basic) the session already carries its own
+    # upstream credential; copying the incoming Authorization header would
+    # overwrite it and send the MCP client's token to the wrong audience.
+    allow_authorization = getattr(config, "auth_type", None) == "external"
+
     passthrough_headers: dict[str, str] = {}
     for header_name in _get_passthrough_header_names(config, spec):
-        header_value = request_headers.get(header_name)
-        if header_value is not None:
-            passthrough_headers[header_name] = header_value
+        lowered = header_name.lower()
+        if lowered in _PASSTHROUGH_DENYLIST:
+            reason = "this header is never forwarded"
+        elif lowered == "authorization" and not allow_authorization:
+            reason = "Authorization is forwarded only in external auth mode"
+        else:
+            header_value = request_headers.get(header_name)
+            if header_value is not None:
+                passthrough_headers[header_name] = header_value
+            continue
+        # A denied name is a static misconfiguration, so warn once per
+        # service/header pair rather than on every request.
+        warn_key = (spec.name, lowered)
+        if warn_key not in _passthrough_denials_warned:
+            _passthrough_denials_warned.add(warn_key)
+            logger.warning(
+                "Ignoring %s in %s passthrough configuration: %s.",
+                header_name,
+                spec.name,
+                reason,
+            )
+        else:
+            logger.debug(
+                "Ignoring %s in %s passthrough configuration: %s.",
+                header_name,
+                spec.name,
+                reason,
+            )
 
     if passthrough_headers:
         logger.debug(
@@ -645,6 +727,41 @@ def _resolve_oauth_access_token(fallback_token: str, service: str) -> str:
         return access_token.token
 
     return fallback_token
+
+
+def _refuse_proxy_minted_bearer(service: str) -> None:
+    """Refuse a bearer minted by this server's own OAuth proxy.
+
+    Called on the bearer path of a service the proxy does not front. When the
+    proxy is this server's auth provider, every request that reaches a tool
+    passed its verification, so the client-presented bearer is treated as a
+    proxy-minted token for the provider the proxy fronts. Sending it to any
+    other provider's host could leak the credential and would fail there
+    anyway. (The opaque-token verifier accepts any non-empty bearer, so a
+    genuine direct token for this service is refused too; that is the
+    fail-closed direction and matches the documented one-provider contract.)
+    No FastMCP auth context means no proxy authenticated this request, so the
+    bearer came directly from the client and may be forwarded as-is.
+
+    No token comparison (constant-time or otherwise) is involved. The signal
+    is the presence of a verified auth context.
+
+    Raises:
+        ValueError: If this request was authenticated by the OAuth proxy.
+    """
+    try:
+        access_token = get_access_token()
+    except (RuntimeError, LookupError):
+        return
+    if access_token and access_token.token:
+        raise ValueError(
+            f"This server's OAuth proxy does not front the {service} OAuth "
+            f"provider, so proxy-issued tokens cannot authenticate {service} "
+            f"requests. Call {service} tools with {service} credentials on a "
+            "deployment that does not front them with this proxy, or run a "
+            f"separate server instance whose proxy fronts the {service} "
+            "provider."
+        )
 
 
 def _make_ssrf_safe_hook(
@@ -1021,15 +1138,19 @@ async def _get_fetcher(ctx: Context, spec: _ServiceSpec) -> Any:
             credentials = {
                 "user_email_context": user_email,
             }
+            if not spec.forward_proxy_oauth_token:
+                # Guarding the whole bearer path (not just the OAuth
+                # sub-branch) matters because _resolve_bearer_auth_type can
+                # downgrade a bearer to PAT when this service has no OAuth
+                # config, and the proxy-minted token must not leak that way
+                # either.
+                _refuse_proxy_minted_bearer(spec.name)
             if resolved_auth_type == "oauth":
                 if spec.forward_proxy_oauth_token:
                     credentials["oauth_access_token"] = _resolve_oauth_access_token(
                         user_token, spec.name
                     )
                 else:
-                    # The proxy-minted token belongs to a different provider;
-                    # forward only the client-presented request bearer. (See
-                    # forward_proxy_oauth_token in the *_spec builders.)
                     credentials["oauth_access_token"] = user_token
             else:
                 credentials["personal_access_token"] = user_token
