@@ -20,6 +20,7 @@ class TestBitbucketConfigFromEnv:
                 "BITBUCKET_URL": "https://bitbucket.corp.example.com",
                 "BITBUCKET_OAUTH_CLIENT_ID": "client-id",
                 "BITBUCKET_OAUTH_CLIENT_SECRET": "client-secret",
+                "BITBUCKET_OAUTH_SCOPE": "REPO_READ",
             },
             clear=True,
         ):

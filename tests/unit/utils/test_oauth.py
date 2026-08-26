@@ -4,6 +4,7 @@ import hashlib
 import json
 import time
 import urllib.parse
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -378,10 +379,60 @@ class TestOAuthConfig:
         # Verify file backup was created
         mock_save_to_file.assert_called_once()
 
+    @patch("keyring.delete_password")
     @patch("keyring.set_password")
     @patch.object(OAuthConfig, "_save_tokens_to_file")
-    def test_save_tokens_keyring_success_dc(self, mock_save_to_file, mock_set_password):
-        """Test _save_tokens with successful keyring storage for Data Center."""
+    def test_save_tokens_keyring_success_dc(
+        self, mock_save_to_file, mock_set_password, mock_delete_password
+    ):
+        """A Data Center save writes only the context key and drops the legacy key.
+
+        The shared base key is left untouched: a contextless load rejects any
+        entry recording a base_url, so a copy there would be unreadable and
+        would only overwrite a Cloud entry sharing the client_id.
+        """
+        base_url = "https://jira.example.com"
+        config = OAuthConfig(
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            redirect_uri="https://example.com/callback",
+            scope="WRITE",
+            base_url=base_url,
+            refresh_token="test-refresh-token",
+            access_token="test-access-token",
+            expires_at=1234567890,
+        )
+        config._save_tokens()
+
+        mock_set_password.assert_called_once()
+        service, username, token_json = mock_set_password.call_args[0]
+        assert service == KEYRING_SERVICE_NAME
+        assert username == OAuthConfig._context_keyring_username(
+            "test-client-id", base_url=base_url
+        )
+        assert "test-refresh-token" in token_json
+        assert "test-access-token" in token_json
+
+        mock_delete_password.assert_called_once_with(
+            KEYRING_SERVICE_NAME,
+            OAuthConfig._legacy_context_keyring_username(
+                "test-client-id", base_url=base_url
+            ),
+        )
+
+        # Verify file backup was created
+        mock_save_to_file.assert_called_once()
+
+    @patch("keyring.delete_password")
+    @patch("keyring.set_password")
+    @patch.object(OAuthConfig, "_save_tokens_to_file")
+    def test_save_tokens_dc_tolerates_missing_legacy_key(
+        self, mock_save_to_file, mock_set_password, mock_delete_password
+    ):
+        """Legacy-key removal is best effort and does not fail the save."""
+        import keyring.errors
+
+        mock_delete_password.side_effect = keyring.errors.PasswordDeleteError()
         config = OAuthConfig(
             client_id="test-client-id",
             client_secret="test-client-secret",
@@ -394,27 +445,55 @@ class TestOAuthConfig:
         )
         config._save_tokens()
 
-        # Verify keyring was used - should be called twice:
-        # 1. For context-specific key (oauth-{client_id}-dc-{url_hash})
-        # 2. For base key (oauth-{client_id}) for load_tokens() compatibility
-        assert mock_set_password.call_count == 2
+        mock_set_password.assert_called_once()
+        mock_save_to_file.assert_called_once_with(
+            {
+                "refresh_token": "test-refresh-token",
+                "access_token": "test-access-token",
+                "expires_at": 1234567890,
+                "cloud_id": None,
+                "base_url": "https://jira.example.com",
+            }
+        )
 
-        # Check first call (context-specific DC key)
-        first_call = mock_set_password.call_args_list[0]
-        assert first_call[0][0] == KEYRING_SERVICE_NAME
-        assert first_call[0][1].startswith("oauth-test-client-id-dc-")
-        assert "test-refresh-token" in first_call[0][2]
-        assert "test-access-token" in first_call[0][2]
+    def test_save_tokens_to_file_dc_writes_context_file_and_removes_legacy(
+        self, tmp_path
+    ):
+        """A Data Center file save writes the context file only.
 
-        # Check second call (base key for load_tokens() compatibility)
-        second_call = mock_set_password.call_args_list[1]
-        assert second_call[0][0] == KEYRING_SERVICE_NAME
-        assert second_call[0][1] == "oauth-test-client-id"
-        assert "test-refresh-token" in second_call[0][2]
-        assert "test-access-token" in second_call[0][2]
+        The base-name file is not written and a legacy short-hash file left
+        by an earlier version is removed once the current file exists.
+        """
+        base_url = "https://jira.example.com"
+        config = OAuthConfig(
+            client_id="test-client-id",
+            client_secret="test-client-secret",
+            redirect_uri="https://example.com/callback",
+            scope="WRITE",
+            base_url=base_url,
+            refresh_token="test-refresh-token",
+            access_token="test-access-token",
+            expires_at=1234567890,
+        )
+        token_dir = tmp_path / ".mcp-atlassian"
+        token_dir.mkdir()
+        legacy_name = OAuthConfig._legacy_context_keyring_username(
+            "test-client-id", base_url=base_url
+        )
+        legacy_path = token_dir / f"{legacy_name}.json"
+        legacy_path.write_text(json.dumps({"access_token": "old"}))
 
-        # Verify file backup was created
-        mock_save_to_file.assert_called_once()
+        with patch("mcp_atlassian.utils.oauth.Path.home", return_value=tmp_path):
+            config._save_tokens_to_file()
+
+        context_name = OAuthConfig._context_keyring_username(
+            "test-client-id", base_url=base_url
+        )
+        saved = json.loads((token_dir / f"{context_name}.json").read_text())
+        assert saved["access_token"] == "test-access-token"
+        assert saved["base_url"] == base_url
+        assert not (token_dir / "oauth-test-client-id.json").exists()
+        assert not legacy_path.exists()
 
     @patch("keyring.set_password")
     @patch.object(OAuthConfig, "_save_tokens_to_file")
@@ -566,7 +645,7 @@ class TestOAuthConfig:
     def test_load_tokens_context_isolation(
         self, mock_load_from_file, mock_get_password
     ):
-        """Tokens from one context never satisfy a load for another context.
+        """Tokens from one context do not satisfy a load for another context.
 
         When one client_id string is registered with two products (e.g. a
         Cloud site and a Data Center instance), each save writes a
@@ -575,16 +654,18 @@ class TestOAuthConfig:
         whatever the base key happens to hold.
         """
         dc_base_url = "https://scm.example.com"
-        url_hash = hashlib.sha256(dc_base_url.encode()).hexdigest()[:8]
+        url_hash = hashlib.sha256(dc_base_url.encode()).hexdigest()
         store = {
             f"oauth-test-client-id-dc-{url_hash}": json.dumps(
-                {"access_token": "dc-access-token"}
+                {"access_token": "dc-access-token", "base_url": dc_base_url}
             ),
             "oauth-test-client-id-cloud-test-cloud-id": json.dumps(
-                {"access_token": "cloud-access-token"}
+                {"access_token": "cloud-access-token", "cloud_id": "test-cloud-id"}
             ),
             # Base key holds whichever context saved last (here: Cloud)
-            "oauth-test-client-id": json.dumps({"access_token": "cloud-access-token"}),
+            "oauth-test-client-id": json.dumps(
+                {"access_token": "cloud-access-token", "cloud_id": "test-cloud-id"}
+            ),
         }
         mock_get_password.side_effect = lambda service, username: store.get(username)
 
@@ -600,27 +681,88 @@ class TestOAuthConfig:
 
     @patch("keyring.get_password")
     @patch.object(OAuthConfig, "_load_tokens_from_file")
-    def test_load_tokens_context_falls_back_to_base_key(
+    def test_load_tokens_context_rejects_contextless_base_key(
         self, mock_load_from_file, mock_get_password
     ):
-        """A context-keyed load falls back to the base key for legacy entries."""
+        """A context-keyed load rejects legacy base-key entries with no context.
+
+        An entry saved before context recording cannot be attributed to a
+        service, so with a shared client_id it could belong to another
+        provider. The load must come back empty (forcing a re-authentication
+        that records context) rather than hand over unattributable tokens.
+        """
         store = {
             "oauth-test-client-id": json.dumps({"access_token": "legacy-token"}),
         }
         mock_get_password.side_effect = lambda service, username: store.get(username)
+        mock_load_from_file.return_value = {}
 
         result = OAuthConfig.load_tokens(
             "test-client-id", base_url="https://scm.example.com"
         )
-        assert result["access_token"] == "legacy-token"
-        mock_load_from_file.assert_not_called()
+        assert result == {}
+
+        result = OAuthConfig.load_tokens("test-client-id", cloud_id="test-cloud-id")
+        assert result == {}
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_contextless_load_rejects_dc_entry(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """A contextless load rejects a base-key entry bound to a DC base_url.
+
+        Data Center loads supply base_url, so a contextless load is the Cloud
+        branch, and a stored DC entry there is another provider's
+        credential. A Cloud entry (cloud_id recorded, no
+        base_url) is still accepted: cloud_id is discovered during
+        authentication and the startup load carries no context.
+        """
+        store = {
+            "oauth-test-client-id": json.dumps(
+                {"access_token": "dc-token", "base_url": "https://scm.example.com"}
+            ),
+        }
+        mock_get_password.side_effect = lambda service, username: store.get(username)
+        mock_load_from_file.return_value = {}
+
+        assert OAuthConfig.load_tokens("test-client-id") == {}
+
+        store["oauth-test-client-id"] = json.dumps(
+            {"access_token": "cloud-token", "cloud_id": "test-cloud-id"}
+        )
+        result = OAuthConfig.load_tokens("test-client-id")
+        assert result["access_token"] == "cloud-token"
+
+    def test_load_tokens_from_file_rejects_contextless_entry_for_context(
+        self, tmp_path, monkeypatch
+    ):
+        """The file fallback applies the same context gate as the keyring path.
+
+        A base-name token file carrying no context fields must not satisfy a
+        context-keyed load.
+        """
+        token_dir = tmp_path / ".mcp-atlassian"
+        token_dir.mkdir()
+        (token_dir / "oauth-test-client-id.json").write_text(
+            json.dumps({"access_token": "legacy-token"})
+        )
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+        result = OAuthConfig._load_tokens_from_file(
+            "test-client-id", base_url="https://scm.example.com"
+        )
+        assert result == {}
+
+        contextless = OAuthConfig._load_tokens_from_file("test-client-id")
+        assert contextless["access_token"] == "legacy-token"
 
     @patch("keyring.get_password")
     @patch.object(OAuthConfig, "_load_tokens_from_file")
     def test_load_tokens_rejects_base_key_saved_for_other_context(
         self, mock_load_from_file, mock_get_password
     ):
-        """A base-key entry recorded for another context never satisfies the load.
+        """A base-key entry recorded for another context does not satisfy the load.
 
         The base key is rewritten by whichever context saved last, so on a
         first run for a new context (no context-keyed entry yet) the fallback
@@ -641,14 +783,18 @@ class TestOAuthConfig:
 
     @patch("keyring.get_password")
     @patch.object(OAuthConfig, "_load_tokens_from_file")
-    def test_load_tokens_keyring_error_passes_both_names_to_file_fallback(
+    def test_load_tokens_keyring_error_passes_all_candidate_names_to_file_fallback(
         self, mock_load_from_file, mock_get_password
     ):
-        """A keyring failure falls back to files with both candidate names."""
+        """A keyring failure falls back to files with every candidate name.
+
+        The order is the load priority: current context key, legacy
+        Data Center key, then the shared base key.
+        """
         mock_get_password.side_effect = Exception("Keyring error")
         mock_load_from_file.return_value = {}
         dc_base_url = "https://scm.example.com"
-        url_hash = hashlib.sha256(dc_base_url.encode()).hexdigest()[:8]
+        url_hash = hashlib.sha256(dc_base_url.encode()).hexdigest()
 
         OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url)
 
@@ -656,10 +802,226 @@ class TestOAuthConfig:
             "test-client-id",
             usernames=[
                 f"oauth-test-client-id-dc-{url_hash}",
+                f"oauth-test-client-id-dc-{url_hash[:8]}",
                 "oauth-test-client-id",
             ],
             cloud_id=None,
             base_url=dc_base_url,
+        )
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_context_key_rejects_entry_recording_other_context(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """An entry under the context key is validated like any other candidate.
+
+        The key an entry is found under is not proof of the context it was
+        saved for, so a context-keyed entry recording a different base_url
+        or cloud_id is rejected.
+        """
+        dc_base_url = "https://scm.example.com"
+        dc_key = OAuthConfig._context_keyring_username(
+            "test-client-id", base_url=dc_base_url
+        )
+        store = {
+            dc_key: json.dumps(
+                {"access_token": "other-token", "base_url": "https://other.example"}
+            ),
+            "oauth-test-client-id-cloud-test-cloud-id": json.dumps(
+                {"access_token": "other-token", "cloud_id": "other-cloud-id"}
+            ),
+        }
+        mock_get_password.side_effect = lambda service, username: store.get(username)
+        mock_load_from_file.return_value = {}
+
+        assert OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url) == {}
+        assert OAuthConfig.load_tokens("test-client-id", cloud_id="test-cloud-id") == {}
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_accepts_validated_legacy_dc_key(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """An entry under the legacy short-hash key is accepted once validated.
+
+        Earlier versions keyed Data Center entries on eight hex characters
+        of the URL digest. Such an entry still satisfies a load for the
+        base_url it records, so an upgrade does not force a re-authentication;
+        one recording no base_url is rejected like any other contextless entry.
+        """
+        dc_base_url = "https://scm.example.com"
+        legacy_key = OAuthConfig._legacy_context_keyring_username(
+            "test-client-id", base_url=dc_base_url
+        )
+        store = {
+            legacy_key: json.dumps(
+                {"access_token": "legacy-dc-token", "base_url": dc_base_url}
+            )
+        }
+        mock_get_password.side_effect = lambda service, username: store.get(username)
+        mock_load_from_file.return_value = {}
+
+        result = OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url)
+        assert result["access_token"] == "legacy-dc-token"
+
+        store[legacy_key] = json.dumps({"access_token": "legacy-dc-token"})
+        assert OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url) == {}
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_legacy_key_collision_does_not_cross_base_urls(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """Two base URLs sharing a legacy key cannot satisfy each other's load.
+
+        The legacy key helper is forced to return one key for both URLs,
+        which models a short-hash collision. The entry records the URL it
+        was saved for, so only that URL's load may return it.
+        """
+        url_a = "https://scm-a.example.com"
+        url_b = "https://scm-b.example.com"
+        shared_legacy_key = "oauth-test-client-id-dc-c0111ded"
+        store = {
+            shared_legacy_key: json.dumps(
+                {"access_token": "token-for-a", "base_url": url_a}
+            )
+        }
+        mock_get_password.side_effect = lambda service, username: store.get(username)
+        mock_load_from_file.return_value = {}
+
+        with patch.object(
+            OAuthConfig,
+            "_legacy_context_keyring_username",
+            return_value=shared_legacy_key,
+        ):
+            assert OAuthConfig.load_tokens("test-client-id", base_url=url_b) == {}
+            result = OAuthConfig.load_tokens("test-client-id", base_url=url_a)
+        assert result["access_token"] == "token-for-a"
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_context_key_wins_over_validating_legacy_key(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """The full-digest key is preferred when a legacy entry also validates."""
+        dc_base_url = "https://scm.example.com"
+        store = {
+            OAuthConfig._context_keyring_username(
+                "test-client-id", base_url=dc_base_url
+            ): json.dumps({"access_token": "current-token", "base_url": dc_base_url}),
+            OAuthConfig._legacy_context_keyring_username(
+                "test-client-id", base_url=dc_base_url
+            ): json.dumps({"access_token": "legacy-token", "base_url": dc_base_url}),
+        }
+        mock_get_password.side_effect = lambda service, username: store.get(username)
+
+        result = OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url)
+        assert result["access_token"] == "current-token"
+        mock_load_from_file.assert_not_called()
+
+    @patch("keyring.get_password")
+    @patch.object(OAuthConfig, "_load_tokens_from_file")
+    def test_load_tokens_skips_malformed_candidate(
+        self, mock_load_from_file, mock_get_password
+    ):
+        """A malformed entry under one key does not hide a valid later one.
+
+        Malformed JSON, a JSON value that is not an object, and a value
+        nested deeply enough to exhaust the parser are all skipped; the
+        valid legacy entry is returned and the file fallback is not
+        consulted.
+        """
+        dc_base_url = "https://scm.example.com"
+        context_key = OAuthConfig._context_keyring_username(
+            "test-client-id", base_url=dc_base_url
+        )
+        legacy_key = OAuthConfig._legacy_context_keyring_username(
+            "test-client-id", base_url=dc_base_url
+        )
+        store = {
+            context_key: "{not json",
+            legacy_key: json.dumps(
+                {"access_token": "legacy-token", "base_url": dc_base_url}
+            ),
+        }
+        mock_get_password.side_effect = lambda service, username: store.get(username)
+
+        result = OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url)
+        assert result["access_token"] == "legacy-token"
+
+        store[context_key] = json.dumps(["not", "an", "object"])
+        result = OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url)
+        assert result["access_token"] == "legacy-token"
+
+        store[context_key] = "[" * 100000
+        result = OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url)
+        assert result["access_token"] == "legacy-token"
+        mock_load_from_file.assert_not_called()
+
+    @patch("keyring.get_password", return_value=None)
+    def test_load_tokens_falls_through_to_legacy_file(
+        self, mock_get_password, tmp_path, monkeypatch
+    ):
+        """With an empty keyring, a validating legacy file satisfies the load."""
+        dc_base_url = "https://scm.example.com"
+        token_dir = tmp_path / ".mcp-atlassian"
+        token_dir.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+        legacy_name = OAuthConfig._legacy_context_keyring_username(
+            "test-client-id", base_url=dc_base_url
+        )
+        (token_dir / f"{legacy_name}.json").write_text(
+            json.dumps({"access_token": "legacy-file-token", "base_url": dc_base_url})
+        )
+
+        result = OAuthConfig.load_tokens("test-client-id", base_url=dc_base_url)
+        assert result["access_token"] == "legacy-file-token"
+
+    def test_load_tokens_from_file_validates_legacy_and_context_files(
+        self, tmp_path, monkeypatch
+    ):
+        """The file fallback validates the legacy and context files too.
+
+        A legacy short-hash file recording the requested base_url is
+        accepted; a file under a colliding legacy name that records a
+        different base_url is rejected, and so is a context-named file
+        recording a different base_url.
+        """
+        client_id = "test-client-id"
+        url_a = "https://scm-a.example.com"
+        url_b = "https://scm-b.example.com"
+        token_dir = tmp_path / ".mcp-atlassian"
+        token_dir.mkdir()
+        monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
+
+        legacy_name = OAuthConfig._legacy_context_keyring_username(
+            client_id, base_url=url_a
+        )
+        (token_dir / f"{legacy_name}.json").write_text(
+            json.dumps({"access_token": "token-for-a", "base_url": url_a})
+        )
+        result = OAuthConfig._load_tokens_from_file(
+            client_id, usernames=[legacy_name], base_url=url_a
+        )
+        assert result["access_token"] == "token-for-a"
+        # A colliding legacy name presented for url_b must not yield url_a's tokens.
+        assert (
+            OAuthConfig._load_tokens_from_file(
+                client_id, usernames=[legacy_name], base_url=url_b
+            )
+            == {}
+        )
+
+        context_name = OAuthConfig._context_keyring_username(client_id, base_url=url_b)
+        (token_dir / f"{context_name}.json").write_text(
+            json.dumps({"access_token": "token-for-a", "base_url": url_a})
+        )
+        assert (
+            OAuthConfig._load_tokens_from_file(
+                client_id, usernames=[context_name], base_url=url_b
+            )
+            == {}
         )
 
     @patch("pathlib.Path.exists")
@@ -1101,11 +1463,38 @@ class TestDataCenterOAuth:
     # --- Keyring username namespacing ---
 
     def test_keyring_username_dc(self):
-        """DC config keyring username includes dc-{url_hash}."""
+        """DC config keyring username carries the full base URL digest."""
         config = self._make_dc_config()
         username = config._get_keyring_username()
         assert username.startswith("oauth-dc-client-dc-")
-        assert len(username) > len("oauth-dc-client-dc-")
+        url_hash = username[len("oauth-dc-client-dc-") :]
+        assert url_hash == hashlib.sha256(config.base_url.encode()).hexdigest()
+        assert len(url_hash) == 64
+
+    def test_keyring_username_dc_distinct_urls_get_distinct_keys(self):
+        """Two Data Center URLs with one client_id map to different keys."""
+        first = OAuthConfig._context_keyring_username(
+            "dc-client", base_url="https://scm-a.example.com"
+        )
+        second = OAuthConfig._context_keyring_username(
+            "dc-client", base_url="https://scm-b.example.com"
+        )
+        assert first != second
+
+    def test_legacy_keyring_username_only_for_data_center(self):
+        """The legacy short-hash name exists only for Data Center contexts."""
+        assert OAuthConfig._legacy_context_keyring_username("c", base_url=None) is None
+        assert (
+            OAuthConfig._legacy_context_keyring_username(
+                "c", base_url="https://team.atlassian.net"
+            )
+            is None
+        )
+        legacy = OAuthConfig._legacy_context_keyring_username(
+            "c", base_url="https://scm.example.com"
+        )
+        assert legacy is not None
+        assert len(legacy) == len("oauth-c-dc-") + 8
 
     def test_keyring_username_cloud(self):
         """Cloud config keyring username includes cloud-{cloud_id}."""
@@ -1287,6 +1676,7 @@ class TestDataCenterOAuth:
         env = {
             "BITBUCKET_OAUTH_CLIENT_ID": "bb-id",
             "BITBUCKET_OAUTH_CLIENT_SECRET": "bb-secret",
+            "BITBUCKET_OAUTH_SCOPE": "REPO_READ",
         }
         with patch.dict("os.environ", env, clear=True):
             config = OAuthConfig.from_env(
@@ -1366,9 +1756,9 @@ class TestDataCenterOAuth:
     def test_disallow_shared_fallback_preserves_oauth_enable_mode(self):
         """ATLASSIAN_OAUTH_ENABLE still builds a minimal config despite suppression.
 
-        The flag is a mode selector (user-provided tokens via headers), not a
-        credential, so suppression must not disable it — otherwise the documented
-        Bitbucket per-request-token opt-in would silently break.
+        The flag selects a mode (user-provided tokens via headers) and carries no
+        credential, so suppression must not disable it. Otherwise the documented
+        Bitbucket per-request-token opt-in would break.
         """
         env = {
             "ATLASSIAN_OAUTH_ENABLE": "true",
@@ -1427,9 +1817,12 @@ class TestDataCenterOAuth:
 
     # --- _save_tokens includes base_url ---
 
+    @patch("keyring.delete_password")
     @patch("keyring.set_password")
     @patch.object(OAuthConfig, "_save_tokens_to_file")
-    def test_save_tokens_includes_base_url(self, mock_save_file, mock_set_pw):
+    def test_save_tokens_includes_base_url(
+        self, mock_save_file, mock_set_pw, mock_delete_pw
+    ):
         """DC config _save_tokens includes base_url in stored data."""
         config = self._make_dc_config(
             access_token="tok",
@@ -1486,3 +1879,87 @@ class TestTokenFilePermissionsRegression:
             "OAuth token file must not be group/world-readable (expected 0o600); "
             f"got {oct(mode)}"
         )
+
+
+class TestServiceScopeRequirements:
+    """Service-aware OAuth scope defaults for Data Center configurations."""
+
+    _BITBUCKET_ENV = {
+        "BITBUCKET_OAUTH_CLIENT_ID": "bb-client-id",
+        "BITBUCKET_OAUTH_CLIENT_SECRET": "bb-client-secret",
+        "BITBUCKET_OAUTH_REDIRECT_URI": "https://example.com/callback",
+    }
+
+    def _from_env(self, env, *, service_type):
+        with patch("os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
+            with patch.object(OAuthConfig, "load_tokens", return_value={}):
+                return OAuthConfig.from_env(
+                    service_url="https://scm.example.com",
+                    service_type=service_type,
+                    disallow_shared_fallback=True,
+                )
+
+    def test_bitbucket_full_client_without_scope_fails_fast(self):
+        # Bitbucket Data Center has no default OAuth scope; the Jira/Confluence
+        # Data Center default is not a valid Bitbucket scope, so silently
+        # defaulting would fail only later, upstream.
+        with pytest.raises(ValueError, match="BITBUCKET_OAUTH_SCOPE"):
+            self._from_env(dict(self._BITBUCKET_ENV), service_type="bitbucket")
+
+    def test_bitbucket_full_client_with_scope_succeeds(self):
+        env = dict(self._BITBUCKET_ENV)
+        env["BITBUCKET_OAUTH_SCOPE"] = "REPO_READ"
+
+        config = self._from_env(env, service_type="bitbucket")
+
+        assert config is not None
+        assert config.scope == "REPO_READ"
+
+    def test_bitbucket_without_client_credentials_does_not_raise(self):
+        # The scope requirement applies only to a fully configured OAuth
+        # client; user-provided-token mode has no client and needs no scope.
+        env = {"ATLASSIAN_OAUTH_ENABLE": "true"}
+        with patch("os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
+            config = OAuthConfig.from_env(
+                service_url="https://scm.example.com",
+                service_type="bitbucket",
+                disallow_shared_fallback=True,
+            )
+
+        assert config is not None
+        assert config.scope == ""
+
+    def test_jira_dc_scope_default_unchanged(self):
+        env = {
+            "JIRA_OAUTH_CLIENT_ID": "jira-client-id",
+            "JIRA_OAUTH_CLIENT_SECRET": "jira-client-secret",
+        }
+        with patch("os.getenv", side_effect=lambda k, d=None: env.get(k, d)):
+            with patch.object(OAuthConfig, "load_tokens", return_value={}):
+                config = OAuthConfig.from_env(
+                    service_url="https://jira.example.com",
+                    service_type="jira",
+                )
+
+        assert config is not None
+        assert config.scope == "WRITE"
+
+
+class TestDisallowSharedFallbackGuard:
+    """disallow_shared_fallback without a service_type is a caller bug."""
+
+    def test_oauth_config_from_env_raises_without_service_type(self):
+        with pytest.raises(ValueError, match="requires a service_type"):
+            OAuthConfig.from_env(disallow_shared_fallback=True)
+
+    def test_byo_config_from_env_raises_without_service_type(self):
+        with pytest.raises(ValueError, match="requires a service_type"):
+            BYOAccessTokenOAuthConfig.from_env(disallow_shared_fallback=True)
+
+
+def test_byo_access_token_not_exposed_in_repr():
+    config = BYOAccessTokenOAuthConfig(
+        cloud_id="byo-cloud-id", access_token="byo-secret-token"
+    )
+
+    assert "byo-secret-token" not in repr(config)

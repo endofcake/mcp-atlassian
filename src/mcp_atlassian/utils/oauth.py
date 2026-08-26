@@ -342,9 +342,20 @@ class OAuthConfig:
         """Build the context-specific keyring username for a token entry.
 
         Includes context (cloud_id or base_url hash) to prevent collisions
-        when the same client_id is used across Cloud and Data Center — or
+        when the same client_id is used across Cloud and Data Center, or
         across two Data Center products (e.g. Jira and Bitbucket) that were
         registered with the same client_id string.
+
+        A Data Center entry is keyed on the full SHA-256 hex digest of the
+        base URL (64 characters), so two distinct URLs cannot share a key.
+        The configured base URL string is the identity on both sides, in the
+        key and in the recorded context that a load checks, so editing the
+        configured URL (a trailing slash, a change of case) produces a new
+        key and a fresh authentication rather than a partial match.
+        Keyring backends accept a username of this size: the tightest
+        published limit is the Windows Credential Manager
+        ``CRED_MAX_USERNAME_LENGTH`` of 513 characters, and the macOS
+        Keychain and Secret Service backends impose no practical limit.
 
         Args:
             client_id: The OAuth client ID.
@@ -355,11 +366,66 @@ class OAuthConfig:
             A username string for keyring.
         """
         if base_url and not is_atlassian_cloud_url(base_url):
-            url_hash = hashlib.sha256(base_url.encode()).hexdigest()[:8]
+            url_hash = hashlib.sha256(base_url.encode()).hexdigest()
             return f"oauth-{client_id}-dc-{url_hash}"
         if cloud_id:
             return f"oauth-{client_id}-cloud-{cloud_id}"
         return f"oauth-{client_id}"
+
+    @staticmethod
+    def _legacy_context_keyring_username(
+        client_id: str, *, base_url: str | None = None
+    ) -> str | None:
+        """Return the Data Center username earlier versions saved under.
+
+        Earlier versions truncated the base URL digest to eight hex
+        characters, which leaves room for two URLs to share a key. The
+        legacy name is consulted on load only, as a fallback after the
+        current key, and an entry found there is accepted only once
+        :meth:`_tokens_match_context` confirms it records the requested
+        base URL. New saves write the current key and then remove the
+        legacy entry on a best-effort basis.
+
+        Args:
+            client_id: The OAuth client ID.
+            base_url: The instance base URL, if this is a Data Center context.
+
+        Returns:
+            The legacy username, or None when the context is not Data Center.
+        """
+        if base_url and not is_atlassian_cloud_url(base_url):
+            url_hash = hashlib.sha256(base_url.encode()).hexdigest()[:8]
+            return f"oauth-{client_id}-dc-{url_hash}"
+        return None
+
+    @staticmethod
+    def _candidate_keyring_usernames(
+        client_id: str,
+        *,
+        cloud_id: str | None = None,
+        base_url: str | None = None,
+    ) -> list[str]:
+        """List the keyring usernames a load consults, in priority order.
+
+        The current context key comes first, then the legacy Data Center
+        key when one applies, then the shared ``oauth-{client_id}`` base
+        key. Every candidate is validated against the requested context
+        before it is accepted.
+        """
+        usernames = [
+            OAuthConfig._context_keyring_username(
+                client_id, cloud_id=cloud_id, base_url=base_url
+            )
+        ]
+        legacy_username = OAuthConfig._legacy_context_keyring_username(
+            client_id, base_url=base_url
+        )
+        if legacy_username:
+            usernames.append(legacy_username)
+        base_username = f"oauth-{client_id}"
+        if base_username not in usernames:
+            usernames.append(base_username)
+        return usernames
 
     def _get_keyring_username(self) -> str:
         """Get the keyring username for storing this config's tokens.
@@ -396,14 +462,17 @@ class OAuthConfig:
             keyring.set_password(KEYRING_SERVICE_NAME, username, token_json)
             logger.debug(f"Saved OAuth tokens to keyring for {username}")
 
-            # Also save to the base username so loads that carry no context
-            # (and older versions that read only the base key) keep working.
-            # If the same client_id is used across contexts, the base key is
-            # overwritten by whichever saves last; context-keyed loads validate
-            # the entry's recorded context before accepting it.
-            if username != base_username:
+            # Cloud saves also write the base username so the startup load,
+            # which carries no cloud_id yet, and older versions that read only
+            # the base key keep working. A Data Center entry is skipped: a
+            # contextless load rejects any entry recording a base_url, so the
+            # copy would be unreadable and would only duplicate the refresh
+            # token and overwrite a Cloud entry sharing the client_id.
+            if username != base_username and not self.is_data_center:
                 keyring.set_password(KEYRING_SERVICE_NAME, base_username, token_json)
                 logger.debug(f"Saved OAuth tokens to keyring for {base_username}")
+
+            self._remove_legacy_keyring_entry()
 
             # Also maintain backwards compatibility with file storage
             # for environments where keyring might not work
@@ -413,6 +482,26 @@ class OAuthConfig:
             logger.error(f"Failed to save tokens to keyring: {e}")
             # Fall back to file storage if keyring fails
             self._save_tokens_to_file()
+
+    def _remove_legacy_keyring_entry(self) -> None:
+        """Delete the keyring entry an earlier version saved for this context.
+
+        Called after a successful save under the current key, so the refresh
+        token does not stay live in a second slot. Best effort: a missing
+        entry or a backend that cannot delete is logged and ignored.
+        """
+        legacy_username = self._legacy_context_keyring_username(
+            self.client_id, base_url=self.base_url
+        )
+        if not legacy_username:
+            return
+        try:
+            keyring.delete_password(KEYRING_SERVICE_NAME, legacy_username)
+            logger.debug(f"Removed legacy keyring entry {legacy_username}")
+        except keyring.errors.PasswordDeleteError:
+            pass
+        except Exception as e:
+            logger.debug(f"Could not remove legacy keyring entry: {e}")
 
     def _save_tokens_to_file(self, token_data: dict | None = None) -> None:
         """Save the tokens to a file as fallback storage.
@@ -428,11 +517,12 @@ class OAuthConfig:
             os.chmod(token_dir, 0o700)
 
             # Save under the context-specific name so a context-keyed load can
-            # find the right entry, and under the base name for compatibility
-            # with loads that carry no context.
+            # find the right entry. Cloud saves also write the base name for
+            # loads that carry no context; a Data Center entry under the base
+            # name would be rejected by every load, so it is not written.
             token_paths = [token_dir / f"{self._get_keyring_username()}.json"]
             base_path = token_dir / f"oauth-{self.client_id}.json"
-            if base_path not in token_paths:
+            if base_path not in token_paths and not self.is_data_center:
                 token_paths.append(base_path)
 
             if token_data is None:
@@ -454,6 +544,17 @@ class OAuthConfig:
                 logger.debug(
                     f"Saved OAuth tokens to file {token_path} (fallback storage)"
                 )
+
+            # The current key now holds the tokens; drop the file an earlier
+            # version wrote under the short-hash name.
+            legacy_username = self._legacy_context_keyring_username(
+                self.client_id, base_url=self.base_url
+            )
+            if legacy_username:
+                try:
+                    (token_dir / f"{legacy_username}.json").unlink(missing_ok=True)
+                except OSError as e:
+                    logger.debug(f"Could not remove legacy token file: {e}")
         except Exception as e:
             logger.error(f"Failed to save tokens to file: {e}")
 
@@ -470,11 +571,14 @@ class OAuthConfig:
         hash), so the load must be context-keyed too: without it, two products
         registered with the same client_id string (e.g. Jira Data Center and
         Bitbucket Data Center) would read each other's tokens through the
-        shared base key. The base ``oauth-{client_id}`` key is consulted only
-        as a fallback, and an entry found there is accepted only when the
-        context it recorded at save time matches the requested one (entries
-        carrying no context fields cannot be validated and are accepted for
-        continuity).
+        shared base key. Candidates are consulted in priority order: the
+        context key, the legacy Data Center key written by earlier versions,
+        then the shared ``oauth-{client_id}`` base key. Each entry found is
+        accepted only when the context it recorded at save time matches the
+        requested one, whichever key it was found under. Entries carrying no
+        context fields cannot be attributed to a context and are rejected for
+        any context-keyed load; re-authenticating rewrites them with context
+        recorded.
 
         Args:
             client_id: The OAuth client ID
@@ -485,40 +589,73 @@ class OAuthConfig:
         Returns:
             Dict with the token data or empty dict if no tokens found
         """
-        context_username = OAuthConfig._context_keyring_username(
+        usernames = OAuthConfig._candidate_keyring_usernames(
             client_id, cloud_id=cloud_id, base_url=base_url
         )
-        base_username = f"oauth-{client_id}"
-        usernames = [context_username]
-        if base_username != context_username:
-            usernames.append(base_username)
 
-        # Try to load tokens from keyring first
-        try:
-            for username in usernames:
+        # Try to load tokens from keyring first. A candidate that cannot be
+        # read or does not validate is skipped, so one bad entry does not
+        # hide a good one under a later key.
+        rejected: list[str] = []
+        for username in usernames:
+            try:
                 token_json = keyring.get_password(KEYRING_SERVICE_NAME, username)
-                if not token_json:
-                    continue
+            except Exception as e:
+                logger.warning(
+                    f"Failed to read keyring entry {username}: {e}. "
+                    "Trying the next candidate."
+                )
+                continue
+            if not token_json:
+                continue
+            try:
                 token_data = json.loads(token_json)
-                if username == base_username and not OAuthConfig._tokens_match_context(
-                    token_data, cloud_id=cloud_id, base_url=base_url
-                ):
-                    logger.debug(
-                        f"Ignoring keyring entry {username}: saved for a "
-                        "different service context"
-                    )
-                    continue
-                logger.debug(f"Loaded OAuth tokens from keyring for {username}")
-                return token_data
-        except Exception as e:
-            logger.warning(
-                f"Failed to load tokens from keyring: {e}. Trying file fallback."
+            except Exception:
+                rejected.append(f"{username}: not valid JSON")
+                continue
+            reason = OAuthConfig._context_rejection_reason(
+                token_data, cloud_id=cloud_id, base_url=base_url
             )
+            if reason:
+                rejected.append(f"{username}: {reason}")
+                continue
+            logger.debug(f"Loaded OAuth tokens from keyring for {username}")
+            OAuthConfig._log_rejected_candidates("keyring", rejected)
+            return token_data
+        OAuthConfig._log_rejected_candidates("keyring", rejected)
 
         # Fall back to loading from file if keyring fails or returns None
         return OAuthConfig._load_tokens_from_file(
             client_id, usernames=usernames, cloud_id=cloud_id, base_url=base_url
         )
+
+    @staticmethod
+    def _context_rejection_reason(
+        token_data: Any,
+        *,
+        cloud_id: str | None = None,
+        base_url: str | None = None,
+    ) -> str | None:
+        """Explain why a stored candidate cannot satisfy this load, or None."""
+        if not isinstance(token_data, dict):
+            return "not a JSON object"
+        if OAuthConfig._tokens_match_context(
+            token_data, cloud_id=cloud_id, base_url=base_url
+        ):
+            return None
+        if not token_data.get("cloud_id") and not token_data.get("base_url"):
+            return "records no service context"
+        return "saved for a different service context"
+
+    @staticmethod
+    def _log_rejected_candidates(source: str, rejected: list[str]) -> None:
+        """Report, once per load, the cached entries that were found but unusable."""
+        if rejected:
+            logger.info(
+                f"Ignored {len(rejected)} cached OAuth token entr"
+                f"{'y' if len(rejected) == 1 else 'ies'} in {source}: "
+                + "; ".join(rejected)
+            )
 
     @staticmethod
     def _tokens_match_context(
@@ -530,20 +667,28 @@ class OAuthConfig:
         """Whether a stored token entry belongs to the requested context.
 
         Saved entries record the ``cloud_id``/``base_url`` they were issued
-        for, and the shared base key is rewritten by whichever context saved
-        last — so a base-key entry holding another context's tokens must not
-        satisfy this load. Entries carrying no context fields predate context
-        recording, cannot be validated, and are accepted.
+        for. The check applies to every candidate key: the shared base key is
+        rewritten by whichever context saved last, and a legacy Data Center
+        key can be shared by two base URLs, so the key an entry was found
+        under says nothing reliable about the context it belongs to. Entries
+        carrying no context fields predate context recording and cannot be
+        attributed to any context, so a context-keyed load rejects them
+        rather than risk handing one provider's tokens to another; a fresh
+        authentication re-saves them with context recorded.
         """
         stored_cloud_id = token_data.get("cloud_id")
         stored_base_url = token_data.get("base_url")
-        if not stored_cloud_id and not stored_base_url:
-            return True
         if base_url:
             return stored_base_url == base_url
         if cloud_id:
             return stored_cloud_id == cloud_id
-        return True
+        # A contextless load can only be the Cloud branch (the Data Center
+        # branch supplies base_url), so a stored DC entry is another
+        # provider's credential and is rejected. A stored cloud_id is fine:
+        # the standard Cloud flow discovers cloud_id during authentication,
+        # stores it, and loads without one on startup, and rejecting it would
+        # force a re-authentication loop.
+        return not stored_base_url
 
     @staticmethod
     def _load_tokens_from_file(
@@ -554,6 +699,9 @@ class OAuthConfig:
         base_url: str | None = None,
     ) -> dict[str, Any]:
         """Load tokens from a file as fallback.
+
+        Every candidate file is validated against the requested context, as
+        in :meth:`load_tokens`.
 
         Args:
             client_id: The OAuth client ID
@@ -568,6 +716,7 @@ class OAuthConfig:
         """
         token_dir = Path.home() / ".mcp-atlassian"
         base_name = f"oauth-{client_id}"
+        rejected: list[str] = []
         for username in usernames or [base_name]:
             token_path = token_dir / f"{username}.json"
 
@@ -579,19 +728,20 @@ class OAuthConfig:
                     token_data = json.load(f)
             except Exception as e:
                 logger.error(f"Failed to load tokens from file: {e}")
+                rejected.append(f"{token_path.name}: unreadable")
                 continue
-            if username == base_name and not OAuthConfig._tokens_match_context(
+            reason = OAuthConfig._context_rejection_reason(
                 token_data, cloud_id=cloud_id, base_url=base_url
-            ):
-                logger.debug(
-                    f"Ignoring token file {token_path.name}: saved for a "
-                    "different service context"
-                )
+            )
+            if reason:
+                rejected.append(f"{token_path.name}: {reason}")
                 continue
             logger.debug(
                 f"Loaded OAuth tokens from file {token_path} (fallback storage)"
             )
+            OAuthConfig._log_rejected_candidates("file storage", rejected)
             return token_data
+        OAuthConfig._log_rejected_candidates("file storage", rejected)
         return {}
 
     @classmethod
@@ -613,12 +763,24 @@ class OAuthConfig:
                 Center) must not be satisfied by another product's credentials;
                 this keeps the loader's decision aligned with the per-service
                 availability gate. The shared ``ATLASSIAN_OAUTH_ENABLE`` mode
-                flag is unaffected — it selects user-provided-token mode, not a
-                credential.
+                flag is unaffected, since it selects user-provided-token mode
+                rather than supplying a credential.
 
         Returns:
             OAuthConfig instance or None if OAuth is not enabled
+
+        Raises:
+            ValueError: If ``disallow_shared_fallback`` is set without a
+                ``service_type``, since the flag scopes credential lookup to
+                one service's env vars.
         """
+        if disallow_shared_fallback and not service_type:
+            raise ValueError(
+                "disallow_shared_fallback requires a service_type: without one "
+                "there are no service-specific credentials to prefer over the "
+                "shared ones."
+            )
+
         # Check if OAuth is explicitly enabled (allows minimal config)
         oauth_enabled = os.getenv("ATLASSIAN_OAUTH_ENABLE", "").lower() in (
             "true",
@@ -628,7 +790,7 @@ class OAuthConfig:
 
         # Service-specific env vars take precedence over shared ones. When
         # disallow_shared_fallback is set, the shared ATLASSIAN_OAUTH_* values
-        # are never consulted for this service.
+        # are not consulted for this service.
         prefix = service_type.upper() if service_type else None
 
         def _resolve(suffix: str) -> str | None:
@@ -650,6 +812,18 @@ class OAuthConfig:
             if not redirect_uri:
                 redirect_uri = "http://localhost:8080/callback"
             if not scope:
+                # The Jira/Confluence Data Center default scope does not exist
+                # on Bitbucket Data Center (its scopes are the REPO_READ /
+                # REPO_WRITE / PUBLIC_REPOS family), so a silently defaulted
+                # scope would fail only later, upstream. Fail fast instead.
+                if service_type == "bitbucket" and client_id and client_secret:
+                    raise ValueError(
+                        "BITBUCKET_OAUTH_SCOPE is required for a Bitbucket "
+                        "OAuth client: Bitbucket Data Center has no default "
+                        "OAuth scope. Set it to the scopes granted to the "
+                        "incoming application link, e.g. PUBLIC_REPOS, "
+                        "REPO_READ, REPO_WRITE, REPO_ADMIN or PROJECT_ADMIN."
+                    )
                 scope = "WRITE"
 
         # Full OAuth configuration (traditional mode)
@@ -671,7 +845,7 @@ class OAuthConfig:
             )
 
             # Try to load existing tokens for this service's context, so two
-            # products sharing a client_id string never read each other's cache
+            # products sharing a client_id string do not read each other's cache
             token_data = cls.load_tokens(
                 client_id or "", cloud_id=cloud_id, base_url=base_url
             )
@@ -720,7 +894,7 @@ class BYOAccessTokenOAuthConfig:
     This configuration does not support token refreshing.
     """
 
-    access_token: str
+    access_token: str = field(repr=False)
     cloud_id: str | None = None
     base_url: str | None = None
     refresh_token: None = field(default=None, repr=False)
@@ -754,7 +928,18 @@ class BYOAccessTokenOAuthConfig:
         Returns:
             BYOAccessTokenOAuthConfig instance or None if required
             environment variables are missing.
+
+        Raises:
+            ValueError: If ``disallow_shared_fallback`` is set without a
+                ``service_type`` (see :meth:`OAuthConfig.from_env`).
         """
+        if disallow_shared_fallback and not service_type:
+            raise ValueError(
+                "disallow_shared_fallback requires a service_type: without one "
+                "there are no service-specific credentials to prefer over the "
+                "shared ones."
+            )
+
         cloud_id = os.getenv("ATLASSIAN_OAUTH_CLOUD_ID")
 
         # Service-specific access token takes precedence; the shared token is

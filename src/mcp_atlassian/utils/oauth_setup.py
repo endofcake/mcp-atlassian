@@ -306,8 +306,13 @@ def run_oauth_flow(args: OAuthSetupArgs) -> bool:
             logger.info(
                 "They are stored securely in your system keyring and will be loaded automatically."
             )
+            backup_name = (
+                oauth_config._get_keyring_username()
+                if oauth_config.is_data_center
+                else f"oauth-{oauth_config.client_id}"
+            )
             logger.info(
-                f"Token storage location (backup): ~/.mcp-atlassian/oauth-{oauth_config.client_id}.json"
+                f"Token storage location (backup): ~/.mcp-atlassian/{backup_name}.json"
             )
 
             # Generate VS Code configuration JSON snippet
