@@ -1510,7 +1510,7 @@ class TestBitbucketServiceWiring:
                 "bitbucket_list_projects", {"bitbucket", "read"}
             )
             write_tool = self._make_dummy_tool(
-                "bitbucket_merge_pull_request", {"bitbucket", "write"}
+                "bitbucket_add_pull_request_comment", {"bitbucket", "write"}
             )
             tools_by_name = {t.name: t for t in (read_tool, write_tool)}
 
@@ -1525,7 +1525,9 @@ class TestBitbucketServiceWiring:
                 mock_super.return_value = "EXECUTED"
 
                 with pytest.raises(NotFoundError):
-                    await server._call_tool_mcp("bitbucket_merge_pull_request", {})
+                    await server._call_tool_mcp(
+                        "bitbucket_add_pull_request_comment", {}
+                    )
                 mock_super.assert_not_called()
 
                 result = await server._call_tool_mcp("bitbucket_list_projects", {})

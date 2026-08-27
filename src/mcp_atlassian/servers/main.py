@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from mcp_atlassian.bitbucket.config import BitbucketConfig
 from mcp_atlassian.confluence.config import ConfluenceConfig
 from mcp_atlassian.jira.config import JiraConfig
+from mcp_atlassian.servers.oauth_upstream import proxy_upstream_provider
 from mcp_atlassian.utils.env import is_env_truthy
 from mcp_atlassian.utils.environment import get_available_services
 from mcp_atlassian.utils.io import is_read_only_mode
@@ -36,6 +37,7 @@ from mcp_atlassian.utils.toolsets import (
 )
 from mcp_atlassian.utils.urls import validate_url_for_ssrf
 
+from .bitbucket import bitbucket_mcp
 from .client_storage import build_oauth_client_storage_from_env
 from .confluence import confluence_mcp
 from .context import MainAppContext
@@ -130,6 +132,37 @@ async def health_check(request: Request) -> JSONResponse:
     return JSONResponse({"status": "ok"})
 
 
+def _refuse_external_auth_with_oauth_proxy(
+    *configs: JiraConfig | ConfluenceConfig | BitbucketConfig | None,
+) -> None:
+    """Refuse to start with external auth mode behind the OAuth proxy.
+
+    In external auth mode the incoming Authorization header is forwarded
+    upstream as the credential. When this server's own OAuth proxy fronts the
+    deployment, every incoming bearer is a proxy-minted MCP-audience token, so
+    that combination would transmit an MCP credential to the Atlassian host.
+
+    Raises:
+        RuntimeError: If the proxy is enabled and any loaded service config
+            uses ``auth_type="external"``.
+    """
+    if proxy_upstream_provider() is None:
+        return
+    external_services = [
+        type(config).__name__
+        for config in configs
+        if config is not None and config.auth_type == "external"
+    ]
+    if external_services:
+        raise RuntimeError(
+            "External auth mode cannot be combined with the OAuth proxy: the "
+            "proxy makes every incoming bearer a proxy-minted MCP token, and "
+            "external mode would forward it to the Atlassian host as the "
+            "upstream credential. Disable the OAuth proxy or switch these "
+            f"services off external auth mode: {', '.join(external_services)}."
+        )
+
+
 @asynccontextmanager
 async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict[str, Any]]:
     logger.info("Main Atlassian MCP server lifespan starting...")
@@ -187,6 +220,10 @@ async def main_lifespan(app: FastMCP[MainAppContext]) -> AsyncIterator[dict[str,
                 )
         except Exception as e:
             logger.error(f"Failed to load Bitbucket configuration: {e}", exc_info=True)
+
+    _refuse_external_auth_with_oauth_proxy(
+        loaded_jira_config, loaded_confluence_config, loaded_bitbucket_config
+    )
 
     app_context = MainAppContext(
         full_jira_config=loaded_jira_config,
@@ -883,6 +920,7 @@ main_mcp = AtlassianMCP(
 )
 main_mcp.mount(jira_mcp, namespace="jira")
 main_mcp.mount(confluence_mcp, namespace="confluence")
+main_mcp.mount(bitbucket_mcp, namespace="bitbucket")
 
 
 @main_mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)

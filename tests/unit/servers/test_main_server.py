@@ -908,3 +908,54 @@ async def test_oauth_provider_missing_credentials_returns_discovery_challenge(
     metadata_body = metadata.json()
     assert metadata_body["resource"] == "https://testserver/mcp"
     assert metadata_body["authorization_servers"] == ["https://testserver/"]
+
+
+class TestExternalAuthProxyGuard:
+    """Startup guard: external auth mode cannot coexist with the OAuth proxy."""
+
+    @staticmethod
+    def _external_jira_config():
+        from mcp_atlassian.jira.config import JiraConfig
+
+        return JiraConfig(url="https://jira.example.com", auth_type="external")
+
+    @pytest.mark.security_regression
+    def test_proxy_plus_external_mode_is_refused(self, monkeypatch):
+        """With the proxy enabled, an external-mode service refuses startup.
+
+        In external mode the incoming Authorization header becomes the
+        upstream credential; behind the proxy that header is a proxy-minted
+        MCP-audience token, so the combination would forward an MCP credential
+        to the Atlassian host.
+        """
+        from mcp_atlassian.servers.main import _refuse_external_auth_with_oauth_proxy
+
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("JIRA_OAUTH_CLIENT_ID", "jira-client-id")
+        monkeypatch.delenv("BITBUCKET_OAUTH_CLIENT_ID", raising=False)
+
+        with pytest.raises(RuntimeError, match="External auth mode"):
+            _refuse_external_auth_with_oauth_proxy(
+                self._external_jira_config(), None, None
+            )
+
+    def test_external_mode_without_proxy_is_allowed(self, monkeypatch):
+        """Without the proxy, external auth mode starts normally."""
+        from mcp_atlassian.servers.main import _refuse_external_auth_with_oauth_proxy
+
+        monkeypatch.delenv("ATLASSIAN_OAUTH_PROXY_ENABLE", raising=False)
+
+        _refuse_external_auth_with_oauth_proxy(self._external_jira_config(), None, None)
+
+    def test_proxy_without_external_mode_is_allowed(self, monkeypatch):
+        """The proxy with non-external services starts normally."""
+        from mcp_atlassian.jira.config import JiraConfig
+        from mcp_atlassian.servers.main import _refuse_external_auth_with_oauth_proxy
+
+        monkeypatch.setenv("ATLASSIAN_OAUTH_PROXY_ENABLE", "true")
+        monkeypatch.setenv("JIRA_OAUTH_CLIENT_ID", "jira-client-id")
+        monkeypatch.delenv("BITBUCKET_OAUTH_CLIENT_ID", raising=False)
+
+        _refuse_external_auth_with_oauth_proxy(
+            JiraConfig(url="https://jira.example.com", auth_type="pat"), None, None
+        )
