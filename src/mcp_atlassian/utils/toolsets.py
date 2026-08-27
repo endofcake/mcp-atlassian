@@ -167,8 +167,8 @@ BITBUCKET_TOOLSETS: dict[str, ToolsetDefinition] = {
     ),
     "bitbucket_pull_requests": ToolsetDefinition(
         name="bitbucket_pull_requests",
-        description="Bitbucket Data Center pull-request review (list, diff, "
-        "activities, comments)",
+        description="Bitbucket Data Center pull-request review (list, changed "
+        "files, diff, activities, comments)",
         default=False,
     ),
 }

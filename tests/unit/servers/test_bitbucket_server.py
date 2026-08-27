@@ -1,0 +1,1456 @@
+"""Unit tests for the Bitbucket FastMCP server."""
+
+import ast
+import inspect
+import json
+import logging
+import threading
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from fastmcp import Client, FastMCP
+from fastmcp.client import FastMCPTransport
+from fastmcp.exceptions import ToolError
+from starlette.requests import Request
+
+from src.mcp_atlassian.bitbucket import BitbucketFetcher
+from src.mcp_atlassian.bitbucket.client import (
+    BitbucketProjectsPage,
+    BitbucketResourceNotFoundError,
+)
+from src.mcp_atlassian.bitbucket.commits import BitbucketCommitsPage
+from src.mcp_atlassian.bitbucket.config import BitbucketConfig
+from src.mcp_atlassian.bitbucket.pull_requests import (
+    BitbucketActivitiesPage,
+    BitbucketChangesPage,
+    BitbucketPullRequestsPage,
+)
+from src.mcp_atlassian.bitbucket.refs import (
+    BitbucketBranchesPage,
+    BitbucketTagsPage,
+)
+from src.mcp_atlassian.bitbucket.repositories import BitbucketRepositoriesPage
+from src.mcp_atlassian.bitbucket.source import BitbucketBrowseResult
+from src.mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
+from src.mcp_atlassian.servers.context import MainAppContext
+from src.mcp_atlassian.servers.main import AtlassianMCP
+from src.mcp_atlassian.utils.oauth import OAuthConfig
+
+logger = logging.getLogger(__name__)
+
+BASE_URL = "https://bitbucket.example.com"
+
+
+def _model_mock(simplified: dict, summary: dict | None = None) -> MagicMock:
+    """Create a model mock exposing to_simplified_dict/to_summary_dict."""
+    model = MagicMock()
+    model.to_simplified_dict.return_value = simplified
+    if summary is not None:
+        model.to_summary_dict.return_value = summary
+    return model
+
+
+@pytest.fixture
+def mock_bitbucket_fetcher() -> MagicMock:
+    """Create a mocked BitbucketFetcher instance for testing."""
+    mock_fetcher = MagicMock(spec=BitbucketFetcher)
+
+    project = _model_mock(
+        {"key": "PROJ", "name": "Project", "description": "A project"},
+        {"key": "PROJ", "name": "Project"},
+    )
+    mock_fetcher.list_projects.return_value = BitbucketProjectsPage(
+        projects=[project], is_last_page=True, truncated=False, next_page_start=None
+    )
+
+    repo = _model_mock(
+        {"slug": "my-repo", "name": "my-repo", "project": {"key": "PROJ"}},
+        {"slug": "my-repo", "name": "my-repo"},
+    )
+    mock_fetcher.list_repositories.return_value = BitbucketRepositoriesPage(
+        repositories=[repo], is_last_page=True, truncated=False, next_page_start=None
+    )
+
+    branch = _model_mock(
+        {"id": "refs/heads/main", "display_id": "main", "latest_commit": "abc123"},
+        {"display_id": "main", "latest_commit": "abc123"},
+    )
+    mock_fetcher.list_branches.return_value = BitbucketBranchesPage(
+        branches=[branch], is_last_page=True, truncated=False, next_page_start=None
+    )
+    mock_fetcher.get_default_branch.return_value = _model_mock(
+        {"id": "refs/heads/main", "display_id": "main", "type": "BRANCH"}
+    )
+
+    tag = _model_mock(
+        {"id": "refs/tags/v1.0.0", "display_id": "v1.0.0", "latest_commit": "def456"},
+        {"display_id": "v1.0.0", "latest_commit": "def456"},
+    )
+    mock_fetcher.list_tags.return_value = BitbucketTagsPage(
+        tags=[tag], is_last_page=True, truncated=False, next_page_start=None
+    )
+    mock_fetcher.get_tag.return_value = _model_mock(
+        {"display_id": "v1.0.0", "latest_commit": "def456", "hash": "objsha"}
+    )
+
+    commit = _model_mock(
+        {
+            "id": "abc123def456",
+            "display_id": "abc123d",
+            "message": "Add feature\n\nbody",
+            "author": {"name": "Jane Dev"},
+        },
+        {"display_id": "abc123d", "author": "Jane Dev", "message": "Add feature"},
+    )
+    commits_page = BitbucketCommitsPage(
+        commits=[commit], is_last_page=True, truncated=False, next_page_start=None
+    )
+    mock_fetcher.list_commits.return_value = commits_page
+    mock_fetcher.get_pull_request_commits.return_value = commits_page
+    mock_fetcher.get_commit.return_value = commit
+
+    directory_entry = _model_mock({"path": "app.py", "type": "FILE", "size": 12})
+    mock_fetcher.browse.return_value = BitbucketBrowseResult(
+        kind="DIRECTORY",
+        path="src",
+        lines=None,
+        children=[directory_entry],
+        is_last_page=True,
+        next_page_start=None,
+        truncated=False,
+        binary=False,
+    )
+
+    pull_request = _model_mock(
+        {"id": 5, "title": "Add X", "state": "OPEN", "reviewers": []},
+        {"id": 5, "title": "Add X", "state": "OPEN"},
+    )
+    mock_fetcher.list_pull_requests.return_value = BitbucketPullRequestsPage(
+        pull_requests=[pull_request],
+        is_last_page=True,
+        truncated=False,
+        next_page_start=None,
+    )
+    mock_fetcher.get_pull_request.return_value = pull_request
+    change = _model_mock({"path": "src/app.py", "type": "MODIFY", "node_type": "FILE"})
+    mock_fetcher.get_pull_request_changes.return_value = BitbucketChangesPage(
+        changes=[change], is_last_page=True, truncated=False, next_page_start=None
+    )
+    mock_fetcher.get_pull_request_diff.return_value = _model_mock(
+        {"files": [{"path": "f.py"}], "count": 1, "total_files": 1, "truncated": False}
+    )
+
+    comment = _model_mock({"id": 9, "version": 1, "text": "nit", "author": "r"})
+    activity = MagicMock()
+    activity.to_simplified_dict.return_value = {"id": 1, "action": "COMMENTED"}
+    activity.comment = comment
+    mock_fetcher.get_activities.return_value = BitbucketActivitiesPage(
+        activities=[activity], is_last_page=True, truncated=False, next_page_start=None
+    )
+
+    mock_config = MagicMock()
+    mock_config.url = BASE_URL
+    mock_fetcher.config = mock_config
+
+    return mock_fetcher
+
+
+@pytest.fixture
+def mock_base_bitbucket_config() -> BitbucketConfig:
+    """Create a base BitbucketConfig for MainAppContext using OAuth."""
+    oauth_config = OAuthConfig(
+        client_id="server_client_id",
+        client_secret="server_client_secret",
+        redirect_uri="http://localhost",
+        scope="REPO_READ",
+        base_url=BASE_URL,
+    )
+    return BitbucketConfig(
+        url=BASE_URL,
+        auth_type="oauth",
+        oauth_config=oauth_config,
+    )
+
+
+@pytest.fixture
+def test_bitbucket_mcp(
+    mock_bitbucket_fetcher: MagicMock,
+    mock_base_bitbucket_config: BitbucketConfig,
+) -> AtlassianMCP:
+    """Create a test FastMCP instance with standard configuration."""
+
+    # Import and register tool functions (as they are in bitbucket.py)
+    from src.mcp_atlassian.servers.bitbucket import (
+        browse_path,
+        get_commit,
+        get_default_branch,
+        get_pull_request,
+        get_pull_request_activities,
+        get_pull_request_changes,
+        get_pull_request_comments,
+        get_pull_request_commits,
+        get_pull_request_diff,
+        get_tag,
+        list_branches,
+        list_commits,
+        list_projects,
+        list_pull_requests,
+        list_repositories,
+        list_tags,
+    )
+
+    @asynccontextmanager
+    async def test_lifespan(app: FastMCP) -> AsyncGenerator[MainAppContext, None]:
+        try:
+            yield MainAppContext(
+                full_bitbucket_config=mock_base_bitbucket_config, read_only=False
+            )
+        finally:
+            pass
+
+    test_mcp = AtlassianMCP(
+        "TestBitbucket",
+        instructions="Test Bitbucket MCP Server",
+        lifespan=test_lifespan,
+    )
+
+    bitbucket_sub_mcp = FastMCP(name="TestBitbucketSubMCP")
+    bitbucket_sub_mcp.add_tool(list_projects)
+    bitbucket_sub_mcp.add_tool(list_repositories)
+    bitbucket_sub_mcp.add_tool(list_branches)
+    bitbucket_sub_mcp.add_tool(list_tags)
+    bitbucket_sub_mcp.add_tool(get_tag)
+    bitbucket_sub_mcp.add_tool(get_default_branch)
+    bitbucket_sub_mcp.add_tool(list_commits)
+    bitbucket_sub_mcp.add_tool(get_commit)
+    bitbucket_sub_mcp.add_tool(browse_path)
+    bitbucket_sub_mcp.add_tool(list_pull_requests)
+    bitbucket_sub_mcp.add_tool(get_pull_request)
+    bitbucket_sub_mcp.add_tool(get_pull_request_commits)
+    bitbucket_sub_mcp.add_tool(get_pull_request_changes)
+    bitbucket_sub_mcp.add_tool(get_pull_request_diff)
+    bitbucket_sub_mcp.add_tool(get_pull_request_activities)
+    bitbucket_sub_mcp.add_tool(get_pull_request_comments)
+
+    test_mcp.mount(bitbucket_sub_mcp, namespace="bitbucket")
+
+    return test_mcp
+
+
+@pytest.fixture
+async def bitbucket_client(
+    test_bitbucket_mcp: AtlassianMCP, mock_bitbucket_fetcher: MagicMock
+) -> AsyncGenerator[Client, None]:
+    """Create a FastMCP client with a mocked Bitbucket fetcher."""
+    with (
+        patch(
+            "src.mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            AsyncMock(return_value=mock_bitbucket_fetcher),
+        ),
+        patch(
+            "src.mcp_atlassian.servers.dependencies.get_http_request",
+            MagicMock(spec=Request, state=MagicMock()),
+        ),
+    ):
+        client_instance = Client(transport=FastMCPTransport(test_bitbucket_mcp))
+        async with client_instance as connected_client:
+            yield connected_client
+
+
+def _result_json(response) -> dict:
+    """Decode a tool response's JSON payload."""
+    return json.loads(response.content[0].text)
+
+
+@pytest.mark.anyio
+class TestListProjects:
+    """The list_projects tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns projects plus pagination fields."""
+        response = await bitbucket_client.call_tool("bitbucket_list_projects", {})
+
+        mock_bitbucket_fetcher.list_projects.assert_called_once_with(
+            name=None, start=0, limit=25
+        )
+        result = _result_json(response)
+        assert result["projects"] == [
+            {"key": "PROJ", "name": "Project", "description": "A project"}
+        ]
+        assert result["count"] == 1
+        assert result["is_last_page"] is True
+        assert result["truncated"] is False
+        assert result["next_page_start"] is None
+
+    async def test_filter_and_cursor_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The name filter and pagination cursor thread through to the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_list_projects", {"name": "Proj", "start": 10, "limit": 5}
+        )
+
+        mock_bitbucket_fetcher.list_projects.assert_called_once_with(
+            name="Proj", start=10, limit=5
+        )
+
+    async def test_summary_projection(self, bitbucket_client, mock_bitbucket_fetcher):
+        """summary=True returns identity fields only, via to_summary_dict."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_projects", {"summary": True}
+        )
+
+        result = _result_json(response)
+        assert result["projects"] == [{"key": "PROJ", "name": "Project"}]
+        # The projection is applied in the tool; the fetcher call is unchanged.
+        assert "summary" not in mock_bitbucket_fetcher.list_projects.call_args.kwargs
+
+    async def test_empty_result(self, bitbucket_client, mock_bitbucket_fetcher):
+        """An empty page yields an empty list and count 0."""
+        mock_bitbucket_fetcher.list_projects.return_value = BitbucketProjectsPage(
+            projects=[], is_last_page=True, truncated=False, next_page_start=None
+        )
+
+        response = await bitbucket_client.call_tool("bitbucket_list_projects", {})
+
+        result = _result_json(response)
+        assert result["projects"] == []
+        assert result["count"] == 0
+
+    async def test_truncated_page_passthrough(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """truncated and next_page_start pass through from the fetcher page."""
+        mock_bitbucket_fetcher.list_projects.return_value = BitbucketProjectsPage(
+            projects=[], is_last_page=False, truncated=True, next_page_start=25
+        )
+
+        response = await bitbucket_client.call_tool("bitbucket_list_projects", {})
+
+        result = _result_json(response)
+        assert result["is_last_page"] is False
+        assert result["truncated"] is True
+        assert result["next_page_start"] == 25
+
+    async def test_auth_error_preserved(self, bitbucket_client, mock_bitbucket_fetcher):
+        """An authentication error surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.list_projects.side_effect = (
+            MCPAtlassianAuthenticationError("token rejected")
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool("bitbucket_list_projects", {})
+
+        assert "Error calling tool 'list_projects'" in str(excinfo.value)
+        assert "token rejected" in str(excinfo.value)
+
+    async def test_not_found_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A not-found error surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.list_projects.side_effect = (
+            BitbucketResourceNotFoundError("Bitbucket resource not found (HTTP 404)")
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool("bitbucket_list_projects", {})
+
+        assert "Bitbucket resource not found (HTTP 404)" in str(excinfo.value)
+
+    async def test_value_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A plain ValueError surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.list_projects.side_effect = ValueError(
+            "Bitbucket API request failed with HTTP 500."
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool("bitbucket_list_projects", {})
+
+        assert "Bitbucket API request failed with HTTP 500." in str(excinfo.value)
+
+
+@pytest.mark.anyio
+class TestListRepositories:
+    """The list_repositories tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns repositories plus pagination fields."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_repositories", {"project_key": "PROJ"}
+        )
+
+        mock_bitbucket_fetcher.list_repositories.assert_called_once_with(
+            project_key="PROJ", name=None, start=0, limit=25
+        )
+        result = _result_json(response)
+        assert result["repositories"] == [
+            {"slug": "my-repo", "name": "my-repo", "project": {"key": "PROJ"}}
+        ]
+        assert result["count"] == 1
+        assert result["is_last_page"] is True
+
+    async def test_name_filter_and_cursor_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The repository-name filter and cursor thread through to the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_list_repositories",
+            {"project_key": "PROJ", "name": "api", "start": 25, "limit": 10},
+        )
+
+        mock_bitbucket_fetcher.list_repositories.assert_called_once_with(
+            project_key="PROJ", name="api", start=25, limit=10
+        )
+
+    async def test_summary_projection(self, bitbucket_client, mock_bitbucket_fetcher):
+        """summary=True returns identity fields only."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_repositories", {"project_key": "PROJ", "summary": True}
+        )
+
+        result = _result_json(response)
+        assert result["repositories"] == [{"slug": "my-repo", "name": "my-repo"}]
+
+    async def test_empty_result(self, bitbucket_client, mock_bitbucket_fetcher):
+        """An empty page yields an empty list and count 0."""
+        mock_bitbucket_fetcher.list_repositories.return_value = (
+            BitbucketRepositoriesPage(
+                repositories=[],
+                is_last_page=True,
+                truncated=False,
+                next_page_start=None,
+            )
+        )
+
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_repositories", {"project_key": "PROJ"}
+        )
+
+        result = _result_json(response)
+        assert result["repositories"] == []
+        assert result["count"] == 0
+
+
+@pytest.mark.anyio
+class TestListBranches:
+    """The list_branches tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns branches plus pagination fields."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_branches",
+            {"project_key": "PROJ", "repository_slug": "my-repo"},
+        )
+
+        result = _result_json(response)
+        assert result["branches"] == [
+            {
+                "id": "refs/heads/main",
+                "display_id": "main",
+                "latest_commit": "abc123",
+            }
+        ]
+        assert result["count"] == 1
+
+    async def test_filters_and_cursor_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """All branch filters and the cursor thread through to the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_list_branches",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "filter_text": "main",
+                "order_by": "MODIFICATION",
+                "boost_matches": True,
+                "start": 10,
+                "limit": 50,
+            },
+        )
+
+        mock_bitbucket_fetcher.list_branches.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            filter_text="main",
+            order_by="MODIFICATION",
+            boost_matches=True,
+            start=10,
+            limit=50,
+        )
+
+    async def test_summary_projection(self, bitbucket_client, mock_bitbucket_fetcher):
+        """summary=True returns triage fields only."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_branches",
+            {"project_key": "PROJ", "repository_slug": "my-repo", "summary": True},
+        )
+
+        result = _result_json(response)
+        assert result["branches"] == [{"display_id": "main", "latest_commit": "abc123"}]
+
+
+@pytest.mark.anyio
+class TestListTags:
+    """The list_tags tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns tags plus pagination fields."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_tags",
+            {"project_key": "PROJ", "repository_slug": "my-repo"},
+        )
+
+        result = _result_json(response)
+        assert result["tags"] == [
+            {
+                "id": "refs/tags/v1.0.0",
+                "display_id": "v1.0.0",
+                "latest_commit": "def456",
+            }
+        ]
+        assert result["count"] == 1
+
+    async def test_filters_and_cursor_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The tag filters and cursor thread through to the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_list_tags",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "filter_text": "v1",
+                "order_by": "ALPHABETICAL",
+                "start": 10,
+                "limit": 50,
+            },
+        )
+
+        mock_bitbucket_fetcher.list_tags.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            filter_text="v1",
+            order_by="ALPHABETICAL",
+            start=10,
+            limit=50,
+        )
+
+    async def test_summary_projection(self, bitbucket_client, mock_bitbucket_fetcher):
+        """summary=True returns triage fields only."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_tags",
+            {"project_key": "PROJ", "repository_slug": "my-repo", "summary": True},
+        )
+
+        result = _result_json(response)
+        assert result["tags"] == [{"display_id": "v1.0.0", "latest_commit": "def456"}]
+
+
+@pytest.mark.anyio
+class TestGetTag:
+    """The get_tag tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the tag entity directly."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_tag",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "name": "v1.0.0",
+            },
+        )
+
+        mock_bitbucket_fetcher.get_tag.assert_called_once_with(
+            project_key="PROJ", repository_slug="my-repo", name="v1.0.0"
+        )
+        result = _result_json(response)
+        assert result == {
+            "display_id": "v1.0.0",
+            "latest_commit": "def456",
+            "hash": "objsha",
+        }
+
+
+@pytest.mark.anyio
+class TestGetDefaultBranch:
+    """The get_default_branch tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the branch entity directly."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_default_branch",
+            {"project_key": "PROJ", "repository_slug": "my-repo"},
+        )
+
+        mock_bitbucket_fetcher.get_default_branch.assert_called_once_with(
+            project_key="PROJ", repository_slug="my-repo"
+        )
+        result = _result_json(response)
+        assert result == {
+            "id": "refs/heads/main",
+            "display_id": "main",
+            "type": "BRANCH",
+        }
+
+
+@pytest.mark.anyio
+class TestListCommits:
+    """The list_commits tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns commits plus pagination fields."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_commits",
+            {"project_key": "PROJ", "repository_slug": "my-repo"},
+        )
+
+        result = _result_json(response)
+        assert result["count"] == 1
+        assert result["commits"][0]["display_id"] == "abc123d"
+        assert result["is_last_page"] is True
+
+    async def test_filters_and_cursor_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """All history filters and the cursor thread through to the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_list_commits",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "since": "oldsha",
+                "until": "main",
+                "path": "src/app.py",
+                "merges": "only",
+                "follow_renames": True,
+                "ignore_missing": False,
+                "start": 10,
+                "limit": 50,
+            },
+        )
+
+        mock_bitbucket_fetcher.list_commits.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            since="oldsha",
+            until="main",
+            path="src/app.py",
+            merges="only",
+            follow_renames=True,
+            ignore_missing=False,
+            start=10,
+            limit=50,
+        )
+
+    async def test_summary_projection(self, bitbucket_client, mock_bitbucket_fetcher):
+        """summary=True returns triage fields only."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_commits",
+            {"project_key": "PROJ", "repository_slug": "my-repo", "summary": True},
+        )
+
+        result = _result_json(response)
+        assert result["commits"] == [
+            {"display_id": "abc123d", "author": "Jane Dev", "message": "Add feature"}
+        ]
+
+    async def test_empty_result(self, bitbucket_client, mock_bitbucket_fetcher):
+        """An empty page yields an empty list and count 0."""
+        mock_bitbucket_fetcher.list_commits.return_value = BitbucketCommitsPage(
+            commits=[], is_last_page=True, truncated=False, next_page_start=None
+        )
+
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_commits",
+            {"project_key": "PROJ", "repository_slug": "my-repo"},
+        )
+
+        result = _result_json(response)
+        assert result["commits"] == []
+        assert result["count"] == 0
+
+
+@pytest.mark.anyio
+class TestGetCommit:
+    """The get_commit tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the commit entity directly."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_commit",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "commit_id": "abc123def456",
+            },
+        )
+
+        mock_bitbucket_fetcher.get_commit.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            commit_id="abc123def456",
+        )
+        result = _result_json(response)
+        assert result["id"] == "abc123def456"
+        assert result["display_id"] == "abc123d"
+
+
+@pytest.mark.anyio
+class TestBrowsePath:
+    """The browse_path tool's directory and file response shapes."""
+
+    async def test_directory_shape(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A directory result carries children/count and no file fields."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_browse_path",
+            {"project_key": "PROJ", "repository_slug": "my-repo", "path": "src"},
+        )
+
+        mock_bitbucket_fetcher.browse.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            path="src",
+            at=None,
+            start=0,
+            limit=100,
+        )
+        result = _result_json(response)
+        assert result["type"] == "DIRECTORY"
+        assert result["path"] == "src"
+        assert result["children"] == [{"path": "app.py", "type": "FILE", "size": 12}]
+        assert result["count"] == 1
+        assert "lines" not in result
+        assert "binary" not in result
+
+    async def test_file_shape(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A file result carries lines/binary/count and no children."""
+        mock_bitbucket_fetcher.browse.return_value = BitbucketBrowseResult(
+            kind="FILE",
+            path="src/app.py",
+            lines=["import os", "print(1)"],
+            children=None,
+            is_last_page=True,
+            next_page_start=None,
+            truncated=False,
+            binary=False,
+        )
+
+        response = await bitbucket_client.call_tool(
+            "bitbucket_browse_path",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "path": "src/app.py",
+            },
+        )
+
+        result = _result_json(response)
+        assert result["type"] == "FILE"
+        assert result["lines"] == ["import os", "print(1)"]
+        assert result["binary"] is False
+        assert result["count"] == 2
+        assert "children" not in result
+
+    async def test_binary_file_flag(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A binary file surfaces binary=true with no text lines."""
+        mock_bitbucket_fetcher.browse.return_value = BitbucketBrowseResult(
+            kind="FILE",
+            path="img.png",
+            lines=[],
+            children=None,
+            is_last_page=True,
+            next_page_start=None,
+            truncated=False,
+            binary=True,
+        )
+
+        response = await bitbucket_client.call_tool(
+            "bitbucket_browse_path",
+            {"project_key": "PROJ", "repository_slug": "my-repo", "path": "img.png"},
+        )
+
+        result = _result_json(response)
+        assert result["type"] == "FILE"
+        assert result["binary"] is True
+        assert result["lines"] == []
+
+    async def test_cursor_and_pagination_passthrough(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The cursor threads through and pagination fields pass through."""
+        mock_bitbucket_fetcher.browse.return_value = BitbucketBrowseResult(
+            kind="FILE",
+            path="big.txt",
+            lines=["a"],
+            children=None,
+            is_last_page=False,
+            next_page_start=100,
+            truncated=True,
+            binary=False,
+        )
+
+        response = await bitbucket_client.call_tool(
+            "bitbucket_browse_path",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "path": "big.txt",
+                "at": "main",
+                "start": 50,
+                "limit": 50,
+            },
+        )
+
+        call_kwargs = mock_bitbucket_fetcher.browse.call_args.kwargs
+        assert call_kwargs["at"] == "main"
+        assert call_kwargs["start"] == 50
+        assert call_kwargs["limit"] == 50
+        result = _result_json(response)
+        assert result["is_last_page"] is False
+        assert result["truncated"] is True
+        assert result["next_page_start"] == 100
+
+    async def test_auth_error_preserved(self, bitbucket_client, mock_bitbucket_fetcher):
+        """An authentication error surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.browse.side_effect = MCPAtlassianAuthenticationError(
+            "session expired"
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_browse_path",
+                {"project_key": "PROJ", "repository_slug": "my-repo"},
+            )
+
+        assert "session expired" in str(excinfo.value)
+
+    async def test_not_found_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A not-found error surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.browse.side_effect = BitbucketResourceNotFoundError(
+            "Bitbucket resource not found (HTTP 404) for the browse path."
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_browse_path",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "path": "missing",
+                },
+            )
+
+        assert "Bitbucket resource not found (HTTP 404)" in str(excinfo.value)
+
+    async def test_value_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A path-validation ValueError surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.browse.side_effect = ValueError(
+            "path traversal rejected"
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_browse_path",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "path": "a/b",
+                },
+            )
+
+        assert "path traversal rejected" in str(excinfo.value)
+
+
+@pytest.mark.anyio
+class TestListPullRequests:
+    """The list_pull_requests tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns pull requests plus pagination fields."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_pull_requests",
+            {"project_key": "PROJ", "repository_slug": "my-repo"},
+        )
+
+        mock_bitbucket_fetcher.list_pull_requests.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            state=None,
+            direction=None,
+            at=None,
+            order=None,
+            filter_text=None,
+            draft=None,
+            start=0,
+            limit=25,
+        )
+        result = _result_json(response)
+        assert result["pull_requests"] == [
+            {"id": 5, "title": "Add X", "state": "OPEN", "reviewers": []}
+        ]
+        assert result["count"] == 1
+
+    async def test_filters_and_cursor_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """All PR filters and the cursor thread through to the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_list_pull_requests",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "state": "MERGED",
+                "direction": "OUTGOING",
+                "at": "refs/heads/main",
+                "order": "OLDEST",
+                "filter_text": "login",
+                "draft": True,
+                "start": 10,
+                "limit": 50,
+            },
+        )
+
+        mock_bitbucket_fetcher.list_pull_requests.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            state="MERGED",
+            direction="OUTGOING",
+            at="refs/heads/main",
+            order="OLDEST",
+            filter_text="login",
+            draft=True,
+            start=10,
+            limit=50,
+        )
+
+    async def test_summary_projection(self, bitbucket_client, mock_bitbucket_fetcher):
+        """summary=True returns triage fields only."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_pull_requests",
+            {"project_key": "PROJ", "repository_slug": "my-repo", "summary": True},
+        )
+
+        result = _result_json(response)
+        assert result["pull_requests"] == [{"id": 5, "title": "Add X", "state": "OPEN"}]
+
+    async def test_empty_result(self, bitbucket_client, mock_bitbucket_fetcher):
+        """An empty page yields an empty list and count 0."""
+        mock_bitbucket_fetcher.list_pull_requests.return_value = (
+            BitbucketPullRequestsPage(
+                pull_requests=[],
+                is_last_page=True,
+                truncated=False,
+                next_page_start=None,
+            )
+        )
+
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_pull_requests",
+            {"project_key": "PROJ", "repository_slug": "my-repo"},
+        )
+
+        result = _result_json(response)
+        assert result["pull_requests"] == []
+        assert result["count"] == 0
+
+
+@pytest.mark.anyio
+class TestGetPullRequest:
+    """The get_pull_request tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the pull-request entity directly."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+            },
+        )
+
+        mock_bitbucket_fetcher.get_pull_request.assert_called_once_with(
+            project_key="PROJ", repository_slug="my-repo", pull_request_id=5
+        )
+        result = _result_json(response)
+        assert result["id"] == 5
+        assert result["title"] == "Add X"
+
+    async def test_auth_error_preserved(self, bitbucket_client, mock_bitbucket_fetcher):
+        """An authentication error surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.get_pull_request.side_effect = (
+            MCPAtlassianAuthenticationError("token rejected")
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_get_pull_request",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 5,
+                },
+            )
+
+        assert "token rejected" in str(excinfo.value)
+
+    async def test_not_found_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A not-found error surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.get_pull_request.side_effect = (
+            BitbucketResourceNotFoundError(
+                "Bitbucket resource not found (HTTP 404) for the pull request."
+            )
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_get_pull_request",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 999,
+                },
+            )
+
+        assert "Bitbucket resource not found (HTTP 404)" in str(excinfo.value)
+
+    async def test_value_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A plain ValueError surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.get_pull_request.side_effect = ValueError(
+            "Bitbucket API request failed with HTTP 500."
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_get_pull_request",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 5,
+                },
+            )
+
+        assert "Bitbucket API request failed with HTTP 500." in str(excinfo.value)
+
+
+@pytest.mark.anyio
+class TestGetPullRequestCommits:
+    """The get_pull_request_commits tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the PR's commits plus pagination fields."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_commits",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+            },
+        )
+
+        mock_bitbucket_fetcher.get_pull_request_commits.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            start=0,
+            limit=25,
+        )
+        result = _result_json(response)
+        assert result["commits"][0]["display_id"] == "abc123d"
+        assert result["count"] == 1
+
+    async def test_cursor_is_forwarded(self, bitbucket_client, mock_bitbucket_fetcher):
+        """The pagination cursor threads through to the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_commits",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+                "start": 10,
+                "limit": 50,
+            },
+        )
+
+        call_kwargs = mock_bitbucket_fetcher.get_pull_request_commits.call_args.kwargs
+        assert call_kwargs["start"] == 10
+        assert call_kwargs["limit"] == 50
+
+    async def test_summary_projection(self, bitbucket_client, mock_bitbucket_fetcher):
+        """summary=True returns triage fields only."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_commits",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+                "summary": True,
+            },
+        )
+
+        result = _result_json(response)
+        assert result["commits"] == [
+            {"display_id": "abc123d", "author": "Jane Dev", "message": "Add feature"}
+        ]
+
+
+@pytest.mark.anyio
+class TestGetPullRequestChanges:
+    """The get_pull_request_changes tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the changed files plus pagination fields."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_changes",
+            {"project_key": "PROJ", "repository_slug": "my-repo", "pull_request_id": 5},
+        )
+
+        mock_bitbucket_fetcher.get_pull_request_changes.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            start=0,
+            limit=25,
+        )
+        result = _result_json(response)
+        assert result["changes"] == [
+            {"path": "src/app.py", "type": "MODIFY", "node_type": "FILE"}
+        ]
+        assert result["count"] == 1
+        assert result["is_last_page"] is True
+        assert result["truncated"] is False
+        assert result["next_page_start"] is None
+
+    async def test_cursor_is_forwarded(self, bitbucket_client, mock_bitbucket_fetcher):
+        """The pagination cursor threads through to the fetcher."""
+        mock_bitbucket_fetcher.get_pull_request_changes.return_value = (
+            BitbucketChangesPage(
+                changes=[], is_last_page=False, truncated=True, next_page_start=50
+            )
+        )
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_changes",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+                "start": 25,
+                "limit": 25,
+            },
+        )
+
+        call_kwargs = mock_bitbucket_fetcher.get_pull_request_changes.call_args.kwargs
+        assert call_kwargs["start"] == 25
+        result = _result_json(response)
+        assert result["next_page_start"] == 50
+        assert result["truncated"] is True
+
+    async def test_limit_above_ceiling_rejected(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_get_pull_request_changes",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 5,
+                    "limit": 101,
+                },
+            )
+        mock_bitbucket_fetcher.get_pull_request_changes.assert_not_called()
+
+
+@pytest.mark.anyio
+class TestGetPullRequestDiff:
+    """The get_pull_request_diff tool."""
+
+    async def test_success_and_caps_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A successful call returns the diff and forwards both size caps."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_diff",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+                "max_lines_per_file": 200,
+                "max_files": 10,
+            },
+        )
+
+        mock_bitbucket_fetcher.get_pull_request_diff.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            max_lines_per_file=200,
+            max_files=10,
+            context_lines=None,
+            path=None,
+            src_path=None,
+        )
+        result = _result_json(response)
+        assert result["files"] == [{"path": "f.py"}]
+        assert result["truncated"] is False
+
+    async def test_narrowing_parameters_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """context_lines, path, and src_path thread through to the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_diff",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+                "context_lines": 3,
+                "path": "src/app.py",
+                "src_path": "src/old.py",
+            },
+        )
+
+        call_kwargs = mock_bitbucket_fetcher.get_pull_request_diff.call_args.kwargs
+        assert call_kwargs["context_lines"] == 3
+        assert call_kwargs["path"] == "src/app.py"
+        assert call_kwargs["src_path"] == "src/old.py"
+
+    async def test_negative_context_lines_rejected(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The schema bound rejects a negative context_lines before the fetcher."""
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_get_pull_request_diff",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 5,
+                    "context_lines": -1,
+                },
+            )
+        mock_bitbucket_fetcher.get_pull_request_diff.assert_not_called()
+
+
+@pytest.mark.anyio
+class TestGetPullRequestActivities:
+    """The get_pull_request_activities tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns activities without an action filter."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_activities",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+            },
+        )
+
+        mock_bitbucket_fetcher.get_activities.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            start=0,
+            limit=25,
+        )
+        result = _result_json(response)
+        assert result["activities"] == [{"id": 1, "action": "COMMENTED"}]
+        assert result["count"] == 1
+
+    async def test_cursor_and_pagination_passthrough(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The cursor threads through and pagination fields pass through."""
+        mock_bitbucket_fetcher.get_activities.return_value = BitbucketActivitiesPage(
+            activities=[], is_last_page=False, truncated=True, next_page_start=25
+        )
+
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_activities",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+                "start": 10,
+            },
+        )
+
+        assert mock_bitbucket_fetcher.get_activities.call_args.kwargs["start"] == 10
+        result = _result_json(response)
+        assert result["is_last_page"] is False
+        assert result["truncated"] is True
+        assert result["next_page_start"] == 25
+
+
+@pytest.mark.anyio
+class TestGetPullRequestComments:
+    """The get_pull_request_comments tool."""
+
+    async def test_filters_to_commented_and_extracts_comment(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The tool requests COMMENTED activities and surfaces their comments."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_comments",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+            },
+        )
+
+        mock_bitbucket_fetcher.get_activities.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            action="COMMENTED",
+            start=0,
+            limit=25,
+        )
+        result = _result_json(response)
+        assert result["comments"] == [
+            {"id": 9, "version": 1, "text": "nit", "author": "r"}
+        ]
+        assert result["count"] == 1
+
+    async def test_activities_without_comment_are_dropped(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """Activities whose comment payload is None are filtered out."""
+        with_comment = MagicMock()
+        with_comment.comment = _model_mock({"id": 9, "text": "x"})
+        without_comment = MagicMock()
+        without_comment.comment = None
+        mock_bitbucket_fetcher.get_activities.return_value = BitbucketActivitiesPage(
+            activities=[with_comment, without_comment],
+            is_last_page=False,
+            truncated=True,
+            next_page_start=25,
+        )
+
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_comments",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+            },
+        )
+
+        result = _result_json(response)
+        assert result["comments"] == [{"id": 9, "text": "x"}]
+        # count is the number of comments returned.
+        assert result["count"] == 1
+        assert result["truncated"] is True
+        assert result["is_last_page"] is False
+        assert result["next_page_start"] == 25
+
+
+class TestFetcherOffload:
+    """Every tool runs its fetcher call in a worker thread, off the event loop.
+
+    The fetcher is a synchronous ``requests`` client, so a direct call inside
+    ``async def`` blocks every other client for the length of the upstream
+    round trip. The static sweep pins the routing for all tools; the runtime
+    check proves the call leaves the event-loop thread.
+    """
+
+    @staticmethod
+    def _tool_functions() -> dict[str, ast.AsyncFunctionDef]:
+        from src.mcp_atlassian.servers import bitbucket as bitbucket_server
+
+        module = ast.parse(inspect.getsource(bitbucket_server))
+        tools: dict[str, ast.AsyncFunctionDef] = {}
+        for node in module.body:
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            for decorator in node.decorator_list:
+                call = decorator.func if isinstance(decorator, ast.Call) else None
+                if (
+                    isinstance(call, ast.Attribute)
+                    and call.attr == "tool"
+                    and isinstance(call.value, ast.Name)
+                    and call.value.id == "bitbucket_mcp"
+                ):
+                    tools[node.name] = node
+        return tools
+
+    @staticmethod
+    def _fetcher_names(function: ast.AsyncFunctionDef) -> set[str]:
+        """Return the names a tool binds to ``await get_bitbucket_fetcher(ctx)``."""
+        names: set[str] = set()
+        for node in ast.walk(function):
+            if (
+                isinstance(node, ast.Assign)
+                and isinstance(node.value, ast.Await)
+                and isinstance(node.value.value, ast.Call)
+                and isinstance(node.value.value.func, ast.Name)
+                and node.value.value.func.id == "get_bitbucket_fetcher"
+            ):
+                names.update(
+                    target.id for target in node.targets if isinstance(target, ast.Name)
+                )
+        return names
+
+    def test_every_tool_awaits_the_offload_helper(self):
+        tools = self._tool_functions()
+        # The registered tool count is part of the contract: a new tool must
+        # be routed through the helper and this pin bumped in the same change.
+        assert len(tools) == 16
+
+        for name, function in tools.items():
+            fetcher_names = self._fetcher_names(function)
+            assert fetcher_names, f"{name} does not bind the fetcher"
+            direct_calls = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in fetcher_names
+            ]
+            assert not direct_calls, f"{name} calls the fetcher on the event loop"
+
+            offloaded = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Await)
+                and isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == "run_bitbucket_fetcher_call"
+            ]
+            assert offloaded, f"{name} does not await run_bitbucket_fetcher_call"
+
+    @pytest.mark.anyio
+    async def test_fetcher_call_runs_off_the_event_loop_thread(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        loop_thread = threading.get_ident()
+        call_threads: list[int] = []
+        page = mock_bitbucket_fetcher.list_projects.return_value
+
+        def record_thread(**kwargs):
+            call_threads.append(threading.get_ident())
+            return page
+
+        mock_bitbucket_fetcher.list_projects.side_effect = record_thread
+
+        response = await bitbucket_client.call_tool("bitbucket_list_projects", {})
+
+        assert _result_json(response)["count"] == 1
+        assert call_threads and call_threads[0] != loop_thread

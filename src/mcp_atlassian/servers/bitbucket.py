@@ -1,0 +1,1626 @@
+"""Bitbucket Data Center FastMCP server instance and tool definitions.
+
+Exposes read tools for working with a Bitbucket Data Center
+instance over its OAuth 2.0-authenticated REST API.
+"""
+
+import json
+from typing import Annotated
+
+from fastmcp import Context
+from pydantic import Field
+
+from mcp_atlassian.bitbucket.client import (
+    DEFAULT_PROJECTS_LIMIT,
+    MAX_PROJECTS_LIMIT,
+)
+from mcp_atlassian.bitbucket.commits import (
+    DEFAULT_COMMITS_LIMIT,
+    MAX_COMMITS_LIMIT,
+)
+from mcp_atlassian.bitbucket.pull_requests import (
+    DEFAULT_ACTIVITIES_LIMIT,
+    DEFAULT_CHANGES_LIMIT,
+    DEFAULT_MAX_FILES,
+    DEFAULT_MAX_LINES_PER_FILE,
+    DEFAULT_PRS_LIMIT,
+    MAX_ACTIVITIES_LIMIT,
+    MAX_CHANGES_LIMIT,
+    MAX_CONTEXT_LINES,
+    MAX_MAX_FILES,
+    MAX_MAX_LINES_PER_FILE,
+    MAX_PRS_LIMIT,
+)
+from mcp_atlassian.bitbucket.refs import (
+    DEFAULT_REFS_LIMIT,
+    MAX_REFS_LIMIT,
+)
+from mcp_atlassian.bitbucket.repositories import (
+    DEFAULT_REPOS_LIMIT,
+    MAX_REPOS_LIMIT,
+)
+from mcp_atlassian.bitbucket.source import (
+    DEFAULT_BROWSE_LIMIT,
+    MAX_BROWSE_LIMIT,
+)
+from mcp_atlassian.servers.async_utils import run_bitbucket_fetcher_call
+from mcp_atlassian.servers.dependencies import get_bitbucket_fetcher
+from mcp_atlassian.servers.error_handling import ErrorPreservingFastMCP
+
+bitbucket_mcp = ErrorPreservingFastMCP(
+    name="Bitbucket MCP Service",
+    instructions="Provides tools for interacting with Atlassian Bitbucket Data Center.",
+)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_projects"},
+    annotations={"title": "List Bitbucket Projects", "readOnlyHint": True},
+)
+async def list_projects(
+    ctx: Context,
+    name: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional server-side filter on project name. The match semantics "
+                "(substring vs exact) depend on the instance, so if you get fewer "
+                "results than expected, check 'is_last_page' and page further "
+                "before concluding a project does not exist."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first project to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of projects fetched for this window. A "
+                "BITBUCKET_PROJECTS_FILTER allowlist configured on this MCP "
+                "server applies to the fetched window, so fewer projects can be "
+                "returned. If more exist than are "
+                "returned, the response sets 'truncated' to true and "
+                "'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_PROJECTS_LIMIT,
+            ge=1,
+            le=MAX_PROJECTS_LIMIT,
+        ),
+    ] = DEFAULT_PROJECTS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each project's identity fields (key, "
+                "name) instead of the full record, for scanning a large list to "
+                "pick one before fetching its full detail."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List Bitbucket Data Center projects visible to the authenticated user.
+
+    Args:
+        ctx: The FastMCP context.
+        name: Optional server-side filter on project name; the match semantics
+            are decided by the instance.
+        start: Pagination cursor (offset of the first project); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of projects fetched for this window; a
+            BITBUCKET_PROJECTS_FILTER allowlist applies to that window.
+        summary: When true, project records carry identity fields only.
+
+    Returns:
+        JSON string with the list of projects plus ``count`` (the size of this window),
+        ``is_last_page``, ``truncated``, and ``next_page_start``; the list is complete
+        when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+
+        An empty window with ``is_last_page`` false can still precede matches.
+        Each call issues one upstream request and a configured projects filter
+        narrows that window, so a window can hold zero projects while more
+        pages remain. Keep paging with ``start=next_page_start`` until
+        ``is_last_page`` is true before concluding a project is absent.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.list_projects, name=name, start=start, limit=limit
+    )
+    response_data: dict[str, object] = {
+        "projects": [
+            project.to_summary_dict() if summary else project.to_simplified_dict()
+            for project in page.projects
+        ],
+        "count": len(page.projects),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "List Bitbucket Repositories", "readOnlyHint": True},
+)
+async def list_repositories(
+    ctx: Context,
+    project_key: Annotated[
+        str,
+        Field(
+            description=(
+                "The Bitbucket project key whose repositories to list "
+                "(e.g. 'PROJ'). Use list_projects to discover available keys."
+            ),
+        ),
+    ],
+    name: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional repository-name filter, matched case-insensitively "
+                "(surrounding whitespace ignored). When set, results come from a "
+                "cross-project search scoped to this project, a slightly wider "
+                "visibility surface than the unfiltered project listing. Re-pass "
+                "'name' on every page; dropping it on a resume switches endpoints "
+                "and invalidates the prior 'next_page_start'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first repository to "
+                "return. Use 0 (default) for the first window, then pass the "
+                "response's 'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of repositories to return in this window. If "
+                "more exist than are returned, the response sets 'truncated' to "
+                "true and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_REPOS_LIMIT,
+            ge=1,
+            le=MAX_REPOS_LIMIT,
+        ),
+    ] = DEFAULT_REPOS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each repository's identity fields (slug, "
+                "name) instead of the full record, for scanning a large list to "
+                "pick one before fetching its full detail."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List repositories in a Bitbucket Data Center project.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key whose repositories to list.
+        name: Optional repository-name filter, matched case-insensitively
+            (surrounding whitespace ignored). When set, results come from a
+            cross-project search scoped to this project, a slightly wider
+            visibility surface than the unfiltered listing.
+        start: Pagination cursor (offset of the first repository); 0 for the
+            first window, else a prior response's ``next_page_start``.
+        limit: Maximum number of repositories to return in this window.
+        summary: When true, repository records carry identity fields only.
+
+    Returns:
+        JSON string with the list of repositories plus ``count`` (the size of this
+        window), ``is_last_page``, ``truncated``, and ``next_page_start``; the list is
+        complete when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.list_repositories,
+        project_key=project_key,
+        name=name,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "repositories": [
+            repo.to_summary_dict() if summary else repo.to_simplified_dict()
+            for repo in page.repositories
+        ],
+        "count": len(page.repositories),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "List Bitbucket Branches", "readOnlyHint": True},
+)
+async def list_branches(
+    ctx: Context,
+    project_key: Annotated[
+        str,
+        Field(
+            description=(
+                "The Bitbucket project key (e.g. 'PROJ'). Use list_projects to "
+                "discover available keys."
+            ),
+        ),
+    ],
+    repository_slug: Annotated[
+        str,
+        Field(
+            description=(
+                "The repository slug (e.g. 'my-repo'). Use list_repositories to "
+                "discover available slugs."
+            ),
+        ),
+    ],
+    filter_text: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional server-side filter on branch name (substring match). "
+                "If you get fewer results than expected, check 'is_last_page' and "
+                "page further before concluding a branch does not exist."
+            ),
+            default=None,
+        ),
+    ] = None,
+    order_by: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional ordering: 'ALPHABETICAL' or 'MODIFICATION' (most "
+                "recently modified first). Any other value is rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    boost_matches: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "When true, floats exact and prefix matches of 'filter_text' to "
+                "the top of the results. Pair with 'filter_text'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first branch to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of branches to return in this window. If more "
+                "exist than are returned, the response sets 'truncated' to true "
+                "and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_REFS_LIMIT,
+            ge=1,
+            le=MAX_REFS_LIMIT,
+        ),
+    ] = DEFAULT_REFS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each branch's triage fields (display_id, "
+                "latest_commit) instead of the full record, for scanning a large "
+                "list to pick one."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List branches in a Bitbucket Data Center repository.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        filter_text: Optional server-side branch-name filter (substring match).
+        order_by: Optional ordering (ALPHABETICAL or MODIFICATION).
+        boost_matches: When true, floats exact/prefix filter matches up.
+        start: Pagination cursor (offset of the first branch); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of branches to return in this window.
+        summary: When true, branch records carry triage fields only.
+
+    Returns:
+        JSON string with the list of branches plus ``count`` (the size of this window),
+        ``is_last_page``, ``truncated``, and ``next_page_start``; the list is complete
+        when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.list_branches,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        filter_text=filter_text,
+        order_by=order_by,
+        boost_matches=boost_matches,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "branches": [
+            branch.to_summary_dict() if summary else branch.to_simplified_dict()
+            for branch in page.branches
+        ],
+        "count": len(page.branches),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "List Bitbucket Tags", "readOnlyHint": True},
+)
+async def list_tags(
+    ctx: Context,
+    project_key: Annotated[
+        str,
+        Field(
+            description=(
+                "The Bitbucket project key (e.g. 'PROJ'). Use list_projects to "
+                "discover available keys."
+            ),
+        ),
+    ],
+    repository_slug: Annotated[
+        str,
+        Field(
+            description=(
+                "The repository slug (e.g. 'my-repo'). Use list_repositories to "
+                "discover available slugs."
+            ),
+        ),
+    ],
+    filter_text: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional server-side filter on tag name (substring match). If "
+                "you get fewer results than expected, check 'is_last_page' and "
+                "page further before concluding a tag does not exist."
+            ),
+            default=None,
+        ),
+    ] = None,
+    order_by: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional ordering: 'ALPHABETICAL' or 'MODIFICATION' (most "
+                "recently modified first). Any other value is rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first tag to return. Use 0 "
+                "(default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of tags to return in this window. If more exist "
+                "than are returned, the response sets 'truncated' to true and "
+                "'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_REFS_LIMIT,
+            ge=1,
+            le=MAX_REFS_LIMIT,
+        ),
+    ] = DEFAULT_REFS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each tag's triage fields (display_id, "
+                "latest_commit) instead of the full record, for scanning a large "
+                "list to pick one."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List tags in a Bitbucket Data Center repository.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        filter_text: Optional server-side tag-name filter (substring match).
+        order_by: Optional ordering (ALPHABETICAL or MODIFICATION).
+        start: Pagination cursor (offset of the first tag); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of tags to return in this window.
+        summary: When true, tag records carry triage fields only.
+
+    Returns:
+        JSON string with the list of tags plus ``count`` (the size of this window),
+        ``is_last_page``, ``truncated``, and ``next_page_start``; the list is complete
+        when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.list_tags,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        filter_text=filter_text,
+        order_by=order_by,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "tags": [
+            tag.to_summary_dict() if summary else tag.to_simplified_dict()
+            for tag in page.tags
+        ],
+        "count": len(page.tags),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Get Bitbucket Tag", "readOnlyHint": True},
+)
+async def get_tag(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "The tag name (e.g. 'v1.0.0' or 'release/1.0'). Names "
+                "containing slashes are accepted; the name is percent-encoded "
+                "per path component in the request path, so a slash is a "
+                "path separator, not part of a component."
+            ),
+        ),
+    ],
+) -> str:
+    """Get a single tag in a Bitbucket Data Center repository.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        name: The tag name.
+
+    Returns:
+        JSON string with the tag: display id, ref id, latest commit, and the
+        annotated-tag ``hash`` when present.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    tag = await run_bitbucket_fetcher_call(
+        bitbucket.get_tag,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        name=name,
+    )
+    return json.dumps(tag.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Get Bitbucket Default Branch", "readOnlyHint": True},
+)
+async def get_default_branch(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+) -> str:
+    """Get a Bitbucket Data Center repository's default branch.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+
+    Returns:
+        JSON string with the default branch as a minimal ref (display id, ref
+        id, and type). The minimal ref carries no commit SHA.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    branch = await run_bitbucket_fetcher_call(
+        bitbucket.get_default_branch,
+        project_key=project_key,
+        repository_slug=repository_slug,
+    )
+    return json.dumps(branch.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "List Bitbucket Commits", "readOnlyHint": True},
+)
+async def list_commits(
+    ctx: Context,
+    project_key: Annotated[
+        str,
+        Field(
+            description=(
+                "The Bitbucket project key (e.g. 'PROJ'). Use list_projects to "
+                "discover available keys."
+            ),
+        ),
+    ],
+    repository_slug: Annotated[
+        str,
+        Field(
+            description=(
+                "The repository slug (e.g. 'my-repo'). Use list_repositories to "
+                "discover available slugs."
+            ),
+        ),
+    ],
+    since: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional exclusive lower-bound commit SHA or ref to start the "
+                "history from. Applied server-side."
+            ),
+            default=None,
+        ),
+    ] = None,
+    until: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional inclusive upper-bound commit SHA or ref (e.g. a branch "
+                "name like 'main' or a tip SHA). Applied server-side."
+            ),
+            default=None,
+        ),
+    ] = None,
+    path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional path to restrict the history to (file or directory). "
+                "Applied server-side. Required when using 'follow_renames'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    merges: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional merge-commit handling: 'exclude', 'include', or 'only'. "
+                "Any other value is rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    follow_renames: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "When true, follow a file's history across renames. Only valid "
+                "together with a single-file 'path'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    ignore_missing: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "When true, ignore missing commits instead of failing the call."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first commit to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of commits to return in this window. If more "
+                "exist than are returned, the response sets 'truncated' to true "
+                "and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_COMMITS_LIMIT,
+            ge=1,
+            le=MAX_COMMITS_LIMIT,
+        ),
+    ] = DEFAULT_COMMITS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each commit's triage fields (display_id, "
+                "author, author_timestamp, first message line) instead of the "
+                "full record, for scanning a large history to pick one."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List commits in a Bitbucket Data Center repository.
+
+    The history filters ('since', 'until', 'path', 'merges', 'follow_renames')
+    are applied server-side. 'follow_renames' is only valid together with a
+    single-file 'path'.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        since: Optional exclusive lower-bound commit/ref.
+        until: Optional inclusive upper-bound commit/ref (e.g. a branch tip).
+        path: Optional path to restrict the history to.
+        merges: Optional merge-commit handling (exclude, include, or only).
+        follow_renames: When true, follow a file across renames (needs 'path').
+        ignore_missing: When true, ignore missing commits rather than failing.
+        start: Pagination cursor (offset of the first commit); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of commits to return in this window.
+        summary: When true, commit records carry triage fields only.
+
+    Returns:
+        JSON string with the list of commits plus ``count`` (the size of this window),
+        ``is_last_page``, ``truncated``, and ``next_page_start``; the list is complete
+        when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.list_commits,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        since=since,
+        until=until,
+        path=path,
+        merges=merges,
+        follow_renames=follow_renames,
+        ignore_missing=ignore_missing,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "commits": [
+            commit.to_summary_dict() if summary else commit.to_simplified_dict()
+            for commit in page.commits
+        ],
+        "count": len(page.commits),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Get Bitbucket Commit", "readOnlyHint": True},
+)
+async def get_commit(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    commit_id: Annotated[
+        str,
+        Field(
+            description=(
+                "The commit SHA (full or abbreviated). Returned strictly by id."
+            ),
+        ),
+    ],
+) -> str:
+    """Get a single commit by id in a Bitbucket Data Center repository.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        commit_id: The commit SHA (full or abbreviated).
+
+    Returns:
+        JSON string with the commit: id, display id, message, author/committer,
+        timestamps, and parents.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    commit = await run_bitbucket_fetcher_call(
+        bitbucket.get_commit,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        commit_id=commit_id,
+    )
+    return json.dumps(commit.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Browse Bitbucket Source", "readOnlyHint": True},
+)
+async def browse_path(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    path: Annotated[
+        str,
+        Field(
+            description=(
+                "The path to browse, relative to the repository root (e.g. "
+                "'src/app.py' for a file or 'src' for a directory). Empty (the "
+                "default) browses the repository root. Real path separators are "
+                "preserved; '.'/'..' and traversal paths are rejected."
+            ),
+            default="",
+        ),
+    ] = "",
+    at: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional commit SHA, branch, or tag ref to read at. The "
+                "repository's default branch is used when omitted."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the 0-based offset of the first line (file) "
+                "or child (directory) to return. Use 0 (default) for the first "
+                "window, then pass the response's 'next_page_start' to fetch the "
+                "next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of lines (file) or children (directory) to "
+                "return in this window. If more exist, the response sets "
+                "'truncated' to true and 'next_page_start' to the next cursor."
+            ),
+            default=DEFAULT_BROWSE_LIMIT,
+            ge=1,
+            le=MAX_BROWSE_LIMIT,
+        ),
+    ] = DEFAULT_BROWSE_LIMIT,
+) -> str:
+    """Browse a file or directory in a Bitbucket Data Center repository.
+
+    Returns either a directory listing OR a window of a file's text lines from
+    one call. The response's 'type' field ("FILE" or "DIRECTORY") tells which.
+    'at' selects a commit/branch/tag (the default branch otherwise). Page
+    large files or directories by calling again with 'start' set to the returned
+    'next_page_start'. '.'/'..' and traversal paths are rejected. 'count' is the
+    number of items in this window.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        path: The path to browse (empty for the repository root).
+        at: Optional commit/branch/tag ref to read at.
+        start: Pagination cursor (0-based line/child offset); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum lines (file) or children (directory) for this window.
+
+    Returns:
+        JSON string with ``type`` ("FILE"|"DIRECTORY"), ``path``, and either
+        ``lines`` (file) or ``children`` (directory), plus ``binary`` (file
+        only), ``count``, ``is_last_page``, ``truncated``, and
+        ``next_page_start``.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    result = await run_bitbucket_fetcher_call(
+        bitbucket.browse,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        path=path,
+        at=at,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "type": result.kind,
+        "path": result.path,
+        "is_last_page": result.is_last_page,
+        "truncated": result.truncated,
+        "next_page_start": result.next_page_start,
+    }
+    if result.kind == "DIRECTORY":
+        children = result.children or []
+        response_data["children"] = [c.to_simplified_dict() for c in children]
+        response_data["count"] = len(children)
+    else:
+        lines = result.lines or []
+        response_data["lines"] = lines
+        response_data["binary"] = result.binary
+        response_data["count"] = len(lines)
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={"title": "List Bitbucket Pull Requests", "readOnlyHint": True},
+)
+async def list_pull_requests(
+    ctx: Context,
+    project_key: Annotated[
+        str,
+        Field(
+            description=(
+                "The Bitbucket project key (e.g. 'PROJ'). Use list_projects to "
+                "discover available keys."
+            ),
+        ),
+    ],
+    repository_slug: Annotated[
+        str,
+        Field(
+            description=(
+                "The repository slug (e.g. 'my-repo'). Use list_repositories to "
+                "discover available slugs."
+            ),
+        ),
+    ],
+    state: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Filter by pull-request state: 'OPEN' (default), 'DECLINED', "
+                "'MERGED', or 'ALL'. Any other value is rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    direction: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Direction relative to the repository: 'INCOMING' (default) or "
+                "'OUTGOING'. Any other value is rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    at: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional fully-qualified branch ref to filter on (e.g. "
+                "'refs/heads/main')."
+            ),
+            default=None,
+        ),
+    ] = None,
+    order: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Ordering: 'NEWEST' (default) or 'OLDEST'. Any other value is rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    filter_text: Annotated[
+        str | None,
+        Field(
+            description="Optional substring match on PR title or description.",
+            default=None,
+        ),
+    ] = None,
+    draft: Annotated[
+        bool | None,
+        Field(
+            description="Optional filter by draft status.",
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first pull request to "
+                "return. Use 0 (default) for the first window, then pass the "
+                "response's 'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of pull requests to return in this window. If "
+                "more exist than are returned, the response sets 'truncated' to "
+                "true and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_PRS_LIMIT,
+            ge=1,
+            le=MAX_PRS_LIMIT,
+        ),
+    ] = DEFAULT_PRS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each pull request's triage fields (id, "
+                "title, state, author) instead of the full record, for scanning "
+                "a large list to pick one before fetching its full detail."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List pull requests in a Bitbucket Data Center repository.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        state: Optional pull-request state filter.
+        direction: Optional direction relative to the repository.
+        at: Optional fully-qualified branch ref filter.
+        order: Optional ordering.
+        filter_text: Optional substring match on PR title or description.
+        draft: Optional filter by draft status, sent to the server as the
+            lowercase string 'true'/'false'.
+        start: Pagination cursor (offset of the first pull request); 0 for the
+            first window, else a prior response's ``next_page_start``.
+        limit: Maximum number of pull requests to return in this window.
+        summary: When true, pull-request records carry triage fields only.
+
+    Returns:
+        JSON string with the list of pull requests plus ``count`` (the size of this
+        window), ``is_last_page``, ``truncated``, and ``next_page_start``; the list is
+        complete when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.list_pull_requests,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        state=state,
+        direction=direction,
+        at=at,
+        order=order,
+        filter_text=filter_text,
+        draft=draft,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "pull_requests": [
+            pr.to_summary_dict() if summary else pr.to_simplified_dict()
+            for pr in page.pull_requests
+        ],
+        "count": len(page.pull_requests),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={"title": "Get Bitbucket Pull Request", "readOnlyHint": True},
+)
+async def get_pull_request(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+) -> str:
+    """Get a single Bitbucket Data Center pull request's metadata.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+
+    Returns:
+        JSON string with the pull request: metadata, refs, and
+        reviewer/approval state.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    pull_request = await run_bitbucket_fetcher_call(
+        bitbucket.get_pull_request,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+    )
+    return json.dumps(pull_request.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Get Bitbucket Pull Request Commits",
+        "readOnlyHint": True,
+    },
+)
+async def get_pull_request_commits(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first commit to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of commits to return in this window. If more "
+                "exist than are returned, the response sets 'truncated' to true "
+                "and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_COMMITS_LIMIT,
+            ge=1,
+            le=MAX_COMMITS_LIMIT,
+        ),
+    ] = DEFAULT_COMMITS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each commit's triage fields (display_id, "
+                "author, author_timestamp, first message line) instead of the "
+                "full record."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List the commits that make up a Bitbucket Data Center pull request.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        start: Pagination cursor (offset of the first commit); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of commits to return in this window.
+        summary: When true, commit records carry triage fields only.
+
+    Returns:
+        JSON string with the list of commits plus ``count`` (the size of this window),
+        ``is_last_page``, ``truncated``, and ``next_page_start``; the list is complete
+        when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.get_pull_request_commits,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "commits": [
+            commit.to_summary_dict() if summary else commit.to_simplified_dict()
+            for commit in page.commits
+        ],
+        "count": len(page.commits),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Get Bitbucket Pull Request Changes",
+        "readOnlyHint": True,
+    },
+)
+async def get_pull_request_changes(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first changed file to "
+                "return. Use 0 (default) for the first window, then pass the "
+                "response's 'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of changed files to return in this window. If "
+                "more exist than are returned, the response sets 'truncated' to "
+                "true and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_CHANGES_LIMIT,
+            ge=1,
+            le=MAX_CHANGES_LIMIT,
+        ),
+    ] = DEFAULT_CHANGES_LIMIT,
+) -> str:
+    """List the files a Bitbucket Data Center pull request changes.
+
+    Each entry carries the file's 'path', its 'src_path' for a move or copy,
+    the change 'type' (ADD, COPY, DELETE, MODIFY, MOVE, UNKNOWN), and its
+    'node_type'. Use it to pick files for bitbucket_get_pull_request_diff with
+    'path' (and 'src_path') when the whole diff is too large to download.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        start: Pagination cursor (offset of the first file); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of changed files to return in this window.
+
+    Returns:
+        JSON string with the list of ``changes`` plus ``count`` (the size of this
+        window), ``is_last_page``, ``truncated``, and ``next_page_start``; the list is
+        complete when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.get_pull_request_changes,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "changes": [change.to_simplified_dict() for change in page.changes],
+        "count": len(page.changes),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={"title": "Get Bitbucket Pull Request Diff", "readOnlyHint": True},
+)
+async def get_pull_request_diff(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    max_lines_per_file: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum diff lines to return per file (token control). Files "
+                "exceeding this are truncated; the response flags the file with "
+                "'line_truncated' and counts the dropped lines in 'omitted_lines'."
+            ),
+            default=DEFAULT_MAX_LINES_PER_FILE,
+            ge=1,
+            le=MAX_MAX_LINES_PER_FILE,
+        ),
+    ] = DEFAULT_MAX_LINES_PER_FILE,
+    max_files: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of changed files to return (token control). If "
+                "the diff holds more files than this, the response returns the "
+                "first 'max_files' and sets 'truncated' to true. 'total_files' "
+                "counts the files in the diff Bitbucket returned, which a "
+                "'path' filter or Bitbucket's own limits may already have "
+                "reduced."
+            ),
+            default=DEFAULT_MAX_FILES,
+            ge=1,
+            le=MAX_MAX_FILES,
+        ),
+    ] = DEFAULT_MAX_FILES,
+    context_lines: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Number of unchanged context lines to include around each "
+                "change, applied by the server before download. Omit for the "
+                "server default (10). Lower it to shrink a large diff."
+            ),
+            default=None,
+            ge=0,
+            le=MAX_CONTEXT_LINES,
+        ),
+    ] = None,
+    path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Diff a single file at this path instead of the whole pull "
+                "request. Use bitbucket_get_pull_request_changes to list the "
+                "paths. "
+                "'.'/'..' and traversal paths are rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    src_path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The file's previous path when it was moved, copied, or "
+                "renamed (the 'src_path' of its changed-file entry). Only "
+                "valid together with 'path'."
+            ),
+            default=None,
+        ),
+    ] = None,
+) -> str:
+    """Get a Bitbucket Data Center pull request's structured diff.
+
+    Returns the diff as a structured hunk model (files → hunks → segments →
+    lines), not raw unified-diff text. The diff is bounded for token control:
+    each file is capped at ``max_lines_per_file`` lines and the file list is
+    capped at ``max_files``; the top-level ``truncated`` flag reports whether
+    anything was omitted. A hunk whose lines all fell past the per-file cap is
+    kept with its line coordinates and no lines, so the change's location
+    survives. The raw download itself is capped at 10 MiB. When a
+    pull request's diff exceeds that, narrow the request: list its files with
+    bitbucket_get_pull_request_changes and fetch one at a time with 'path', or
+    lower 'context_lines'.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        max_lines_per_file: Per-file diff-line cap.
+        max_files: Maximum number of changed files to return.
+        context_lines: Server-side context lines around each change.
+        path: When set, diff only this file.
+        src_path: The file's previous path for a move or rename (with path).
+
+    Returns:
+        JSON string with the structured diff: ``files``, ``count``,
+        ``total_files``, and ``truncated``.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    diff = await run_bitbucket_fetcher_call(
+        bitbucket.get_pull_request_diff,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        max_lines_per_file=max_lines_per_file,
+        max_files=max_files,
+        context_lines=context_lines,
+        path=path,
+        src_path=src_path,
+    )
+    return json.dumps(diff.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Get Bitbucket Pull Request Activities",
+        "readOnlyHint": True,
+    },
+)
+async def get_pull_request_activities(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first activity entry to "
+                "return. Use 0 (default) for the first window, then pass the "
+                "response's 'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of activity entries to return in this window. If "
+                "more exist than are returned, the response sets 'truncated' to "
+                "true and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_ACTIVITIES_LIMIT,
+            ge=1,
+            le=MAX_ACTIVITIES_LIMIT,
+        ),
+    ] = DEFAULT_ACTIVITIES_LIMIT,
+) -> str:
+    """Get a Bitbucket Data Center pull request's activity timeline.
+
+    The timeline interleaves comments, approvals, merges, rescopes, and other
+    actions in chronological order. For comments only, use
+    get_pull_request_comments.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        start: Pagination cursor (offset of the first activity entry); 0 for the
+            first window, else a prior response's ``next_page_start``.
+        limit: Maximum number of activity entries to return in this window.
+
+    Returns:
+        JSON string with the activity timeline plus ``count`` (the size of this window),
+        ``is_last_page``, ``truncated``, and ``next_page_start``; the timeline is
+        complete when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.get_activities,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "activities": [a.to_simplified_dict() for a in page.activities],
+        "count": len(page.activities),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Get Bitbucket Pull Request Comments",
+        "readOnlyHint": True,
+    },
+)
+async def get_pull_request_comments(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset into the activity timeline to "
+                "resume the comment scan from. Use 0 (default) for the first "
+                "window, then pass the response's 'next_page_start' to fetch the "
+                "next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of activity entries fetched for this window. "
+                "The comment filter applies to the fetched window, so fewer "
+                "comments can be returned. If more entries exist than were "
+                "fetched, the response sets 'truncated' to true and "
+                "'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_ACTIVITIES_LIMIT,
+            ge=1,
+            le=MAX_ACTIVITIES_LIMIT,
+        ),
+    ] = DEFAULT_ACTIVITIES_LIMIT,
+) -> str:
+    """Get the comments on a Bitbucket Data Center pull request.
+
+    A focused view over the activity timeline: only ``COMMENTED`` actions, with
+    the comment payload (text, author, thread state) surfaced. Backed by the same
+    activities endpoint as get_pull_request_activities.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        start: Pagination cursor (offset into the activity timeline); 0 for the
+            first window, else a prior response's ``next_page_start``.
+        limit: Maximum number of activity entries fetched for this window;
+            the comment filter applies to that window.
+
+    Returns:
+        JSON string with the comments plus ``count`` (the size of this window),
+        ``is_last_page``, ``truncated``, and ``next_page_start``; the comments are
+        complete when ``is_last_page`` is true and ``truncated`` is false, and a null
+        ``next_page_start`` with ``truncated`` true cannot be resumed.
+
+        An empty window with ``is_last_page`` false can still precede comments.
+        Each call issues one upstream request and the comment filter narrows
+        that activity window, so a window can hold zero comments while more of
+        the timeline remains. Keep paging with ``start=next_page_start`` until
+        ``is_last_page`` is true before concluding the pull request has no
+        further comments.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.get_activities,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        action="COMMENTED",
+        start=start,
+        limit=limit,
+    )
+    comments = [
+        a.comment.to_simplified_dict() for a in page.activities if a.comment is not None
+    ]
+    response_data: dict[str, object] = {
+        "comments": comments,
+        "count": len(comments),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
