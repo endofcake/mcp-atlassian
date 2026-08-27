@@ -1,6 +1,6 @@
 """Bitbucket Data Center FastMCP server instance and tool definitions.
 
-Exposes read tools for working with a Bitbucket Data Center
+Exposes read and write tools for working with a Bitbucket Data Center
 instance over its OAuth 2.0-authenticated REST API.
 """
 
@@ -46,6 +46,7 @@ from mcp_atlassian.bitbucket.source import (
 from mcp_atlassian.servers.async_utils import run_bitbucket_fetcher_call
 from mcp_atlassian.servers.dependencies import get_bitbucket_fetcher
 from mcp_atlassian.servers.error_handling import ErrorPreservingFastMCP
+from mcp_atlassian.utils.decorators import check_write_access
 
 bitbucket_mcp = ErrorPreservingFastMCP(
     name="Bitbucket MCP Service",
@@ -1624,3 +1625,437 @@ async def get_pull_request_comments(
         "next_page_start": page.next_page_start,
     }
     return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Add Bitbucket Pull Request Comment",
+        "destructiveHint": False,
+    },
+)
+@check_write_access
+async def add_pull_request_comment(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    text: Annotated[
+        str,
+        Field(description="The comment text (Markdown). Must be non-blank."),
+    ],
+    parent_id: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Reply to this comment id. A reply inherits the parent thread's "
+                "anchor, so it cannot be combined with any file/line parameter."
+            ),
+            default=None,
+            ge=1,
+        ),
+    ] = None,
+    file_path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Anchor the comment to this file path (a whole-file comment, or "
+                "a line comment when 'line' is also given). Omit for a general "
+                "pull-request comment."
+            ),
+            default=None,
+        ),
+    ] = None,
+    line: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Anchor to this 1-based line in the diff. Requires 'file_path' "
+                "and 'line_type'. The comment lands on the PR's current "
+                "effective diff (the same diff get_pull_request_diff returns)."
+            ),
+            default=None,
+            ge=1,
+        ),
+    ] = None,
+    line_type: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Diff line kind for a line comment: 'ADDED', 'REMOVED', or "
+                "'CONTEXT' (an unchanged line near the change). Required with "
+                "'line'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    file_type: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Diff side a line comment attaches to: 'FROM' (source) or 'TO' "
+                "(destination). Defaults from 'line_type' (REMOVED→FROM, "
+                "ADDED/CONTEXT→TO) when omitted."
+            ),
+            default=None,
+        ),
+    ] = None,
+    severity: Annotated[
+        str,
+        Field(
+            description=(
+                "'NORMAL' (default) for a comment, or 'BLOCKER' to raise a task "
+                "(a must-resolve item), valid in any comment mode."
+            ),
+            default="NORMAL",
+        ),
+    ] = "NORMAL",
+) -> str:
+    """Add a comment to a Bitbucket Data Center pull request.
+
+    The comment mode follows which optional parameters are supplied: a general
+    comment (text only), a reply ('parent_id'), a whole-file comment
+    ('file_path'), a line comment ('file_path' + 'line' + 'line_type'), or a
+    BLOCKER task ('severity'). Line/file anchors land on the pull request's
+    current effective diff. On Data Center this write needs only REPO_READ
+    permission. Blocked when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        text: The comment text (Markdown); must be non-blank.
+        parent_id: When set, reply to that comment id.
+        file_path: When set, anchor the comment to this file.
+        line: When set (with file_path), anchor to this 1-based diff line.
+        line_type: ADDED/REMOVED/CONTEXT (required with line).
+        file_type: FROM/TO; derived from line_type when omitted.
+        severity: NORMAL (default) or BLOCKER (a must-resolve task).
+
+    Returns:
+        JSON string with the created comment: its 'id' and 'version', plus
+        author/text/thread state.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    comment = await run_bitbucket_fetcher_call(
+        bitbucket.add_comment,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        text=text,
+        parent_id=parent_id,
+        file_path=file_path,
+        line=line,
+        line_type=line_type,
+        file_type=file_type,
+        severity=severity,
+    )
+    return json.dumps(comment.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Set Bitbucket Pull Request Review Status",
+        "destructiveHint": True,
+    },
+)
+@check_write_access
+async def set_pull_request_review_status(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    status: Annotated[
+        str,
+        Field(
+            description=(
+                "The review status to set as the authenticated user: "
+                "'APPROVED', 'NEEDS_WORK' (the UI's 'Request changes'), or "
+                "'UNAPPROVED' (withdraw a prior approval)."
+            ),
+        ),
+    ],
+) -> str:
+    """Set the authenticated user's review status on a pull request.
+
+    Sets the caller's own participant status to 'APPROVED', 'NEEDS_WORK'
+    (request changes), or 'UNAPPROVED' (withdraw approval). On Data Center this
+    needs only REPO_READ. Bitbucket forbids the pull-request **author** from
+    setting a status; that attempt returns a clear error. Blocked when the
+    server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        status: APPROVED, NEEDS_WORK, or UNAPPROVED.
+
+    Returns:
+        JSON string with the confirmed review status.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    participant = await run_bitbucket_fetcher_call(
+        bitbucket.set_review_status,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        status=status,
+    )
+    return json.dumps(participant, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Edit Bitbucket Pull Request Comment",
+        "destructiveHint": True,
+    },
+)
+@check_write_access
+async def edit_pull_request_comment(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    comment_id: Annotated[
+        int,
+        Field(description="The id of the comment to edit.", ge=1),
+    ],
+    text: Annotated[
+        str,
+        Field(description="The new comment text (Markdown). Must be non-blank."),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The comment's current version, from add_pull_request_comment or "
+                "get_pull_request_comments. A 409 means the comment changed "
+                "since you read it. Re-fetch its version and retry."
+            ),
+            ge=0,
+        ),
+    ],
+) -> str:
+    """Edit the text of a Bitbucket Data Center pull-request comment.
+
+    Replaces the comment text via an optimistic-locked update: 'version' must be
+    the comment's current version (from add_pull_request_comment or
+    get_pull_request_comments). A 409 means the comment changed since you read
+    it. Re-fetch the version and retry. Only the comment **author** may edit
+    its text: a non-author attempt returns 401 regardless of permission level.
+    Blocked when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        comment_id: The id of the comment to edit.
+        text: The new comment text (Markdown); must be non-blank.
+        version: The comment's current version (optimistic-lock token).
+
+    Returns:
+        JSON string with the updated comment: its resulting 'version' and text.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    comment = await run_bitbucket_fetcher_call(
+        bitbucket.update_comment,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        comment_id=comment_id,
+        version=version,
+        text=text,
+    )
+    return json.dumps(comment.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Resolve Bitbucket Pull Request Comment Thread",
+        "destructiveHint": True,
+    },
+)
+@check_write_access
+async def resolve_pull_request_comment(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    comment_id: Annotated[
+        int,
+        Field(description="The id of the comment whose thread to resolve.", ge=1),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The comment's current version, from add_pull_request_comment or "
+                "get_pull_request_comments. A 409 means the comment changed "
+                "since you read it. Re-fetch its version and retry."
+            ),
+            ge=0,
+        ),
+    ],
+    resolved: Annotated[
+        bool,
+        Field(
+            description=(
+                "True (default) marks the comment thread resolved; False reopens it."
+            ),
+            default=True,
+        ),
+    ] = True,
+) -> str:
+    """Resolve or reopen a Bitbucket Data Center pull-request comment thread.
+
+    Toggles the comment's thread-resolved state via an optimistic-locked update:
+    'version' must be the comment's current version (from add_pull_request_comment or
+    get_pull_request_comments). A 409 means the comment changed since you read
+    it. Re-fetch the version and retry. This is thread resolution (the common
+    review action), not task resolution. The comment id must be the thread's
+    root comment; the resolved state belongs to the thread as a whole. Blocked
+    when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        comment_id: The id of the comment whose thread to resolve.
+        version: The comment's current version (optimistic-lock token).
+        resolved: True (default) resolves the thread; False reopens it.
+
+    Returns:
+        JSON string with the updated comment: its resulting 'version' and
+        'thread_resolved' state.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    comment = await run_bitbucket_fetcher_call(
+        bitbucket.update_comment,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        comment_id=comment_id,
+        version=version,
+        thread_resolved=resolved,
+    )
+    return json.dumps(comment.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Delete Bitbucket Pull Request Comment",
+        "destructiveHint": True,
+    },
+)
+@check_write_access
+async def delete_pull_request_comment(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    comment_id: Annotated[
+        int,
+        Field(description="The id of the comment to delete.", ge=1),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The comment's current version, from add_pull_request_comment or "
+                "get_pull_request_comments. A 409 may mean the version is stale "
+                "OR the comment has replies (delete does not cascade)."
+            ),
+            ge=0,
+        ),
+    ],
+) -> str:
+    """Delete a Bitbucket Data Center pull-request comment.
+
+    Deletes the comment via an optimistic-locked delete: 'version' must be the
+    comment's current version (from add_pull_request_comment or
+    get_pull_request_comments). Delete does not cascade. A 409 may mean the
+    version is stale, the comment has replies, or the repository is archived.
+    Deleting another user's comment may require elevated (repo-admin)
+    permission and otherwise returns 401/409. Blocked when the server runs
+    with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        comment_id: The id of the comment to delete.
+        version: The comment's current version (optimistic-lock token).
+
+    Returns:
+        JSON string confirming the delete (the deleted 'comment_id').
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    await run_bitbucket_fetcher_call(
+        bitbucket.delete_comment,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        comment_id=comment_id,
+        version=version,
+    )
+    # A 204 has no body to echo, so confirm with the deleted id.
+    return json.dumps({"comment_id": comment_id}, indent=2, ensure_ascii=False)

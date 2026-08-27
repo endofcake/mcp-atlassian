@@ -13,6 +13,12 @@ _VALID_WRITE_ARGUMENTS = {
     "summary": "Policy contract must not create this issue",
     "issue_type": "Task",
 }
+_VALID_BITBUCKET_WRITE_ARGUMENTS = {
+    "project_key": "TEST",
+    "repository_slug": "policy-contract",
+    "pull_request_id": 1,
+    "text": "Policy contract must not post this comment",
+}
 _POLICY_CASES = [
     pytest.param(
         {
@@ -126,6 +132,43 @@ async def test_hidden_tool_cannot_be_called_through_public_client(
     assert "Unknown tool" in unknown_error
     assert hidden_error.replace("jira_create_issue", "<tool>") == (
         unknown_error.replace("jira_no_such_tool", "<tool>")
+    )
+
+
+@pytest.mark.parametrize("policy_env", _POLICY_CASES)
+@pytest.mark.anyio
+@pytest.mark.security_regression
+async def test_hidden_bitbucket_write_cannot_be_called_through_public_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    policy_env: dict[str, str | None],
+) -> None:
+    """The mounted Bitbucket write tools honour the same call-time policy."""
+    _configure_jira(monkeypatch, tmp_path, policy_env)
+
+    main_module = importlib.import_module("mcp_atlassian.servers.main")
+
+    with patch(
+        "mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+        new_callable=AsyncMock,
+        side_effect=AssertionError("hidden write reached the Bitbucket fetcher"),
+    ) as get_bitbucket_fetcher:
+        async with Client(main_module.main_mcp) as client:
+            hidden_call = await client.call_tool_mcp(
+                "bitbucket_add_pull_request_comment", _VALID_BITBUCKET_WRITE_ARGUMENTS
+            )
+            unknown_call = await client.call_tool_mcp("bitbucket_no_such_tool", {})
+
+    get_bitbucket_fetcher.assert_not_awaited()
+    hidden_error = _error_text(hidden_call)
+    unknown_error = _error_text(unknown_call)
+
+    assert _is_error(hidden_call)
+    assert _is_error(unknown_call)
+    assert "Unknown tool" in hidden_error
+    assert "Unknown tool" in unknown_error
+    assert hidden_error.replace("bitbucket_add_pull_request_comment", "<tool>") == (
+        unknown_error.replace("bitbucket_no_such_tool", "<tool>")
     )
 
 
