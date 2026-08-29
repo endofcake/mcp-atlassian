@@ -185,6 +185,57 @@ Registration is rejected with `invalid_redirect_uri` if the two callbacks collid
 preventing a callback loop.
 </Warning>
 
+#### Choosing the upstream provider (one per instance)
+
+The proxy fronts **exactly one** upstream OAuth provider, selected by which
+OAuth client credentials are configured:
+
+- **Atlassian (Jira/Confluence)** — `ATLASSIAN_OAUTH_CLIENT_ID` (or the
+  `JIRA_`/`CONFLUENCE_`-prefixed variants).
+- **Bitbucket Data Center** — `BITBUCKET_OAUTH_CLIENT_ID`. Bitbucket DC is a
+  separate OAuth provider on its own host (an incoming application link serving
+  `/rest/oauth2/latest/*` on the Bitbucket instance), not the Jira/Confluence
+  identity provider.
+
+To front Bitbucket:
+
+```bash
+ATLASSIAN_OAUTH_PROXY_ENABLE=true
+BITBUCKET_URL=https://bitbucket.your-company.com
+BITBUCKET_OAUTH_CLIENT_ID=your_bitbucket_incoming_link_client_id
+BITBUCKET_OAUTH_CLIENT_SECRET=your_bitbucket_incoming_link_client_secret
+BITBUCKET_OAUTH_REDIRECT_URI=https://mcp.example.com/mcp-atlassian/callback
+BITBUCKET_OAUTH_SCOPE=REPO_READ   # required; Bitbucket DC has no default scope
+```
+
+`BITBUCKET_OAUTH_SCOPE` is enforced differently per mode. In proxy mode a
+full Bitbucket OAuth client with an empty scope stops the server at startup.
+In non-proxy (standalone) mode the same misconfiguration does **not** stop
+startup: the Bitbucket config load fails, the server logs the error and
+continues, and the Bitbucket tools are simply absent from the tool list. If
+Bitbucket tools are unexpectedly missing, check the startup log for the
+scope error.
+
+`BITBUCKET_OAUTH_REDIRECT_URI` falls back to `ATLASSIAN_OAUTH_REDIRECT_URI`
+(both address this server, not the upstream). The deployment-level settings
+(`PUBLIC_BASE_URL`, `ATLASSIAN_OAUTH_ALLOWED_CLIENT_REDIRECT_URIS`,
+`ATLASSIAN_OAUTH_ALLOWED_GRANT_TYPES`, `ATLASSIAN_OAUTH_REQUIRE_CONSENT`) keep
+their names and apply regardless of the fronted provider.
+
+<Warning>
+**One provider at a time.** If OAuth client credentials for both the Atlassian
+and Bitbucket families are set while the proxy is enabled, the server refuses
+to start — run a separate server instance per product.
+
+Tokens minted by the proxy belong to the provider it fronts and are refused by
+the other family's tools: **Bitbucket tools do not work behind a
+Jira/Confluence-fronting OAuth proxy, and Jira/Confluence tools do not work
+behind a Bitbucket-fronting proxy.** Calls to the non-fronted service fail with
+a clear error rather than sending the proxy's token to the wrong host. Use a
+separate instance (with its own proxy or direct credentials) for the other
+product.
+</Warning>
+
 ### Bring Your Own Token (BYOT)
 
 If you manage OAuth tokens externally (e.g., through a central identity provider):
