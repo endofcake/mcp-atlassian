@@ -11,8 +11,9 @@
 | `src/mcp_atlassian/` | Library source (Python ≥ 3.10) |
 | `  ├─ jira/` | Jira client + 21 mixins (issues, search, SLA, metrics, …) |
 | `  ├─ confluence/` | Confluence client + 8 mixins (pages, search, analytics, …) |
+| `  ├─ bitbucket/` | Bitbucket Data Center client + 6 mixins (projects, repos, PRs, …) |
 | `  ├─ models/` | Pydantic v2 data models (`ApiModel` base) |
-| `  ├─ servers/` | FastMCP server instances (`jira_mcp`, `confluence_mcp`) |
+| `  ├─ servers/` | FastMCP server instances (`jira_mcp`, `confluence_mcp`, `bitbucket_mcp`) |
 | `  ├─ preprocessing/` | Content conversion (ADF/Storage → Markdown) |
 | `  └─ utils/` | Shared utilities (auth, logging, SSL, decorators) |
 | `tests/` | Pytest suite — unit, integration, real-API validation |
@@ -22,8 +23,8 @@
 
 ## Architecture
 
-- **Mixin composition**: `JiraFetcher` composes 21 mixins, `ConfluenceFetcher` composes 8. Client inheritance is transitive through mixins.
-- **FastMCP servers**: `servers/main.py` → lifespan → dependency injection via `get_jira_fetcher(ctx)` / `get_confluence_fetcher(ctx)`.
+- **Mixin composition**: `JiraFetcher` composes 21 mixins, `ConfluenceFetcher` composes 8, `BitbucketFetcher` composes 6. Client inheritance is transitive through mixins.
+- **FastMCP servers**: `servers/main.py` → lifespan → dependency injection via `get_jira_fetcher(ctx)` / `get_confluence_fetcher(ctx)` / `get_bitbucket_fetcher(ctx)`.
 - **Tool naming**: `{service}_{action}_{target}` (e.g., `jira_create_issue`, `confluence_get_page`).
 - **Config**: Environment-based `from_env()` factory on `JiraConfig` / `ConfluenceConfig` dataclasses.
 - **Auth**: Basic (Cloud + Server/DC), PAT (Server/DC), OAuth 2.0 (Cloud + Server/DC) — with multi-tenant header support.
@@ -54,7 +55,7 @@ uv run pytest --cov=src/mcp_atlassian --cov-report=term-missing  # coverage
 3. **Type safety**: All functions require type hints
 4. **Testing**: New features need tests, bug fixes need regression tests
 5. **Commits**: Use trailers for attribution, never mention tools/AI
-6. **Commit types**: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `ci` — scopes: `jira`, `confluence`, `server`, `auth`, `docker`, `docs`
+6. **Commit types**: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `perf`, `ci` — scopes: `jira`, `confluence`, `bitbucket`, `server`, `auth`, `docker`, `docs`
 7. **File hygiene**: Prefer editing existing files over creating new ones
 8. **Tool docs**: After changing tool signatures or registrations, run `uv run python scripts/generate_tool_docs.py` and commit the diff; CI (`Docs / check`) enforces this
 

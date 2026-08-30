@@ -268,8 +268,10 @@ Add custom HTTP headers to all API requests. Useful in corporate environments.
 |----------|-------------|
 | `JIRA_CUSTOM_HEADERS` | Custom headers for Jira requests |
 | `CONFLUENCE_CUSTOM_HEADERS` | Custom headers for Confluence requests |
+| `BITBUCKET_CUSTOM_HEADERS` | Custom headers for Bitbucket requests |
 | `JIRA_PASSTHROUGH_HEADERS` | Incoming MCP request header names to pass through to Jira requests |
 | `CONFLUENCE_PASSTHROUGH_HEADERS` | Incoming MCP request header names to pass through to Confluence requests |
+| `BITBUCKET_PASSTHROUGH_HEADERS` | Incoming MCP request header names to pass through to Bitbucket requests |
 
 **Format:** Static custom headers use comma-separated `key=value` pairs.
 Passthrough headers use comma-separated header names.
@@ -287,11 +289,30 @@ Passthrough headers are request-scoped and only apply to HTTP transports. If a
 passthrough header name conflicts with a static custom header, the incoming
 request header value is used for that request.
 
+Some header names are ignored even when listed: `Authorization`,
+`Proxy-Authorization`, `Host`, and hop-by-hop headers (such as `Connection`,
+`Transfer-Encoding`, `Keep-Alive`) are dropped with a warning, because
+forwarding them would replace the session's own upstream credential or corrupt
+the upstream request. `Authorization` is forwarded only in external auth mode,
+where the incoming bearer is the intended upstream credential. Deployments
+that previously listed `Authorization` for a non-external session were
+forwarding the wrong token; that configuration is now ignored rather than
+honored.
+
 Only configure headers that are set by a trusted proxy or gateway. Clients can
 control any passthrough header they are allowed to send to the MCP endpoint.
 When external auth uses a client-supplied Jira or Confluence URL, configure
 `MCP_ALLOWED_URL_DOMAINS`; dynamic URLs are rejected without this allowlist so
 trusted session headers cannot be forwarded to an attacker-controlled host.
+
+Each `MCP_ALLOWED_URL_DOMAINS` entry is a suffix match that also trusts every
+subdomain beneath it — list full hostnames (`jira.corp.example.com`), never a
+bare apex or label. The configured `JIRA_URL` / `CONFLUENCE_URL` /
+`BITBUCKET_URL` hosts, by contrast, are trusted exactly, not as suffixes: a
+deployment whose load balancer redirects to per-node private hostnames (for
+example `node1.jira.internal`) must add those hostnames to
+`MCP_ALLOWED_URL_DOMAINS`, or requests to them are refused with a non-global
+address rejection.
 
 <Note>
 Header values are masked in debug logs for security.

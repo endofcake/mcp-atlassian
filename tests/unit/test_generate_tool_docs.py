@@ -117,10 +117,12 @@ def _render_override_category(
         total_tools=len(tool_names),
         jira_tools=len(tool_names) if category.startswith("jira-") else 0,
         confluence_tools=(len(tool_names) if category.startswith("confluence-") else 0),
+        bitbucket_tools=(len(tool_names) if category.startswith("bitbucket-") else 0),
         core_tools=0,
         total_toolsets=0,
         jira_toolsets=0,
         confluence_toolsets=0,
+        bitbucket_toolsets=0,
         core_toolsets=0,
     )
     output_dir = tmp_path / "docs" / "tools"
@@ -281,10 +283,12 @@ def test_cloud_only_guidance_survives_page_regeneration(
         total_tools=5,
         jira_tools=0,
         confluence_tools=5,
+        bitbucket_tools=0,
         core_tools=0,
         total_toolsets=2,
         jira_toolsets=0,
         confluence_toolsets=2,
+        bitbucket_toolsets=0,
         core_toolsets=0,
     )
 
@@ -363,6 +367,7 @@ def _write_count_documents(root: Path, counts: ToolCounts) -> None:
         f"MCP Atlassian provides **{counts.total_tools} tools**.\n"
         f"**Jira Toolsets ({counts.jira_toolsets}):**\n"
         f"**Confluence Toolsets ({counts.confluence_toolsets}):**\n"
+        f"**Bitbucket Toolsets ({counts.bitbucket_toolsets}):**\n"
         f"# Enable all toolsets ({counts.total_tools} tools)\n"
     )
     (root / "docs" / "configuration.mdx").write_text(
@@ -370,6 +375,12 @@ def _write_count_documents(root: Path, counts: ToolCounts) -> None:
         f"{counts.core_toolsets} core toolsets)\n"
         f"In v0.22.0, the default will change from all toolsets to "
         f"{counts.core_toolsets} core toolsets only.\n"
+    )
+    toolsets_module = root / "src" / "mcp_atlassian" / "utils" / "toolsets.py"
+    toolsets_module.parent.mkdir(parents=True)
+    toolsets_module.write_text(
+        f'"""Groups {counts.total_tools} tools into {counts.total_toolsets} '
+        'named toolsets."""\n'
     )
 
 
@@ -401,6 +412,18 @@ def _write_count_documents(root: Path, counts: ToolCounts) -> None:
             "to 30 core toolsets only",
             "core_toolsets",
         ),
+        (
+            "src/mcp_atlassian/utils/toolsets.py",
+            "Groups 100 tools into 30",
+            "Groups 30 tools into 30",
+            "total_tools",
+        ),
+        (
+            "src/mcp_atlassian/utils/toolsets.py",
+            "Groups 100 tools into 30",
+            "Groups 100 tools into 100",
+            "total_toolsets",
+        ),
     ],
 )
 def test_check_counts_rejects_valid_number_in_wrong_context(
@@ -417,10 +440,12 @@ def test_check_counts_rejects_valid_number_in_wrong_context(
         total_tools=100,
         jira_tools=60,
         confluence_tools=40,
+        bitbucket_tools=0,
         core_tools=20,
         total_toolsets=30,
         jira_toolsets=18,
         confluence_toolsets=12,
+        bitbucket_toolsets=3,
         core_toolsets=6,
     )
     _write_count_documents(tmp_path, counts)
@@ -446,10 +471,12 @@ def test_check_mode_rejects_stale_warning_core_toolset_count(
         total_tools=100,
         jira_tools=60,
         confluence_tools=40,
+        bitbucket_tools=0,
         core_tools=20,
         total_toolsets=30,
         jira_toolsets=18,
         confluence_toolsets=12,
+        bitbucket_toolsets=3,
         core_toolsets=6,
     )
     _write_count_documents(tmp_path, counts)
@@ -490,10 +517,12 @@ def test_check_generated_pages_detects_stale_toolset_membership(
         total_tools=1,
         jira_tools=1,
         confluence_tools=0,
+        bitbucket_tools=0,
         core_tools=1,
         total_toolsets=2,
         jira_toolsets=1,
         confluence_toolsets=1,
+        bitbucket_toolsets=0,
         core_toolsets=2,
     )
     category_docs = {

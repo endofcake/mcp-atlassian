@@ -1,0 +1,19 @@
+---
+title: "Bitbucket Projects"
+description: "List Bitbucket Data Center projects"
+---
+
+### List Bitbucket Projects
+
+List Bitbucket Data Center projects visible to the authenticated user.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `name` | `string` | No | Optional server-side filter on project name. The match semantics (substring vs exact) depend on the instance, so if you get fewer results than expected, check 'is_last_page' and page further before concluding a project does not exist. |
+| `start` | `integer` | No | Pagination cursor: the offset of the first project to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of projects fetched for this window. A BITBUCKET_PROJECTS_FILTER allowlist configured on this MCP server applies to the fetched window, so fewer projects can be returned. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
+| `summary` | `boolean` | No | When true, return only each project's identity fields (key, name) instead of the full record, for scanning a large list to pick one before fetching its full detail. |
+
+---

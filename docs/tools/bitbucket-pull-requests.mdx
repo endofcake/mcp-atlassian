@@ -1,0 +1,220 @@
+---
+title: "Bitbucket Pull Requests"
+description: "Pull requests, diffs, activity timelines, comments, and reviews"
+---
+
+### List Bitbucket Pull Requests
+
+List pull requests in a Bitbucket Data Center repository.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). Use list_projects to discover available keys. |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). Use list_repositories to discover available slugs. |
+| `state` | `string` | No | Filter by pull-request state: 'OPEN' (default), 'DECLINED', 'MERGED', or 'ALL'. Any other value is rejected. |
+| `direction` | `string` | No | Direction relative to the repository: 'INCOMING' (default) or 'OUTGOING'. Any other value is rejected. |
+| `at` | `string` | No | Optional fully-qualified branch ref to filter on (e.g. 'refs/heads/main'). |
+| `order` | `string` | No | Ordering: 'NEWEST' (default) or 'OLDEST'. Any other value is rejected. |
+| `filter_text` | `string` | No | Optional substring match on PR title or description. |
+| `draft` | `boolean` | No | Optional filter by draft status. |
+| `start` | `integer` | No | Pagination cursor: the offset of the first pull request to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of pull requests to return in this window. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
+| `summary` | `boolean` | No | When true, return only each pull request's triage fields (id, title, state, author) instead of the full record, for scanning a large list to pick one before fetching its full detail. |
+
+---
+
+### Get Bitbucket Pull Request
+
+Get a single Bitbucket Data Center pull request's metadata.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+
+---
+
+### Get Bitbucket Pull Request Commits
+
+List the commits that make up a Bitbucket Data Center pull request.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `start` | `integer` | No | Pagination cursor: the offset of the first commit to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of commits to return in this window. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
+| `summary` | `boolean` | No | When true, return only each commit's triage fields (display_id, author, author_timestamp, first message line) instead of the full record. |
+
+---
+
+### Get Bitbucket Pull Request Changes
+
+List the files a Bitbucket Data Center pull request changes.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `start` | `integer` | No | Pagination cursor: the offset of the first changed file to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of changed files to return in this window. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
+
+---
+
+### Get Bitbucket Pull Request Diff
+
+Get a Bitbucket Data Center pull request's structured diff.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `max_lines_per_file` | `integer` | No | Maximum diff lines to return per file (token control). Files exceeding this are truncated; the response flags the file with 'line_truncated' and counts the dropped lines in 'omitted_lines'. |
+| `max_files` | `integer` | No | Maximum number of changed files to return (token control). If the diff holds more files than this, the response returns the first 'max_files' and sets 'truncated' to true. 'total_files' counts the files in the diff Bitbucket returned, which a 'path' filter or Bitbucket's own limits may already have reduced. |
+| `context_lines` | `integer` | No | Number of unchanged context lines to include around each change, applied by the server before download. Omit for the server default (10). Lower it to shrink a large diff. |
+| `path` | `string` | No | Diff a single file at this path instead of the whole pull request. Use bitbucket_get_pull_request_changes to list the paths. '.'/'..' and traversal paths are rejected. |
+| `src_path` | `string` | No | The file's previous path when it was moved, copied, or renamed (the 'src_path' of its changed-file entry). Only valid together with 'path'. |
+
+---
+
+### Get Bitbucket Pull Request Activities
+
+Get a Bitbucket Data Center pull request's activity timeline.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `start` | `integer` | No | Pagination cursor: the offset of the first activity entry to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of activity entries to return in this window. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
+
+---
+
+### Get Bitbucket Pull Request Comments
+
+Get the comments on a Bitbucket Data Center pull request.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `start` | `integer` | No | Pagination cursor: the offset into the activity timeline to resume the comment scan from. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of activity entries fetched for this window. The comment filter applies to the fetched window, so fewer comments can be returned. If more entries exist than were fetched, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
+
+---
+
+### Add Bitbucket Pull Request Comment
+
+Add a comment to a Bitbucket Data Center pull request.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `text` | `string` | Yes | The comment text (Markdown). Must be non-blank. |
+| `parent_id` | `integer` | No | Reply to this comment id. A reply inherits the parent thread's anchor, so it cannot be combined with any file/line parameter. |
+| `file_path` | `string` | No | Anchor the comment to this file path (a whole-file comment, or a line comment when 'line' is also given). Omit for a general pull-request comment. |
+| `line` | `integer` | No | Anchor to this 1-based line in the diff. Requires 'file_path' and 'line_type'. The comment lands on the PR's current effective diff (the same diff get_pull_request_diff returns). |
+| `line_type` | `string` | No | Diff line kind for a line comment: 'ADDED', 'REMOVED', or 'CONTEXT' (an unchanged line near the change). Required with 'line'. |
+| `file_type` | `string` | No | Diff side a line comment attaches to: 'FROM' (source) or 'TO' (destination). Defaults from 'line_type' (REMOVED→FROM, ADDED/CONTEXT→TO) when omitted. |
+| `severity` | `string` | No | 'NORMAL' (default) for a comment, or 'BLOCKER' to raise a task (a must-resolve item), valid in any comment mode. |
+
+---
+
+### Set Bitbucket Pull Request Review Status
+
+Set the authenticated user's review status on a pull request.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `status` | `string` | Yes | The review status to set as the authenticated user: 'APPROVED', 'NEEDS_WORK' (the UI's 'Request changes'), or 'UNAPPROVED' (withdraw a prior approval). |
+
+---
+
+### Edit Bitbucket Pull Request Comment
+
+Edit the text of a Bitbucket Data Center pull-request comment.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `comment_id` | `integer` | Yes | The id of the comment to edit. |
+| `text` | `string` | Yes | The new comment text (Markdown). Must be non-blank. |
+| `version` | `integer` | Yes | The comment's current version, from add_pull_request_comment or get_pull_request_comments. A 409 means the comment changed since you read it. Re-fetch its version and retry. |
+
+---
+
+### Resolve Bitbucket Pull Request Comment Thread
+
+Resolve or reopen a Bitbucket Data Center pull-request comment thread.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `comment_id` | `integer` | Yes | The id of the comment whose thread to resolve. |
+| `version` | `integer` | Yes | The comment's current version, from add_pull_request_comment or get_pull_request_comments. A 409 means the comment changed since you read it. Re-fetch its version and retry. |
+| `resolved` | `boolean` | No | True (default) marks the comment thread resolved; False reopens it. |
+
+---
+
+### Delete Bitbucket Pull Request Comment
+
+Delete a Bitbucket Data Center pull-request comment.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `comment_id` | `integer` | Yes | The id of the comment to delete. |
+| `version` | `integer` | Yes | The comment's current version, from add_pull_request_comment or get_pull_request_comments. A 409 may mean the version is stale OR the comment has replies (delete does not cascade). |
+
+---

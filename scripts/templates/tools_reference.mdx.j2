@@ -1,9 +1,9 @@
 ---
 title: "Tools Reference"
-description: "Overview of all {{ counts.total_tools }} MCP tools for Jira and Confluence — organized by category with quick links"
+description: "Overview of all {{ counts.total_tools }} MCP tools for Jira, Confluence, and Bitbucket — organized by category with quick links"
 ---
 
-MCP Atlassian provides **{{ counts.total_tools }} tools** for interacting with Jira and Confluence. Tools are organized by category below.
+MCP Atlassian provides **{{ counts.total_tools }} tools** for interacting with Jira, Confluence, and Bitbucket Data Center. Tools are organized by category below.
 
 ## Jira Tools
 
@@ -57,6 +57,22 @@ MCP Atlassian provides **{{ counts.total_tools }} tools** for interacting with J
   </Card>
 </CardGroup>
 
+## Bitbucket Tools
+
+Bitbucket tools work with Bitbucket Data Center.
+
+<CardGroup cols={2}>
+  <Card title="Projects" icon="folder-tree" href="/docs/tools/bitbucket-projects">
+    List Bitbucket Data Center projects
+  </Card>
+  <Card title="Repositories" icon="code-branch" href="/docs/tools/bitbucket-repositories">
+    Repositories, branches, tags, commits, source browsing
+  </Card>
+  <Card title="Pull Requests" icon="code-pull-request" href="/docs/tools/bitbucket-pull-requests">
+    Pull requests, diffs, comments, and reviews
+  </Card>
+</CardGroup>
+
 ## Tool Access Control
 
 ### Toolset Groups
@@ -76,6 +92,14 @@ Toolsets group related tools for easier management via `TOOLSETS` env var or `--
 | Toolset | Core | Tools |
 |---------|:----:|-------|
 {% for toolset in toolsets.confluence -%}
+| `{{ toolset.name }}` | {{ "Yes" if toolset.core else "No" }} | {% for tool_name in toolset.tools %}`{{ tool_name }}`{% if not loop.last %}, {% endif %}{% endfor %} |
+{% endfor %}
+
+**Bitbucket Toolsets ({{ counts.bitbucket_toolsets }}):**
+
+| Toolset | Core | Tools |
+|---------|:----:|-------|
+{% for toolset in toolsets.bitbucket -%}
 | `{{ toolset.name }}` | {{ "Yes" if toolset.core else "No" }} | {% for tool_name in toolset.tools %}`{{ tool_name }}`{% if not loop.last %}, {% endif %}{% endfor %} |
 {% endfor %}
 

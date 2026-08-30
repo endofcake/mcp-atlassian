@@ -92,7 +92,7 @@ Documentation is also available in [llms.txt format](https://llmstxt.org/), whic
 | [Authentication](https://mcp-atlassian.soomiles.com/docs/authentication) | API tokens, PAT, OAuth 2.0 |
 | [Configuration](https://mcp-atlassian.soomiles.com/docs/configuration) | IDE setup, environment variables |
 | [HTTP Transport](https://mcp-atlassian.soomiles.com/docs/http-transport) | SSE, streamable-http, multi-user |
-| [Tools Reference](https://mcp-atlassian.soomiles.com/docs/tools-reference) | All Jira & Confluence tools |
+| [Tools Reference](https://mcp-atlassian.soomiles.com/docs/tools-reference) | All Jira, Confluence & Bitbucket tools |
 | [Troubleshooting](https://mcp-atlassian.soomiles.com/docs/troubleshooting) | Common issues & debugging |
 
 ## Compatibility
@@ -103,18 +103,20 @@ Documentation is also available in [llms.txt format](https://llmstxt.org/), whic
 | Confluence | Server/Data Center | Supported (v6.0+) |
 | Jira | Cloud | Fully supported |
 | Jira | Server/Data Center | Supported (v8.14+) |
+| Bitbucket | Cloud | Not supported |
+| Bitbucket | Data Center | Supported (v9.0+, OAuth 2.0) |
 
 ## Key Tools
 
-| Jira | Confluence |
-|------|------------|
-| `jira_search` - Search with JQL | `confluence_search` - Search with CQL |
-| `jira_get_issue` - Get issue details | `confluence_get_page` - Get page content |
-| `jira_create_issue` - Create issues | `confluence_create_page` - Create pages |
-| `jira_update_issue` - Update issues | `confluence_update_page` - Update pages |
-| `jira_transition_issue` - Change status | `confluence_add_comment` - Add comments |
+| Jira | Confluence | Bitbucket (Data Center) |
+|------|------------|-------------------------|
+| `jira_search` - Search with JQL | `confluence_search` - Search with CQL | `bitbucket_list_pull_requests` - List PRs |
+| `jira_get_issue` - Get issue details | `confluence_get_page` - Get page content | `bitbucket_get_pull_request_diff` - Get PR diff |
+| `jira_create_issue` - Create issues | `confluence_create_page` - Create pages | `bitbucket_add_pull_request_comment` - Comment on PRs |
+| `jira_update_issue` - Update issues | `confluence_update_page` - Update pages | `bitbucket_browse_path` - Browse source |
+| `jira_transition_issue` - Change status | `confluence_add_comment` - Add comments | `bitbucket_list_commits` - List commits |
 
-**98 tools total** — See [Tools Reference](https://mcp-atlassian.soomiles.com/docs/tools-reference) for the complete list.
+**119 tools total** — See [Tools Reference](https://mcp-atlassian.soomiles.com/docs/tools-reference) for the complete list.
 
 ## Security
 
