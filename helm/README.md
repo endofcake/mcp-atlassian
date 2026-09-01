@@ -59,10 +59,112 @@ See the `values.yaml` file for all configuration options.
 - **authMode**: `api-token`, `personal-token`, `oauth`, `byot`, or `external`
 - **transport**: `stdio`, `sse`, or `streamable-http`
 - **confluence/jira.enabled**: Enable/disable Confluence or Jira integration
+- **bitbucket.enabled**: Enable Bitbucket Data Center integration (own auth mode, see below)
 - **config.readOnlyMode**: Disable all write operations
 - **persistence.enabled**: Enable OAuth token persistence
 - **oauthProxy.enabled**: Expose MCP OAuth discovery + DCR routes (opt-in)
 - **oauthClientStorage.mode**: `default` (FastMCP storage) or `factory` (custom)
+
+### Bitbucket Data Center
+
+Bitbucket support targets Bitbucket Data Center (self-hosted) only; Bitbucket
+Cloud is not supported. Bitbucket is configured independently of Jira and
+Confluence: `bitbucket.authMode` is separate from the top-level `authMode` and
+accepts `oauth` (client credentials from an incoming application link on the
+Bitbucket instance) or `byot` (a pre-existing access token).
+
+```yaml
+bitbucket:
+  enabled: true
+  url: "https://bitbucket.your-company.com"
+  authMode: oauth
+  oauthClientId: "client-id-from-application-link"
+  oauthClientSecret: "client-secret"
+  oauthRedirectUri: "https://mcp.your-company.com/callback"
+  oauthScope: "REPO_READ"
+```
+
+Client credentials alone do not produce an access token: at call time a token
+source must still supply one — the OAuth proxy, a per-request bearer token
+forwarded by the caller, or a pre-seeded token cache. Without one, the first
+tool call fails.
+
+Or with a pre-existing token:
+
+```yaml
+bitbucket:
+  enabled: true
+  url: "https://bitbucket.your-company.com"
+  authMode: byot
+  oauthAccessToken: "existing-access-token"
+```
+
+The chart validates this configuration at render time: enabling Bitbucket
+without a `url`, using an unrecognised `authMode`, omitting the OAuth client
+id or secret, leaving `oauthScope` empty (Bitbucket Data Center has no default
+OAuth scope), or omitting the `byot` access token each fail
+`helm install` / `helm template` with a descriptive error instead of deploying
+a pod that crashloops or silently disables Bitbucket. A value made of
+whitespace counts as omitted, and surrounding whitespace on the `url`, the
+OAuth client id, secret, redirect URI, and scope, and the access token is
+trimmed before rendering. A numeric value is rendered as its string form.
+The chart also rejects
+enabling Bitbucket while `oauthProxy.enabled` is set and Jira or Confluence is
+configured (enabled with a nonblank `url`), whatever the top-level `authMode`,
+because the proxy can serve only one provider family (see the provider-family
+note below).
+
+With `oauthProxy.enabled: true`, the chart also checks that the proxy it was
+asked for can run. Bitbucket must use `authMode: oauth` (under `byot` there
+are no client credentials, and the server starts with the proxy disabled),
+`oauthRedirectUri` must be nonblank (the chart requires it explicitly rather
+than relying on the server's fallback to the top-level `oauth.redirectUri`;
+a value made of whitespace registers an unusable redirect), and the
+top-level `oauth.clientId` must be empty, whitespace included, when the
+top-level `authMode` is `oauth` (two sets of proxy credentials make the
+server refuse to start). Each of these fails the render with a message
+naming the value to change.
+
+As with the Jira/Confluence equivalents, only set
+`bitbucket.passthroughHeaders` behind a trusted gateway that authenticates
+every MCP request and overwrites the configured headers (see "External proxy
+authentication" below); on a directly reachable deployment it lets clients
+supply those headers themselves.
+
+> **Note — one provider family per OAuth proxy:** when the MCP OAuth proxy
+> (`oauthProxy.enabled: true`) is in use, it fronts exactly one provider
+> family: either Bitbucket, or Jira/Confluence — never both in the same
+> deployment. Bitbucket tools do not work behind an OAuth proxy configured
+> for Jira/Confluence (and vice versa): the proxy's tokens are rejected for
+> the family it does not front, leaving those tools visible but unusable.
+> The chart enforces this at render time — with `oauthProxy.enabled: true`,
+> enabling Bitbucket (either `authMode`) alongside a configured Jira or
+> Confluence (enabled with a nonblank `url`) fails the render, whatever the
+> top-level `authMode` says. A Bitbucket-only release is not affected: Jira
+> and Confluence are enabled by default with an empty `url`, and an empty
+> `url` counts as unused. To serve both families through OAuth proxies, run
+> two releases. A Bitbucket release behind the proxy must use
+> `bitbucket.authMode: oauth` with a nonblank `oauthRedirectUri`, and must
+> leave the top-level `oauth.clientId` empty.
+
+> **Note — shared HTTP-hardening budget:** the optional `ATLASSIAN_*` retry,
+> rate-limit, concurrency, and circuit-breaker settings
+> (`ATLASSIAN_RETRY_*`, `ATLASSIAN_REQUESTS_PER_SECOND`,
+> `ATLASSIAN_MAX_CONCURRENT_REQUESTS`, `ATLASSIAN_CIRCUIT_BREAKER_*`) are
+> process-wide: one budget shared by every enabled service in the pod. With
+> them set, Bitbucket traffic counts against the same budget as Jira and
+> Confluence. Because they are global rather than per-service, they are not
+> chart values; set them through `extraEnv`:
+
+```yaml
+extraEnv:
+  - name: ATLASSIAN_REQUESTS_PER_SECOND
+    value: "5"
+  - name: ATLASSIAN_MAX_CONCURRENT_REQUESTS
+    value: "8"
+  - name: ATLASSIAN_RETRY_TOTAL
+    value: "3"
+```
 
 ### External proxy authentication
 
@@ -103,6 +205,9 @@ proxy:
     wpad:
       enabled: true
       url: "http://confluence-wpad.example.com/wpad.dat"
+  bitbucket:
+    wpad:
+      enabled: false
 ```
 
 This configures the related proxy environment variables when set, including:
@@ -111,6 +216,7 @@ This configures the related proxy environment variables when set, including:
 - `ATLASSIAN_PROXY_WPAD_ENABLE`, `ATLASSIAN_PROXY_WPAD_URL`
 - `JIRA_PROXY_WPAD_ENABLE`, `JIRA_PROXY_WPAD_URL`
 - `CONFLUENCE_PROXY_WPAD_ENABLE`, `CONFLUENCE_PROXY_WPAD_URL`
+- `BITBUCKET_PROXY_WPAD_ENABLE`, `BITBUCKET_PROXY_WPAD_URL`
 
 PAC/WPAD remains opt-in and is only used when no explicit proxy is configured.
 

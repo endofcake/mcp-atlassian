@@ -1,3 +1,5 @@
+{{- $bitbucket := .Values.bitbucket | default dict }}
+{{- include "mcp-atlassian.validateBitbucket" . }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -172,6 +174,69 @@ spec:
         {{- end }}
         {{- end }}
 
+        # Bitbucket Data Center Configuration
+        {{- if $bitbucket.enabled }}
+        - name: BITBUCKET_URL
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-url
+        {{- if eq $bitbucket.authMode "oauth" }}
+        - name: BITBUCKET_OAUTH_CLIENT_ID
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-client-id
+        - name: BITBUCKET_OAUTH_CLIENT_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-client-secret
+        - name: BITBUCKET_OAUTH_REDIRECT_URI
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-redirect-uri
+        - name: BITBUCKET_OAUTH_SCOPE
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-scope
+        {{- else if eq $bitbucket.authMode "byot" }}
+        - name: BITBUCKET_OAUTH_ACCESS_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-oauth-access-token
+        {{- end }}
+        # Always emitted so a YAML boolean `false` (not just the string
+        # "false") reaches the server; gating on truthiness would make the
+        # verification opt-out unreachable.
+        - name: BITBUCKET_SSL_VERIFY
+          value: {{ $bitbucket.sslVerify | quote }}
+        {{- if $bitbucket.projectsFilter }}
+        - name: BITBUCKET_PROJECTS_FILTER
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-projects-filter
+        {{- end }}
+        {{- if $bitbucket.customHeaders }}
+        - name: BITBUCKET_CUSTOM_HEADERS
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-custom-headers
+        {{- end }}
+        {{- if $bitbucket.passthroughHeaders }}
+        - name: BITBUCKET_PASSTHROUGH_HEADERS
+          valueFrom:
+            configMapKeyRef:
+              name: {{ include "mcp-atlassian.fullname" . }}
+              key: bitbucket-passthrough-headers
+        {{- end }}
+        {{- end }}
+
         # OAuth Configuration
         {{- if or (eq .Values.authMode "oauth") (eq .Values.authMode "byot") }}
         - name: ATLASSIAN_OAUTH_CLOUD_ID
@@ -307,6 +372,28 @@ spec:
         - name: JIRA_PROXY_WPAD_URL
           value: {{ .Values.proxy.jira.wpad.url | quote }}
         {{- end }}
+        {{- $bitbucketProxy := .Values.proxy.bitbucket | default dict }}
+        {{- $bitbucketWpad := $bitbucketProxy.wpad | default dict }}
+        {{- if $bitbucketProxy.http }}
+        - name: BITBUCKET_HTTP_PROXY
+          value: {{ $bitbucketProxy.http | quote }}
+        {{- end }}
+        {{- if $bitbucketProxy.https }}
+        - name: BITBUCKET_HTTPS_PROXY
+          value: {{ $bitbucketProxy.https | quote }}
+        {{- end }}
+        {{- if $bitbucketProxy.noProxy }}
+        - name: BITBUCKET_NO_PROXY
+          value: {{ $bitbucketProxy.noProxy | quote }}
+        {{- end }}
+        {{- if ne $bitbucketWpad.enabled nil }}
+        - name: BITBUCKET_PROXY_WPAD_ENABLE
+          value: {{ ternary "true" "false" $bitbucketWpad.enabled | quote }}
+        {{- end }}
+        {{- if $bitbucketWpad.url }}
+        - name: BITBUCKET_PROXY_WPAD_URL
+          value: {{ $bitbucketWpad.url | quote }}
+        {{- end }}
         {{- end }}
 
         # Server Configuration
@@ -335,7 +422,7 @@ spec:
         resources:
           {{- toYaml .Values.resources | nindent 12 }}
         volumeMounts:
-        {{- if and (eq .Values.authMode "oauth") .Values.persistence.enabled }}
+        {{- if include "mcp-atlassian.persistOAuthTokens" . }}
         - name: oauth-tokens
           mountPath: /home/app/.mcp-atlassian
         {{- end }}
@@ -343,7 +430,7 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
       volumes:
-      {{- if and (eq .Values.authMode "oauth") .Values.persistence.enabled }}
+      {{- if include "mcp-atlassian.persistOAuthTokens" . }}
       - name: oauth-tokens
         persistentVolumeClaim:
           claimName: {{ if .Values.persistence.existingClaim }}{{ .Values.persistence.existingClaim }}{{- else }}{{ include "mcp-atlassian.fullname" . }}{{- end }}

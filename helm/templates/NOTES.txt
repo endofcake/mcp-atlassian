@@ -1,3 +1,5 @@
+{{- $bitbucket := .Values.bitbucket | default dict -}}
+{{- include "mcp-atlassian.validateBitbucket" . -}}
 🎉 MCP Atlassian has been deployed!
 
 Release: {{ .Release.Name }}
@@ -77,10 +79,29 @@ Jira: ✅ Enabled ({{ .Values.jira.url | default "URL not set" }})
 {{- else }}
 Jira: ❌ Disabled
 {{- end }}
+{{- if $bitbucket.enabled }}
+Bitbucket: ✅ Enabled ({{ $bitbucket.url | default "URL not set" }}, auth: {{ $bitbucket.authMode }})
+{{- else }}
+Bitbucket: ❌ Disabled
+{{- end }}
 {{- if .Values.config.readOnlyMode }}
 Read-Only Mode: ✅ Enabled (write operations disabled)
 {{- else }}
 Read-Only Mode: ❌ Disabled
+{{- end }}
+
+{{- if $bitbucket.enabled }}
+
+═══════════════════════════════════════════════════════════════════════════════
+⚠️  BITBUCKET OPERATIONAL NOTES
+═══════════════════════════════════════════════════════════════════════════════
+
+1. The OAuth proxy fronts one provider family per release: Bitbucket, or
+   Jira and Confluence. To serve both, run two releases.
+
+2. The ATLASSIAN_* retry, rate-limit, concurrency, and circuit-breaker
+   settings (set via extraEnv) are process-wide and cover Bitbucket together
+   with Jira and Confluence. See the chart README.
 {{- end }}
 
 ═══════════════════════════════════════════════════════════════════════════════

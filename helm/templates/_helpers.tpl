@@ -58,3 +58,14 @@ Create the name of the service account to use
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Whether the OAuth token cache is persisted: persistence is enabled and either
+the top-level auth mode or an enabled Bitbucket block uses oauth. Renders
+"true" or nothing, for use in an if.
+*/}}
+{{- define "mcp-atlassian.persistOAuthTokens" -}}
+{{- $bitbucket := .Values.bitbucket | default dict -}}
+{{- $bitbucketOAuth := and $bitbucket.enabled (eq (toString $bitbucket.authMode | trim) "oauth") -}}
+{{- if and .Values.persistence.enabled (or (eq .Values.authMode "oauth") $bitbucketOAuth) -}}true{{- end -}}
+{{- end }}

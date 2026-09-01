@@ -97,7 +97,7 @@ nodeSelector: {}
 tolerations: []
 affinity: {}
 
-# OAuth token persistence (only needed for OAuth flow with token refresh)
+# OAuth token persistence, for the top-level or Bitbucket oauth auth mode
 persistence:
   enabled: false
   storageClass: ""
@@ -153,6 +153,51 @@ jira:
   sslVerify: "true"
 
   # Project filter (comma-separated project keys)
+  projectsFilter: ""
+
+  # Custom headers (comma-separated key=value pairs)
+  customHeaders: ""
+
+  # Incoming MCP request header names to pass through (comma-separated)
+  passthroughHeaders: ""
+
+# Bitbucket Data Center Configuration
+bitbucket:
+  enabled: false
+  # Base URL of the Bitbucket Data Center instance
+  # e.g. https://bitbucket.your-company.com
+  url: ""
+
+  # Auth mode for Bitbucket DC: "oauth" or "byot"
+  # "oauth": supply oauthClientId, oauthClientSecret, and oauthScope
+  # "byot":  supply a pre-existing oauthAccessToken
+  authMode: "oauth"
+
+  # OAuth client credentials (authMode: oauth), from the incoming
+  # application link on the Bitbucket instance
+  oauthClientId: ""
+  oauthClientSecret: ""
+
+  # OAuth redirect URI (authMode: oauth). Must match the redirect URI
+  # registered on the Bitbucket incoming application link.
+  oauthRedirectUri: "http://localhost:8080/callback"
+
+  # OAuth scope(s) to request (authMode: oauth). Required, because Bitbucket
+  # Data Center grants no scope by default. Set it to the scopes granted to
+  # the application link, e.g. PUBLIC_REPOS, REPO_READ, REPO_WRITE.
+  oauthScope: "REPO_READ"
+
+  # BYO access token (authMode: byot)
+  oauthAccessToken: ""
+
+  # SSL verification. For a private CA, keep this "true", mount the CA bundle
+  # into the pod, and point SSL_CERT_FILE at it via extraEnv. Set "false"
+  # only as a last resort.
+  sslVerify: "true"
+
+  # Comma-separated project keys that limit project discovery and listing.
+  # Tools called with an explicit project key are limited by the user's own
+  # Bitbucket permissions.
   projectsFilter: ""
 
   # Custom headers (comma-separated key=value pairs)
@@ -229,6 +274,13 @@ proxy:
     noProxy: ""
     wpad:
       enabled: null # Set true/false to override the global WPAD toggle for Jira
+      url: ""
+  bitbucket:
+    http: ""
+    https: ""
+    noProxy: ""
+    wpad:
+      enabled: null # Set true/false to override the global WPAD toggle for Bitbucket
       url: ""
 
 # Server Configuration
