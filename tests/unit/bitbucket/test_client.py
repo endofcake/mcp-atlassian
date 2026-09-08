@@ -1,6 +1,7 @@
 """Unit tests for BitbucketFetcher."""
 
 import json
+import logging
 import os
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -131,6 +132,21 @@ class TestBitbucketFetcherInit:
         )
 
         assert fetcher._session.headers["X-Corp-Header"] == "yes"
+
+    def test_custom_header_names_logged_without_values(self, caplog):
+        """Debug logs name each applied header but never carry its value."""
+        caplog.set_level(logging.DEBUG, logger="mcp-atlassian.bitbucket")
+
+        BitbucketFetcher(
+            config=_byo_config(
+                custom_headers={"X-Corp-Header": "corp-42", "X-ALB-Token": "s3cret"}
+            )
+        )
+
+        assert "Applied custom header: X-Corp-Header" in caplog.text
+        assert "Applied custom header: X-ALB-Token" in caplog.text
+        assert "s3cret" not in caplog.text
+        assert "corp-42" not in caplog.text
 
     def test_default_user_agent_set_on_session(self):
         """The session carries the package User-Agent in place of the requests one."""

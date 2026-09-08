@@ -231,7 +231,13 @@ class BitbucketClient:
         self._session.headers["User-Agent"] = get_default_user_agent()
 
         if self.config.custom_headers:
-            self._session.headers.update(self.config.custom_headers)
+            logger.debug(
+                "Applying %d custom headers to Bitbucket session",
+                len(self.config.custom_headers),
+            )
+            for header_name, header_value in self.config.custom_headers.items():
+                self._session.headers[header_name] = header_value
+                logger.debug("Applied custom header: %s", header_name)
 
     @property
     def _api_root(self) -> str:
