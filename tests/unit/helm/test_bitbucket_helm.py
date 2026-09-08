@@ -4,7 +4,8 @@ These guard against env-contract drift: the chart must wire exactly the
 ``BITBUCKET_*`` environment variables the server code reads, or a Helm-only
 deploy silently degrades. The render tests shell out to ``helm`` when it is on
 PATH and skip otherwise; the contract tests parse the templates as text and
-run unconditionally.
+run unconditionally. The per-service timeout and fetcher-worker values at the
+end cover all three services with the same helpers.
 """
 
 from __future__ import annotations
@@ -777,3 +778,71 @@ class TestBitbucketHelmContract:
         result = _helm_template(values, tmp_path, show_only=show_only)
         assert result.returncode == 0, result.stderr
         assert "BITBUCKET" not in result.stdout
+
+
+_TUNING_CASES = [
+    # (values path, env var, sample value)
+    (("confluence", "timeout"), "CONFLUENCE_TIMEOUT", "120"),
+    (("jira", "timeout"), "JIRA_TIMEOUT", "120"),
+    (("jira", "fetcherMaxWorkers"), "JIRA_FETCHER_MAX_WORKERS", "4"),
+    (("bitbucket", "timeout"), "BITBUCKET_TIMEOUT", "120"),
+    (("bitbucket", "fetcherMaxWorkers"), "BITBUCKET_FETCHER_MAX_WORKERS", "4"),
+]
+
+
+def _tuning_values(service: str, key: str, value: object) -> dict:
+    """Chart values with every service enabled and one tuning value set."""
+    values = _oauth_values(
+        oauthRedirectUri="https://mcp.example.com/callback",
+        oauthScope="REPO_READ",
+    )
+    values["jira"] = {"enabled": True, "url": "https://jira.corp.example.com"}
+    values["confluence"] = {
+        "enabled": True,
+        "url": "https://confluence.corp.example.com",
+    }
+    values[service][key] = value
+    return values
+
+
+class TestServiceTuningHelmContract:
+    """Per-service timeout and fetcher-worker values reach the pod as env."""
+
+    @pytest.mark.parametrize(("path", "env_name", "_"), _TUNING_CASES)
+    def test_deployment_declares_tuning_env(self, path, env_name, _):
+        """Each tuning env var is wired in the deployment template."""
+        template = _DEPLOYMENT_TEMPLATE.read_text()
+        assert env_name in template, f"deployment.yaml does not wire {env_name}"
+
+    @requires_helm
+    @pytest.mark.parametrize(("path", "env_name", "value"), _TUNING_CASES)
+    def test_render_tuning_value_is_quoted(self, tmp_path, path, env_name, value):
+        """A set tuning value renders as a quoted string env entry."""
+        service, key = path
+        result = _helm_template(_tuning_values(service, key, value), tmp_path)
+        assert result.returncode == 0, result.stderr
+        env = _container_env(result.stdout)
+        assert env[env_name]["value"] == value
+        assert f'value: "{value}"' in result.stdout
+
+    @requires_helm
+    @pytest.mark.parametrize(("path", "env_name", "_"), _TUNING_CASES)
+    def test_render_numeric_tuning_value_becomes_string(
+        self, tmp_path, path, env_name, _
+    ):
+        """A bare YAML integer is rendered as a string, as Kubernetes requires."""
+        service, key = path
+        result = _helm_template(_tuning_values(service, key, 30), tmp_path)
+        assert result.returncode == 0, result.stderr
+        env = _container_env(result.stdout)
+        assert env[env_name]["value"] == "30"
+
+    @requires_helm
+    def test_render_omits_tuning_env_when_unset(self, tmp_path):
+        """With the tuning values left at their empty defaults, no env is set."""
+        values = _tuning_values("jira", "timeout", "")
+        result = _helm_template(values, tmp_path)
+        assert result.returncode == 0, result.stderr
+        env = _container_env(result.stdout)
+        tuning_env = {name for _, name, _ in _TUNING_CASES}
+        assert not tuning_env & set(env), tuning_env & set(env)

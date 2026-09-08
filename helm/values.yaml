@@ -4,7 +4,11 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/sooperset/mcp-atlassian
+  # The docker-publish workflow pushes to this name when run from
+  # github.com/endofcake/mcp-atlassian. To use another image, build it
+  # (docker build -t <registry>/mcp-atlassian:<tag> .), push it, and set
+  # repository and tag.
+  repository: ghcr.io/endofcake/mcp-atlassian
   pullPolicy: IfNotPresent
   tag: "0.20.0"
 
@@ -135,6 +139,10 @@ confluence:
   # Incoming MCP request header names to pass through (comma-separated)
   passthroughHeaders: ""
 
+  # HTTP request timeout in seconds for Confluence API calls (CONFLUENCE_TIMEOUT).
+  # Leave empty for the server default (75).
+  timeout: ""
+
 # Jira Configuration
 jira:
   enabled: true
@@ -160,6 +168,14 @@ jira:
 
   # Incoming MCP request header names to pass through (comma-separated)
   passthroughHeaders: ""
+
+  # HTTP request timeout in seconds for Jira API calls (JIRA_TIMEOUT).
+  # Leave empty for the server default (75).
+  timeout: ""
+
+  # Maximum concurrent Jira fetcher calls offloaded to worker threads
+  # (JIRA_FETCHER_MAX_WORKERS). Leave empty for the server default (8).
+  fetcherMaxWorkers: ""
 
 # Bitbucket Data Center Configuration
 bitbucket:
@@ -205,6 +221,14 @@ bitbucket:
 
   # Incoming MCP request header names to pass through (comma-separated)
   passthroughHeaders: ""
+
+  # HTTP request timeout in seconds for Bitbucket API calls (BITBUCKET_TIMEOUT).
+  # Leave empty for the server default (75).
+  timeout: ""
+
+  # Maximum concurrent Bitbucket fetcher calls offloaded to worker threads
+  # (BITBUCKET_FETCHER_MAX_WORKERS). Leave empty for the server default (8).
+  fetcherMaxWorkers: ""
 
 # OAuth 2.0 Configuration (Cloud only)
 # Required when authMode: oauth or byot

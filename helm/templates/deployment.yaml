@@ -120,6 +120,10 @@ spec:
               name: {{ include "mcp-atlassian.fullname" . }}
               key: confluence-passthrough-headers
         {{- end }}
+        {{- if .Values.confluence.timeout }}
+        - name: CONFLUENCE_TIMEOUT
+          value: {{ .Values.confluence.timeout | quote }}
+        {{- end }}
         {{- end }}
 
         # Jira Configuration
@@ -171,6 +175,14 @@ spec:
             configMapKeyRef:
               name: {{ include "mcp-atlassian.fullname" . }}
               key: jira-passthrough-headers
+        {{- end }}
+        {{- if .Values.jira.timeout }}
+        - name: JIRA_TIMEOUT
+          value: {{ .Values.jira.timeout | quote }}
+        {{- end }}
+        {{- if .Values.jira.fetcherMaxWorkers }}
+        - name: JIRA_FETCHER_MAX_WORKERS
+          value: {{ .Values.jira.fetcherMaxWorkers | quote }}
         {{- end }}
         {{- end }}
 
@@ -234,6 +246,14 @@ spec:
             configMapKeyRef:
               name: {{ include "mcp-atlassian.fullname" . }}
               key: bitbucket-passthrough-headers
+        {{- end }}
+        {{- if $bitbucket.timeout }}
+        - name: BITBUCKET_TIMEOUT
+          value: {{ $bitbucket.timeout | quote }}
+        {{- end }}
+        {{- if $bitbucket.fetcherMaxWorkers }}
+        - name: BITBUCKET_FETCHER_MAX_WORKERS
+          value: {{ $bitbucket.fetcherMaxWorkers | quote }}
         {{- end }}
         {{- end }}
 

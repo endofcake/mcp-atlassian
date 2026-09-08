@@ -1,6 +1,8 @@
 # MCP Atlassian Helm Chart
 
-This Helm chart deploys the [MCP Atlassian](https://github.com/sooperset/mcp-atlassian) server to Kubernetes, providing a Model Context Protocol (MCP) server for Jira and Confluence integration.
+This Helm chart deploys the [MCP Atlassian](https://github.com/endofcake/mcp-atlassian) server to Kubernetes, providing a Model Context Protocol (MCP) server for Jira, Confluence, and Bitbucket Data Center integration.
+
+Build the image from the repository (`docker build -t <registry>/mcp-atlassian:<tag> .`), push it to a registry your cluster can reach, and set `image.repository` and `image.tag`. The default `image.repository` is the name the repository's `docker-publish` workflow pushes to when it runs there.
 
 ## Prerequisites
 
@@ -59,19 +61,53 @@ See the `values.yaml` file for all configuration options.
 - **authMode**: `api-token`, `personal-token`, `oauth`, `byot`, or `external`
 - **transport**: `stdio`, `sse`, or `streamable-http`
 - **confluence/jira.enabled**: Enable/disable Confluence or Jira integration
-- **bitbucket.enabled**: Enable Bitbucket Data Center integration (own auth mode, see below)
+- **bitbucket.enabled**: Enable Bitbucket Data Center integration (see below)
 - **config.readOnlyMode**: Disable all write operations
-- **persistence.enabled**: Enable OAuth token persistence
+- **persistence.enabled**: Persist OAuth tokens (top-level or Bitbucket `oauth` mode)
 - **oauthProxy.enabled**: Expose MCP OAuth discovery + DCR routes (opt-in)
 - **oauthClientStorage.mode**: `default` (FastMCP storage) or `factory` (custom)
+- **image.repository / image.tag**: The image to run (see the note above)
+
+### Timeouts and fetcher concurrency
+
+Each service accepts an optional per-service HTTP timeout, and Jira and
+Bitbucket accept a cap on concurrent fetcher calls offloaded to worker
+threads. Both are omitted from the pod when left empty, so the server's own
+defaults apply (75 seconds and 8 workers).
+
+| Value | Environment variable | Default |
+|-------|----------------------|---------|
+| `confluence.timeout` | `CONFLUENCE_TIMEOUT` | server default, 75 s |
+| `jira.timeout` | `JIRA_TIMEOUT` | server default, 75 s |
+| `jira.fetcherMaxWorkers` | `JIRA_FETCHER_MAX_WORKERS` | server default, 8 |
+| `bitbucket.timeout` | `BITBUCKET_TIMEOUT` | server default, 75 s |
+| `bitbucket.fetcherMaxWorkers` | `BITBUCKET_FETCHER_MAX_WORKERS` | server default, 8 |
+
+```yaml
+jira:
+  timeout: "120"
+  fetcherMaxWorkers: "4"
+bitbucket:
+  timeout: "120"
+  fetcherMaxWorkers: "4"
+```
+
+The values are rendered as strings, so a bare number and a quoted number are
+equivalent. A value that is not a whole number falls back to the server
+default.
 
 ### Bitbucket Data Center
 
-Bitbucket support targets Bitbucket Data Center (self-hosted) only; Bitbucket
-Cloud is not supported. Bitbucket is configured independently of Jira and
-Confluence: `bitbucket.authMode` is separate from the top-level `authMode` and
-accepts `oauth` (client credentials from an incoming application link on the
-Bitbucket instance) or `byot` (a pre-existing access token).
+Bitbucket is configured independently of Jira and Confluence. `bitbucket.authMode`
+is separate from the top-level `authMode` and accepts `oauth` (client credentials
+from an application link registered on the Bitbucket instance) or `byot` (an
+access token you supply). The
+[authentication guide](../docs/authentication.mdx#bitbucket-data-center)
+describes the token sources.
+
+Client credentials identify the server to Bitbucket. Pair them with the OAuth
+proxy, per-request bearer tokens, or a persisted token cache, which supply the
+token at call time:
 
 ```yaml
 bitbucket:
@@ -84,12 +120,7 @@ bitbucket:
   oauthScope: "REPO_READ"
 ```
 
-Client credentials alone do not produce an access token: at call time a token
-source must still supply one — the OAuth proxy, a per-request bearer token
-forwarded by the caller, or a pre-seeded token cache. Without one, the first
-tool call fails.
-
-Or with a pre-existing token:
+With an access token:
 
 ```yaml
 bitbucket:
@@ -99,62 +130,35 @@ bitbucket:
   oauthAccessToken: "existing-access-token"
 ```
 
-The chart validates this configuration at render time: enabling Bitbucket
-without a `url`, using an unrecognised `authMode`, omitting the OAuth client
-id or secret, leaving `oauthScope` empty (Bitbucket Data Center has no default
-OAuth scope), or omitting the `byot` access token each fail
-`helm install` / `helm template` with a descriptive error instead of deploying
-a pod that crashloops or silently disables Bitbucket. A value made of
-whitespace counts as omitted, and surrounding whitespace on the `url`, the
-OAuth client id, secret, redirect URI, and scope, and the access token is
-trimmed before rendering. A numeric value is rendered as its string form.
-The chart also rejects
-enabling Bitbucket while `oauthProxy.enabled` is set and Jira or Confluence is
-configured (enabled with a nonblank `url`), whatever the top-level `authMode`,
-because the proxy can serve only one provider family (see the provider-family
-note below).
+The chart fails the render, with a message naming the value, when Bitbucket is
+enabled without a `url`, with an unrecognised `authMode`, without the OAuth
+client id, secret, or scope, or without the `byot` access token. A value made
+of whitespace counts as missing.
 
-With `oauthProxy.enabled: true`, the chart also checks that the proxy it was
-asked for can run. Bitbucket must use `authMode: oauth` (under `byot` there
-are no client credentials, and the server starts with the proxy disabled),
-`oauthRedirectUri` must be nonblank (the chart requires it explicitly rather
-than relying on the server's fallback to the top-level `oauth.redirectUri`;
-a value made of whitespace registers an unusable redirect), and the
-top-level `oauth.clientId` must be empty, whitespace included, when the
-top-level `authMode` is `oauth` (two sets of proxy credentials make the
-server refuse to start). Each of these fails the render with a message
-naming the value to change.
+`persistence.enabled: true` mounts the OAuth token cache when the top-level
+`authMode` or `bitbucket.authMode` is `oauth`.
 
-As with the Jira/Confluence equivalents, only set
-`bitbucket.passthroughHeaders` behind a trusted gateway that authenticates
-every MCP request and overwrites the configured headers (see "External proxy
-authentication" below); on a directly reachable deployment it lets clients
-supply those headers themselves.
+With `oauthProxy.enabled: true`, the proxy fronts one provider family per
+release: Bitbucket, or Jira and Confluence. A Bitbucket release behind the
+proxy uses `bitbucket.authMode: oauth` with a nonblank `oauthRedirectUri`,
+leaves the top-level `oauth.clientId` empty, and leaves the Jira and Confluence
+`url` values empty. The chart fails the render otherwise. To serve both
+families through the proxy, run two releases.
 
-> **Note — one provider family per OAuth proxy:** when the MCP OAuth proxy
-> (`oauthProxy.enabled: true`) is in use, it fronts exactly one provider
-> family: either Bitbucket, or Jira/Confluence — never both in the same
-> deployment. Bitbucket tools do not work behind an OAuth proxy configured
-> for Jira/Confluence (and vice versa): the proxy's tokens are rejected for
-> the family it does not front, leaving those tools visible but unusable.
-> The chart enforces this at render time — with `oauthProxy.enabled: true`,
-> enabling Bitbucket (either `authMode`) alongside a configured Jira or
-> Confluence (enabled with a nonblank `url`) fails the render, whatever the
-> top-level `authMode` says. A Bitbucket-only release is not affected: Jira
-> and Confluence are enabled by default with an empty `url`, and an empty
-> `url` counts as unused. To serve both families through OAuth proxies, run
-> two releases. A Bitbucket release behind the proxy must use
-> `bitbucket.authMode: oauth` with a nonblank `oauthRedirectUri`, and must
-> leave the top-level `oauth.clientId` empty.
+Set `bitbucket.passthroughHeaders` only behind a trusted gateway that
+authenticates every MCP request and overwrites the configured headers (see
+"External proxy authentication" below). On a directly reachable deployment,
+clients could supply those headers themselves.
 
-> **Note — shared HTTP-hardening budget:** the optional `ATLASSIAN_*` retry,
-> rate-limit, concurrency, and circuit-breaker settings
-> (`ATLASSIAN_RETRY_*`, `ATLASSIAN_REQUESTS_PER_SECOND`,
-> `ATLASSIAN_MAX_CONCURRENT_REQUESTS`, `ATLASSIAN_CIRCUIT_BREAKER_*`) are
-> process-wide: one budget shared by every enabled service in the pod. With
-> them set, Bitbucket traffic counts against the same budget as Jira and
-> Confluence. Because they are global rather than per-service, they are not
-> chart values; set them through `extraEnv`:
+For a private CA, keep `sslVerify: "true"`, mount the CA bundle into the pod,
+and point `SSL_CERT_FILE` at it through `extraEnv`. The server's OS trust-store
+integration reads that variable.
+
+The `ATLASSIAN_*` retry, rate-limit, concurrency, and circuit-breaker settings
+(`ATLASSIAN_RETRY_*`, `ATLASSIAN_REQUESTS_PER_SECOND`,
+`ATLASSIAN_MAX_CONCURRENT_REQUESTS`, `ATLASSIAN_CIRCUIT_BREAKER_*`) are
+process-wide, so one budget covers every enabled service in the pod. Set them
+through `extraEnv`:
 
 ```yaml
 extraEnv:
@@ -205,9 +209,6 @@ proxy:
     wpad:
       enabled: true
       url: "http://confluence-wpad.example.com/wpad.dat"
-  bitbucket:
-    wpad:
-      enabled: false
 ```
 
 This configures the related proxy environment variables when set, including:
@@ -309,7 +310,7 @@ helm uninstall mcp-atlassian
 
 ## Support
 
-For issues with the MCP Atlassian server, see https://github.com/sooperset/mcp-atlassian
+For issues with the MCP Atlassian server, see https://github.com/endofcake/mcp-atlassian/issues
 
 ## License
 
