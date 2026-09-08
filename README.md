@@ -1,15 +1,23 @@
 # MCP Atlassian
 
-![PyPI Version](https://img.shields.io/pypi/v/mcp-atlassian)
-![PyPI - Downloads](https://img.shields.io/pypi/dm/mcp-atlassian)
-![PePy - Total Downloads](https://static.pepy.tech/personalized-badge/mcp-atlassian?period=total&units=international_system&left_color=grey&right_color=blue&left_text=Total%20Downloads)
-[![Run Tests](https://github.com/sooperset/mcp-atlassian/actions/workflows/tests.yml/badge.svg)](https://github.com/sooperset/mcp-atlassian/actions/workflows/tests.yml)
-![License](https://img.shields.io/github/license/sooperset/mcp-atlassian)
-[![Docs](https://img.shields.io/badge/docs-mintlify-blue)](https://mcp-atlassian.soomiles.com)
+[![Run Tests](https://github.com/endofcake/mcp-atlassian/actions/workflows/tests.yml/badge.svg)](https://github.com/endofcake/mcp-atlassian/actions/workflows/tests.yml)
+![License](https://img.shields.io/github/license/endofcake/mcp-atlassian)
 
-Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira). Supports both Cloud and Server/Data Center deployments.
+Model Context Protocol (MCP) server for Atlassian products: Jira, Confluence,
+and Bitbucket Data Center. Jira and Confluence work on both Cloud and
+Server/Data Center. Bitbucket support covers Data Center.
 
-https://github.com/user-attachments/assets/35303504-14c6-4ae4-913b-7c25ea511c3e
+## About this fork
+
+This is a fork of [sooperset/mcp-atlassian](https://github.com/sooperset/mcp-atlassian)
+that adds **Bitbucket Data Center** as a third service. The 21 Bitbucket tools
+cover projects, repositories, branches and tags, commits, source browsing, and
+pull-request review. Install from this repository with `uvx --from git+...`
+or build the container image yourself (see [Installation](docs/installation.mdx)).
+
+Bitbucket bugs, and bugs in this fork, belong in
+[this repository's issues](https://github.com/endofcake/mcp-atlassian/issues).
+Jira and Confluence bugs that also reproduce on upstream belong upstream.
 
 <details>
 <summary>Confluence Demo</summary>
@@ -20,22 +28,28 @@ https://github.com/user-attachments/assets/7fe9c488-ad0c-4876-9b54-120b666bb785
 
 ## Quick Start
 
-### 1. Get Your API Token
+### 1. Get credentials
 
-Go to https://id.atlassian.com/manage-profile/security/api-tokens and create a token.
+- **Jira / Confluence Cloud:** create an API token at
+  https://id.atlassian.com/manage-profile/security/api-tokens.
+- **Jira / Confluence Server/Data Center:** create a Personal Access Token in
+  your profile settings.
+- **Bitbucket Data Center:** obtain an OAuth 2.0 access token from an
+  application link registered on the instance. See
+  [Bitbucket Data Center](docs/authentication.mdx#bitbucket-data-center) for
+  the other token sources.
 
-> For Server/Data Center, use a Personal Access Token instead. See [Authentication](https://mcp-atlassian.soomiles.com/docs/authentication).
+### 2. Configure your IDE
 
-### 2. Configure Your IDE
-
-Add to your Claude Desktop or Cursor MCP configuration:
+Add to your Claude Desktop or Cursor MCP configuration. Jira and Confluence
+Cloud with API tokens:
 
 ```json
 {
   "mcpServers": {
     "mcp-atlassian": {
       "command": "uvx",
-      "args": ["mcp-atlassian"],
+      "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
       "env": {
         "JIRA_URL": "https://your-company.atlassian.net",
         "JIRA_USERNAME": "your.email@company.com",
@@ -49,7 +63,28 @@ Add to your Claude Desktop or Cursor MCP configuration:
 }
 ```
 
-> **Server/Data Center users**: Use `JIRA_PERSONAL_TOKEN` instead of `JIRA_USERNAME` + `JIRA_API_TOKEN`. See [Authentication](https://mcp-atlassian.soomiles.com/docs/authentication) for details.
+> **Server/Data Center users**: Use `JIRA_PERSONAL_TOKEN` instead of
+> `JIRA_USERNAME` + `JIRA_API_TOKEN` (same for Confluence).
+
+Bitbucket Data Center with an access token:
+
+```json
+{
+  "mcpServers": {
+    "mcp-atlassian": {
+      "command": "uvx",
+      "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
+      "env": {
+        "BITBUCKET_URL": "https://bitbucket.your-company.com",
+        "BITBUCKET_OAUTH_ACCESS_TOKEN": "your_bitbucket_access_token"
+      }
+    }
+  }
+}
+```
+
+All three services can be configured in one server. Each is enabled by the
+presence of its `*_URL`.
 
 #### Autohand Code
 
@@ -63,37 +98,34 @@ autohand mcp add mcp-atlassian env \
   CONFLUENCE_URL=https://your-company.atlassian.net/wiki \
   CONFLUENCE_USERNAME=your.email@company.com \
   CONFLUENCE_API_TOKEN=your_api_token \
-  uvx mcp-atlassian
+  uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian
 ```
 
 Add `--scope project` after `add` to keep the configuration in the current
 project. See [Autohand Code](https://github.com/autohandai/code-cli/) for current
 installation and CLI details.
 
-### 3. Start Using
+### 3. Start using
 
 Ask your AI assistant to:
 - **"Find issues assigned to me in PROJ project"**
 - **"Search Confluence for onboarding docs"**
 - **"Create a bug ticket for the login issue"**
-- **"Update the status of PROJ-123 to Done"**
+- **"List open pull requests in PROJ/my-repo and summarise the diff of #42"**
 
 ## Documentation
 
-Full documentation is available at **[mcp-atlassian.soomiles.com](https://mcp-atlassian.soomiles.com)**.
-
-Documentation is also available in [llms.txt format](https://llmstxt.org/), which LLMs can consume easily:
-- [`llms.txt`](https://mcp-atlassian.soomiles.com/llms.txt) — documentation sitemap
-- [`llms-full.txt`](https://mcp-atlassian.soomiles.com/llms-full.txt) — complete documentation
+Documentation lives in this repository under [`docs/`](docs/).
 
 | Topic | Description |
 |-------|-------------|
-| [Installation](https://mcp-atlassian.soomiles.com/docs/installation) | uvx, Docker, pip, from source |
-| [Authentication](https://mcp-atlassian.soomiles.com/docs/authentication) | API tokens, PAT, OAuth 2.0 |
-| [Configuration](https://mcp-atlassian.soomiles.com/docs/configuration) | IDE setup, environment variables |
-| [HTTP Transport](https://mcp-atlassian.soomiles.com/docs/http-transport) | SSE, streamable-http, multi-user |
-| [Tools Reference](https://mcp-atlassian.soomiles.com/docs/tools-reference) | All Jira, Confluence & Bitbucket tools |
-| [Troubleshooting](https://mcp-atlassian.soomiles.com/docs/troubleshooting) | Common issues & debugging |
+| [Installation](docs/installation.mdx) | uvx from git, Docker (self-built), from source |
+| [Authentication](docs/authentication.mdx) | API tokens, PAT, OAuth 2.0, the OAuth proxy, Bitbucket Data Center |
+| [Configuration](docs/configuration.mdx) | IDE setup, environment variables |
+| [HTTP Transport](docs/http-transport.mdx) | SSE, streamable-http, multi-user |
+| [Tools Reference](docs/tools-reference.mdx) | All Jira, Confluence & Bitbucket tools |
+| [Troubleshooting](docs/troubleshooting.mdx) | Common issues & debugging |
+| [Helm chart](helm/README.md) | Kubernetes deployment, including Bitbucket |
 
 ## Compatibility
 
@@ -116,7 +148,7 @@ Documentation is also available in [llms.txt format](https://llmstxt.org/), whic
 | `jira_update_issue` - Update issues | `confluence_update_page` - Update pages | `bitbucket_browse_path` - Browse source |
 | `jira_transition_issue` - Change status | `confluence_add_comment` - Add comments | `bitbucket_list_commits` - List commits |
 
-**119 tools total** — See [Tools Reference](https://mcp-atlassian.soomiles.com/docs/tools-reference) for the complete list.
+**119 tools total** — See the [Tools Reference](docs/tools-reference.mdx) for the complete list.
 
 ## Security
 

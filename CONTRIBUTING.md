@@ -2,6 +2,8 @@
 
 Thank you for your interest in contributing to MCP Atlassian! This document provides guidelines and instructions for contributing to this project.
 
+This repository (https://github.com/endofcake/mcp-atlassian) is a fork of [sooperset/mcp-atlassian](https://github.com/sooperset/mcp-atlassian) that adds Bitbucket Data Center support. Point your `origin` remote at your own fork of this repository. The `upstream` remote below points at sooperset. Bitbucket changes belong here. Jira and Confluence fixes that also apply upstream are best raised there.
+
 ## Development Setup
 
 1. Make sure you have Python 3.10+ installed

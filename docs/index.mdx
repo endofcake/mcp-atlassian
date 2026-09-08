@@ -1,9 +1,13 @@
 ---
 title: "MCP Atlassian"
-description: "Connect AI assistants to Jira and Confluence — search, create, update issues and pages via MCP"
+description: "Connect AI assistants to Jira, Confluence, and Bitbucket Data Center — search, create, update issues, pages, and pull requests via MCP"
 ---
 
-Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira). Supports both Cloud and Server/Data Center deployments.
+Model Context Protocol (MCP) server for Atlassian products: Jira, Confluence, and Bitbucket Data Center. Jira and Confluence work on both Cloud and Server/Data Center. Bitbucket support covers Data Center.
+
+## About this fork
+
+This is a fork of [sooperset/mcp-atlassian](https://github.com/sooperset/mcp-atlassian) that adds Bitbucket Data Center as a third service. Install it with `uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian` or build the container image yourself (see [Installation](/docs/installation)). Bitbucket bugs, and bugs in this fork, belong in [this repository's issues](https://github.com/endofcake/mcp-atlassian/issues). Jira and Confluence bugs that also reproduce on upstream belong upstream.
 
 <CardGroup cols={2}>
   <Card title="Quick Start" icon="rocket" href="/docs/installation">
@@ -13,7 +17,7 @@ Model Context Protocol (MCP) server for Atlassian products (Confluence and Jira)
     Set up API tokens, PATs, or OAuth 2.0
   </Card>
   <Card title="Tools Reference" icon="wrench" href="/docs/tools-reference">
-    Browse all available Jira and Confluence tools
+    Browse all available Jira, Confluence, and Bitbucket tools
   </Card>
   <Card title="Configuration" icon="gear" href="/docs/configuration">
     IDE setup and environment variables
@@ -28,6 +32,7 @@ Ask your AI assistant to:
 - **"Search Confluence for onboarding docs"**
 - **"Create a bug ticket for the login issue"**
 - **"Update the status of PROJ-123 to Done"**
+- **"List open pull requests in PROJ/my-repo and summarise the diff of #42"**
 
 ## Compatibility
 
@@ -37,3 +42,5 @@ Ask your AI assistant to:
 | Confluence | Server/Data Center | Supported (v6.0+) |
 | Jira | Cloud | Fully supported |
 | Jira | Server/Data Center | Supported (v8.14+) |
+| Bitbucket | Cloud | Not supported |
+| Bitbucket | Data Center | Supported (v9.0+, OAuth 2.0) |

@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 """Generate MDX documentation for all MCP tools.
 
-Introspects the FastMCP server instances (jira_mcp, confluence_mcp) to extract
-tool metadata, then renders per-category MDX pages via a Jinja2 template.
+Introspects the FastMCP server instances (jira_mcp, confluence_mcp,
+bitbucket_mcp) to extract tool metadata, then renders per-category MDX pages
+via a Jinja2 template.
+
+Tool and toolset counts quoted in prose (README.md, docs.json, .env.example,
+docs/tools-reference.mdx, docs/configuration.mdx, and the toolsets module
+docstring) are hand-maintained. ``--check`` compares each of them against the
+live registries via ``COUNT_RULES``, so a changed total fails CI until every
+quoted count is updated; a count phrased differently from its rule's pattern
+is reported as missing rather than silently skipped.
 
 Usage:
     python scripts/generate_tool_docs.py           # generate docs/tools/*.mdx

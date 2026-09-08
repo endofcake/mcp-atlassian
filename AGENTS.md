@@ -75,7 +75,7 @@ uv run pytest --cov=src/mcp_atlassian --cov-report=term-missing  # coverage
 ## Gotchas
 
 - **Cloud vs Server/DC**: API endpoints, field names, and auth methods differ. Always check `is_cloud` before assuming behavior.
-- **OAuth 2.0**: Supported on both Cloud and Server/Data Center. PAT is also available for Server/DC. Basic auth (user + API token) works on both Cloud and Server/DC.
+- **OAuth 2.0**: Supported on both Cloud and Server/Data Center. PAT is also available for Server/DC. Basic auth (user + API token) works on both Cloud and Server/DC. Bitbucket is Data Center only and OAuth 2.0 only (client credentials from an incoming application link, or a bring-your-own access token); there is no PAT or basic-auth path for Bitbucket.
 - **Read-only mode**: `READ_ONLY_MODE=true` blocks all write tools at server level.
 - **Type checking**: pre-commit runs **mypy** (strict mode).
 - **Environment**: See `.env.example` for all configuration options (auth, proxy, SLA, filtering).

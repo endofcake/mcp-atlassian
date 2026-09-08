@@ -1,7 +1,7 @@
 [project]
 name = "mcp-atlassian"
 dynamic = ["version"]
-description = "The Model Context Protocol (MCP) Atlassian integration is an open-source implementation that bridges Atlassian products (Jira and Confluence) with AI language models following Anthropic's MCP specification. This project enables secure, contextual AI interactions with Atlassian tools while maintaining data privacy and security. Key features include:"
+description = "Model Context Protocol (MCP) server for Atlassian Jira, Confluence, and Bitbucket Data Center."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

@@ -123,7 +123,7 @@ TOOLSETS=legacy
 TOOLSETS=all
 
 # Command line
-uvx mcp-atlassian --toolsets "default,jira_agile"
+uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --toolsets "default,jira_agile"
 ```
 
 ### Enable Specific Tools
@@ -135,7 +135,7 @@ Use `ENABLED_TOOLS` environment variable or `--enabled-tools` flag:
 ENABLED_TOOLS="confluence_search,jira_get_issue,jira_search"
 
 # Command line
-uvx mcp-atlassian --enabled-tools "confluence_search,jira_get_issue,jira_search"
+uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --enabled-tools "confluence_search,jira_get_issue,jira_search"
 ```
 
 ### Read-Only Mode

@@ -1,20 +1,24 @@
 ---
 title: "Installation"
-description: "Install and configure MCP Atlassian using uvx, Docker, pip, or from source"
+description: "Install and configure MCP Atlassian from this repository using uvx, Docker, uv, or from source"
 ---
 
 MCP Atlassian can be installed using several methods. Choose the one that best fits your workflow.
+
+<Note>
+Every method below installs from the Git repository at https://github.com/endofcake/mcp-atlassian or builds the container image from a clone.
+</Note>
 
 ## uvx (Recommended)
 
 The simplest way to run MCP Atlassian without permanent installation using [uvx](https://docs.astral.sh/uv/guides/tools/):
 
 ```bash
-# Run directly (downloads on first use, cached for subsequent runs)
-uvx mcp-atlassian --help
+# Run directly (clones and builds on first use, cached for subsequent runs)
+uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --help
 
 # Run with a specific Python version if needed
-uvx --python=3.12 mcp-atlassian --help
+uvx --python=3.12 --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --help
 ```
 
 ### IDE Configuration with uvx
@@ -26,12 +30,14 @@ uvx --python=3.12 mcp-atlassian --help
     - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
     - **Linux**: `~/.config/Claude/claude_desktop_config.json`
 
+    Jira and Confluence Cloud with API tokens:
+
     ```json
     {
       "mcpServers": {
         "mcp-atlassian": {
           "command": "uvx",
-          "args": ["mcp-atlassian"],
+          "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
           "env": {
             "CONFLUENCE_URL": "https://your-company.atlassian.net/wiki",
             "CONFLUENCE_USERNAME": "your.email@company.com",
@@ -44,6 +50,25 @@ uvx --python=3.12 mcp-atlassian --help
       }
     }
     ```
+
+    Bitbucket Data Center with an access token:
+
+    ```json
+    {
+      "mcpServers": {
+        "mcp-atlassian": {
+          "command": "uvx",
+          "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
+          "env": {
+            "BITBUCKET_URL": "https://bitbucket.your-company.com",
+            "BITBUCKET_OAUTH_ACCESS_TOKEN": "your_bitbucket_access_token"
+          }
+        }
+      }
+    }
+    ```
+
+    For per-request tokens and the OAuth proxy, see [Bitbucket Data Center](/docs/authentication#bitbucket-data-center). All three services can share one server. Each is enabled by the presence of its `*_URL` variable.
   </Tab>
   <Tab title="Cursor">
     Open **Settings** → **MCP** → **+ Add new global MCP server**, then use the same JSON configuration.
@@ -54,16 +79,31 @@ uvx --python=3.12 mcp-atlassian --help
 
 Docker provides an isolated environment and is recommended for production deployments or when you need specific version control.
 
-```bash
-# Pull the latest image
-docker pull ghcr.io/sooperset/mcp-atlassian:latest
+Build the image from a clone of the repository:
 
-# Run with environment variables
+```bash
+git clone https://github.com/endofcake/mcp-atlassian.git
+cd mcp-atlassian
+docker build -t mcp-atlassian:local .
+```
+
+Then run it with environment variables. Jira Cloud:
+
+```bash
 docker run --rm -i \
   -e JIRA_URL=https://your-company.atlassian.net \
   -e JIRA_USERNAME=your.email@company.com \
   -e JIRA_API_TOKEN=your_api_token \
-  ghcr.io/sooperset/mcp-atlassian:latest
+  mcp-atlassian:local
+```
+
+Bitbucket Data Center with an access token:
+
+```bash
+docker run --rm -i \
+  -e BITBUCKET_URL=https://bitbucket.your-company.com \
+  -e BITBUCKET_OAUTH_ACCESS_TOKEN=your_bitbucket_access_token \
+  mcp-atlassian:local
 ```
 
 ### IDE Configuration with Docker
@@ -81,7 +121,9 @@ docker run --rm -i \
         "-e", "JIRA_URL",
         "-e", "JIRA_USERNAME",
         "-e", "JIRA_API_TOKEN",
-        "ghcr.io/sooperset/mcp-atlassian:latest"
+        "-e", "BITBUCKET_URL",
+        "-e", "BITBUCKET_OAUTH_ACCESS_TOKEN",
+        "mcp-atlassian:local"
       ],
       "env": {
         "CONFLUENCE_URL": "https://your-company.atlassian.net/wiki",
@@ -89,42 +131,33 @@ docker run --rm -i \
         "CONFLUENCE_API_TOKEN": "your_confluence_api_token",
         "JIRA_URL": "https://your-company.atlassian.net",
         "JIRA_USERNAME": "your.email@company.com",
-        "JIRA_API_TOKEN": "your_jira_api_token"
+        "JIRA_API_TOKEN": "your_jira_api_token",
+        "BITBUCKET_URL": "https://bitbucket.your-company.com",
+        "BITBUCKET_OAUTH_ACCESS_TOKEN": "your_bitbucket_access_token"
       }
     }
   }
 }
 ```
 
-See [Configuration](/docs/configuration) for more Docker options including environment files.
-
-## pip
-
-Install directly with pip for development or when you need the package in your Python environment:
-
-```bash
-pip install mcp-atlassian
-
-# Include this extra when PAC/WPAD proxy routing is enabled
-pip install "mcp-atlassian[wpad]"
-
-# Run the server
-mcp-atlassian --help
-```
+Drop the variables for any service you do not use. See [Configuration](/docs/configuration) for more Docker options including environment files.
 
 ## uv
 
-If you're using [uv](https://docs.astral.sh/uv/) for package management:
+Install the package into a Python environment with [uv](https://docs.astral.sh/uv/), for development or when you need it importable:
 
 ```bash
-# Add to your project
-uv add mcp-atlassian
+# Install into the current environment
+uv pip install git+https://github.com/endofcake/mcp-atlassian
 
 # Include this extra when PAC/WPAD proxy routing is enabled
-uv add "mcp-atlassian[wpad]"
+uv pip install "mcp-atlassian[wpad] @ git+https://github.com/endofcake/mcp-atlassian"
 
-# Run
-uv run mcp-atlassian --help
+# Or add it to a uv-managed project
+uv add git+https://github.com/endofcake/mcp-atlassian
+
+# Run the server
+mcp-atlassian --help
 ```
 
 ## From Source
@@ -132,10 +165,10 @@ uv run mcp-atlassian --help
 For development or contributing:
 
 ```bash
-git clone https://github.com/sooperset/mcp-atlassian.git
+git clone https://github.com/endofcake/mcp-atlassian.git
 cd mcp-atlassian
 uv sync --frozen --all-extras --dev
 uv run mcp-atlassian --help
 ```
 
-See [CONTRIBUTING.md](https://github.com/sooperset/mcp-atlassian/blob/main/CONTRIBUTING.md) for development setup details.
+See [CONTRIBUTING.md](https://github.com/endofcake/mcp-atlassian/blob/main/CONTRIBUTING.md) for development setup details.
