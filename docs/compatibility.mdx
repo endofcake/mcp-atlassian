@@ -19,7 +19,7 @@ MCP Atlassian works with any MCP-compatible client. This page documents platform
 | OpenAI Gateway | Compatible | stdio / HTTP | |
 | ChatGPT | Not tested | HTTP | See [ChatGPT notes](#chatgpt) |
 
-Bitbucket support is a property of the Atlassian side rather than the AI platform: every platform above reaches Bitbucket Data Center through the same tools, and Bitbucket Cloud is not supported by any of them. See [Cloud vs Server/Data Center](#cloud-vs-serverdata-center) below.
+Every platform above reaches Bitbucket Data Center through the same tools. See [Cloud vs Server/Data Center](#cloud-vs-serverdata-center) below.
 
 ## MCP stdio readiness probe
 
@@ -74,6 +74,10 @@ before running it:
 | `MCP_READINESS_CONFLUENCE_PAT` | Confluence DC staging personal access token |
 | `MCP_READINESS_CONFLUENCE_PAGE_ID` | Fixed page approved for a read probe |
 | `MCP_READINESS_MAX_RPM` | Optional request rate from 1–30; defaults to 30 |
+| `MCP_READINESS_BITBUCKET_URL` | Optional Bitbucket DC staging URL; setting it adds the Bitbucket read |
+| `MCP_READINESS_BITBUCKET_ACCESS_TOKEN` | OAuth 2.0 access token issued by that Bitbucket instance |
+| `MCP_READINESS_BITBUCKET_PROJECT_KEY` | Project key of the repository approved for a read probe |
+| `MCP_READINESS_BITBUCKET_REPOSITORY_SLUG` | Slug of that repository |
 
 Then add the live-profile flag to the preceding command:
 
@@ -85,8 +89,16 @@ uv run python scripts/mcp_wire_probe.py \
   --staging-dc-pat
 ```
 
+The Bitbucket read is opt-in. When `MCP_READINESS_BITBUCKET_URL` is set, the
+other three Bitbucket variables become required and map to `BITBUCKET_URL`
+and `BITBUCKET_OAUTH_ACCESS_TOKEN` in the child environment. The probe then
+reads the repository's default branch with `bitbucket_get_default_branch`
+one pacing interval after the Confluence read, and the output's
+`staging_profile` reads `jira-dc-confluence-dc-pat+bitbucket-dc-oauth`.
+
 The profile fails closed: it forces read-only mode, exposes only
-`jira_get_issue` and `confluence_get_page`, disables retries, limits concurrency
+`jira_get_issue`, `confluence_get_page`, and (when configured)
+`bitbucket_get_default_branch`, disables retries, limits concurrency
 to one, and caps traffic at 30 requests per minute. It stops before a live call
 if any unexpected tool is exposed. Output records only protocol and result
 shape—it excludes credentials, URLs, request identifiers, and response bodies.
@@ -183,7 +195,7 @@ For platforms that require HTTP transport (e.g., remote deployments, gateways), 
 
 ## Cloud vs Server/Data Center
 
-MCP Atlassian supports both Atlassian Cloud and Server/Data Center deployments for Jira and Confluence, but some features differ between platforms. Bitbucket is supported on Data Center only.
+MCP Atlassian supports both Atlassian Cloud and Server/Data Center deployments for Jira and Confluence, but some features differ between platforms.
 
 ### Authentication Methods
 
@@ -194,7 +206,7 @@ MCP Atlassian supports both Atlassian Cloud and Server/Data Center deployments f
 | OAuth 2.0 | Yes (3LO) | Yes (Application Links) |
 | BYOT (Bring Your Own Token) | Yes | Yes |
 
-Bitbucket Data Center accepts OAuth 2.0 only (client credentials from an incoming application link, the Bitbucket-side registration that issues them, or a bring-your-own access token); there is no API-token, password, or PAT path, and Bitbucket Cloud is not supported.
+Bitbucket Data Center authenticates with OAuth 2.0. See [Bitbucket Data Center](/docs/authentication#bitbucket-data-center).
 
 ### Tool Availability
 

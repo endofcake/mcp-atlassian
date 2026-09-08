@@ -1,5 +1,21 @@
 #!/usr/bin/env python3
-"""Probe an mcp-atlassian subprocess using only the public MCP SDK."""
+"""Probe an mcp-atlassian subprocess using only the public MCP SDK.
+
+By default the probe initializes the server and lists its tools. With
+``--staging-dc-pat`` it builds a fail-closed child environment from
+``MCP_READINESS_*`` variables (read-only mode, a fixed tool allowlist, paced
+requests) and performs one live read per service: a Jira issue and a
+Confluence page, both authenticated with personal access tokens.
+
+Bitbucket Data Center is an optional third read. It is included only when
+``MCP_READINESS_BITBUCKET_URL`` is set, in which case
+``MCP_READINESS_BITBUCKET_ACCESS_TOKEN`` (an OAuth 2.0 access token issued by
+that Bitbucket instance),
+``MCP_READINESS_BITBUCKET_PROJECT_KEY``, and
+``MCP_READINESS_BITBUCKET_REPOSITORY_SLUG`` become required, and the probe
+reads the repository's default branch. The output carries protocol shape
+only, so token values are never logged or recorded.
+"""
 
 from __future__ import annotations
 
@@ -25,11 +41,17 @@ STAGING_ALLOWED_TOOLS = frozenset(
         "confluence_get_page",
     }
 )
+BITBUCKET_STAGING_TOOL = "bitbucket_get_default_branch"
 STAGING_ENV_MAP = {
     "MCP_READINESS_JIRA_URL": "JIRA_URL",
     "MCP_READINESS_JIRA_PAT": "JIRA_PERSONAL_TOKEN",
     "MCP_READINESS_CONFLUENCE_URL": "CONFLUENCE_URL",
     "MCP_READINESS_CONFLUENCE_PAT": "CONFLUENCE_PERSONAL_TOKEN",
+}
+BITBUCKET_STAGING_URL_ENV = "MCP_READINESS_BITBUCKET_URL"
+BITBUCKET_STAGING_ENV_MAP = {
+    BITBUCKET_STAGING_URL_ENV: "BITBUCKET_URL",
+    "MCP_READINESS_BITBUCKET_ACCESS_TOKEN": "BITBUCKET_OAUTH_ACCESS_TOKEN",
 }
 STAGING_INHERITED_ENV = (
     "HOME",
@@ -50,13 +72,41 @@ STAGING_INHERITED_ENV = (
 
 
 @dataclass(frozen=True)
+class BitbucketStagingTarget:
+    """Repository whose default branch the optional Bitbucket read fetches."""
+
+    project_key: str
+    repository_slug: str
+
+
+@dataclass(frozen=True)
 class StagingProfile:
-    """Validated, read-only Jira DC and Confluence DC staging profile."""
+    """Validated, read-only Jira DC and Confluence DC staging profile.
+
+    ``bitbucket`` is set only when the Bitbucket readiness variables are
+    present; the profile then also covers one Bitbucket DC OAuth read.
+    """
 
     child_env: dict[str, str]
     jira_issue_key: str
     confluence_page_id: str
     max_rpm: int
+    bitbucket: BitbucketStagingTarget | None = None
+
+    @property
+    def allowed_tools(self) -> frozenset[str]:
+        """Return the exact read allowlist the child server must expose."""
+        if self.bitbucket is None:
+            return STAGING_ALLOWED_TOOLS
+        return STAGING_ALLOWED_TOOLS | {BITBUCKET_STAGING_TOOL}
+
+    @property
+    def name(self) -> str:
+        """Return the profile name recorded in the probe output."""
+        base = "jira-dc-confluence-dc-pat"
+        if self.bitbucket is None:
+            return base
+        return f"{base}+bitbucket-dc-oauth"
 
 
 def _required(env: dict[str, str], name: str) -> str:
@@ -83,13 +133,28 @@ def build_staging_profile(env: dict[str, str]) -> StagingProfile:
     child_env = {name: env[name] for name in STAGING_INHERITED_ENV if name in env}
     for readiness_name, child_name in STAGING_ENV_MAP.items():
         child_env[child_name] = _required(env, readiness_name)
+
+    # Bitbucket is opt-in: setting its URL makes the remaining Bitbucket
+    # readiness variables required, so a half-configured profile fails
+    # before any live call rather than silently skipping the read.
+    bitbucket: BitbucketStagingTarget | None = None
+    allowed_tools = STAGING_ALLOWED_TOOLS
+    if env.get(BITBUCKET_STAGING_URL_ENV, "").strip():
+        for readiness_name, child_name in BITBUCKET_STAGING_ENV_MAP.items():
+            child_env[child_name] = _required(env, readiness_name)
+        bitbucket = BitbucketStagingTarget(
+            project_key=_required(env, "MCP_READINESS_BITBUCKET_PROJECT_KEY"),
+            repository_slug=_required(env, "MCP_READINESS_BITBUCKET_REPOSITORY_SLUG"),
+        )
+        allowed_tools = allowed_tools | {BITBUCKET_STAGING_TOOL}
+
     child_env.update(
         {
             "READ_ONLY_MODE": "true",
             "ATLASSIAN_OAUTH_PROXY_ENABLE": "false",
             "MCP_LOGGING_STDOUT": "false",
             "TOOLSETS": "all",
-            "ENABLED_TOOLS": ",".join(sorted(STAGING_ALLOWED_TOOLS)),
+            "ENABLED_TOOLS": ",".join(sorted(allowed_tools)),
             "ATLASSIAN_REQUESTS_PER_SECOND": f"{max_rpm / 60:.6g}",
             "ATLASSIAN_MAX_CONCURRENT_REQUESTS": "1",
             "ATLASSIAN_RETRY_TOTAL": "0",
@@ -100,6 +165,7 @@ def build_staging_profile(env: dict[str, str]) -> StagingProfile:
         jira_issue_key=_required(env, "MCP_READINESS_JIRA_ISSUE_KEY"),
         confluence_page_id=_required(env, "MCP_READINESS_CONFLUENCE_PAGE_ID"),
         max_rpm=max_rpm,
+        bitbucket=bitbucket,
     )
 
 
@@ -128,10 +194,13 @@ def _result_record(name: str, result: Any) -> dict[str, Any]:
     }
 
 
-def _validate_staging_tools(tool_names: set[str]) -> None:
+def _validate_staging_tools(
+    tool_names: set[str],
+    allowed_tools: frozenset[str] = STAGING_ALLOWED_TOOLS,
+) -> None:
     """Fail before live calls unless exactly the approved reads are exposed."""
-    unexpected = tool_names - STAGING_ALLOWED_TOOLS
-    missing = STAGING_ALLOWED_TOOLS - tool_names
+    unexpected = tool_names - allowed_tools
+    missing = allowed_tools - tool_names
     if unexpected:
         message = f"Readiness policy exposed unexpected tools: {sorted(unexpected)}"
         raise RuntimeError(message)
@@ -231,7 +300,9 @@ async def probe(args: argparse.Namespace) -> dict[str, Any]:
                             set(args.expect_tool_absent),
                         )
                         if profile:
-                            _validate_staging_tools(set(tool_names))
+                            _validate_staging_tools(
+                                set(tool_names), profile.allowed_tools
+                            )
                     except (ValueError, RuntimeError) as exc:
                         validation_error = exc
 
@@ -249,13 +320,25 @@ async def probe(args: argparse.Namespace) -> dict[str, Any]:
                     probes.append(
                         _result_record("confluence_get_page", confluence_result)
                     )
+                    if profile.bitbucket is not None:
+                        await anyio.sleep(60 / profile.max_rpm)
+                        bitbucket_result = await session.call_tool(
+                            BITBUCKET_STAGING_TOOL,
+                            {
+                                "project_key": profile.bitbucket.project_key,
+                                "repository_slug": profile.bitbucket.repository_slug,
+                            },
+                        )
+                        probes.append(
+                            _result_record(BITBUCKET_STAGING_TOOL, bitbucket_result)
+                        )
 
     if validation_error is not None:
         raise validation_error
 
     return {
         "transport": "stdio",
-        "staging_profile": "jira-dc-confluence-dc-pat" if profile else None,
+        "staging_profile": profile.name if profile else None,
         "max_rpm": profile.max_rpm if profile else None,
         "protocol_version": protocol_version,
         "package_versions": _installed_versions(),

@@ -24,6 +24,16 @@ def _staging_env() -> dict[str, str]:
     }
 
 
+def _bitbucket_env() -> dict[str, str]:
+    """Return the optional Bitbucket readiness values; no network is contacted."""
+    return {
+        "MCP_READINESS_BITBUCKET_URL": "https://bitbucket-staging.example.test",
+        "MCP_READINESS_BITBUCKET_ACCESS_TOKEN": "bitbucket-placeholder",
+        "MCP_READINESS_BITBUCKET_PROJECT_KEY": "PROJ",
+        "MCP_READINESS_BITBUCKET_REPOSITORY_SLUG": "repo",
+    }
+
+
 def test_staging_profile_enforces_read_only_and_30_rpm_default() -> None:
     """The live profile must fail closed with bounded Atlassian traffic."""
     profile = mcp_wire_probe.build_staging_profile(_staging_env())
@@ -35,6 +45,55 @@ def test_staging_profile_enforces_read_only_and_30_rpm_default() -> None:
     assert profile.child_env["ATLASSIAN_RETRY_TOTAL"] == "0"
     assert profile.child_env["ATLASSIAN_OAUTH_PROXY_ENABLE"] == "false"
     assert profile.child_env["ENABLED_TOOLS"] == ("confluence_get_page,jira_get_issue")
+    assert profile.bitbucket is None
+    assert profile.name == "jira-dc-confluence-dc-pat"
+    assert "BITBUCKET_URL" not in profile.child_env
+    assert "BITBUCKET_OAUTH_ACCESS_TOKEN" not in profile.child_env
+
+
+def test_staging_profile_includes_bitbucket_when_fully_configured() -> None:
+    """Setting the Bitbucket readiness variables adds one paced OAuth read."""
+    profile = mcp_wire_probe.build_staging_profile(_staging_env() | _bitbucket_env())
+
+    assert profile.bitbucket == mcp_wire_probe.BitbucketStagingTarget(
+        project_key="PROJ", repository_slug="repo"
+    )
+    assert profile.name == "jira-dc-confluence-dc-pat+bitbucket-dc-oauth"
+    assert profile.child_env["BITBUCKET_URL"] == (
+        "https://bitbucket-staging.example.test"
+    )
+    assert profile.child_env["BITBUCKET_OAUTH_ACCESS_TOKEN"] == (
+        "bitbucket-placeholder"
+    )
+    assert "MCP_READINESS_BITBUCKET_ACCESS_TOKEN" not in profile.child_env
+    assert profile.child_env["ENABLED_TOOLS"] == (
+        "bitbucket_get_default_branch,confluence_get_page,jira_get_issue"
+    )
+    assert profile.allowed_tools == (
+        mcp_wire_probe.STAGING_ALLOWED_TOOLS | {"bitbucket_get_default_branch"}
+    )
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "MCP_READINESS_BITBUCKET_ACCESS_TOKEN",
+        "MCP_READINESS_BITBUCKET_PROJECT_KEY",
+        "MCP_READINESS_BITBUCKET_REPOSITORY_SLUG",
+    ],
+)
+def test_staging_profile_rejects_partial_bitbucket_configuration(
+    missing: str,
+) -> None:
+    """A Bitbucket URL without its companions fails closed, echoing no secret."""
+    env = _staging_env() | _bitbucket_env()
+    del env[missing]
+
+    with pytest.raises(ValueError) as exc_info:
+        mcp_wire_probe.build_staging_profile(env)
+
+    assert missing in str(exc_info.value)
+    assert "bitbucket-placeholder" not in str(exc_info.value)
 
 
 @pytest.mark.parametrize("value", ["0", "31", "not-an-integer"])
@@ -91,6 +150,21 @@ def test_staging_tool_gate_requires_exact_read_allowlist() -> None:
         mcp_wire_probe._validate_staging_tools(allowed | {"jira_create_issue"})
     with pytest.raises(RuntimeError, match="missing required tools"):
         mcp_wire_probe._validate_staging_tools({"jira_get_issue"})
+
+
+def test_staging_tool_gate_extends_to_bitbucket_when_included() -> None:
+    """The Bitbucket read is required, and only allowed, when configured."""
+    with_bitbucket = frozenset(
+        mcp_wire_probe.STAGING_ALLOWED_TOOLS | {"bitbucket_get_default_branch"}
+    )
+    mcp_wire_probe._validate_staging_tools(set(with_bitbucket), with_bitbucket)
+
+    with pytest.raises(RuntimeError, match="unexpected tools"):
+        mcp_wire_probe._validate_staging_tools(set(with_bitbucket))
+    with pytest.raises(RuntimeError, match="missing required tools"):
+        mcp_wire_probe._validate_staging_tools(
+            set(mcp_wire_probe.STAGING_ALLOWED_TOOLS), with_bitbucket
+        )
 
 
 def test_sdk_field_supports_v1_and_v2_names() -> None:
