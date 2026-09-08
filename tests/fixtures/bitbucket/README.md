@@ -1,7 +1,7 @@
 # Golden Bitbucket Data Center fixtures
 
-Synthetic response bodies backing the wire-shape guards for the Bitbucket read
-surface:
+Synthetic response bodies backing the tests that pin the response shapes of the
+Bitbucket read surface:
 
 - `bb9/`: the DC 9.x shape set.
 

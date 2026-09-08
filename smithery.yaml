@@ -55,6 +55,28 @@ startCommand:
         type: string
         description: "(Optional) Comma-separated list of Jira project keys to limit searches to (e.g., 'PROJ1,PROJ2')."
 
+      # Bitbucket Data Center Config (OAuth 2.0)
+      bitbucketUrl:
+        type: string
+        description: "(Optional) Base URL for your Bitbucket Data Center instance (e.g., https://bitbucket.yourcompany.com). Enables the Bitbucket tools when set."
+      bitbucketOauthAccessToken:
+        type: string
+        description: "(Optional) A Bitbucket OAuth 2.0 access token, used as-is. Alternative to the client credentials below."
+        format: password
+      bitbucketOauthClientId:
+        type: string
+        description: "(Optional, OAuth client) Client ID from the incoming application link registered on the Bitbucket instance."
+      bitbucketOauthClientSecret:
+        type: string
+        description: "(Optional, OAuth client) Client secret from the incoming application link."
+        format: password
+      bitbucketOauthScope:
+        type: string
+        description: "(Optional, OAuth client) OAuth scopes granted to the application link, space- or comma-separated (e.g., 'REPO_READ'). Required with client credentials."
+      bitbucketOauthRedirectUri:
+        type: string
+        description: "(Optional, OAuth client) Redirect URI registered on the application link (e.g., http://localhost:8080/callback)."
+
       # General Config
       readOnlyMode:
         type: boolean
@@ -89,6 +111,14 @@ startCommand:
         JIRA_PERSONAL_TOKEN: config.jiraPersonalToken,
         JIRA_SSL_VERIFY: config.jiraSslVerify !== undefined ? String(config.jiraSslVerify) : 'true',
         JIRA_PROJECTS_FILTER: config.jiraProjectsFilter,
+
+        // Bitbucket Data Center ENV VARS
+        BITBUCKET_URL: config.bitbucketUrl,
+        BITBUCKET_OAUTH_ACCESS_TOKEN: config.bitbucketOauthAccessToken,
+        BITBUCKET_OAUTH_CLIENT_ID: config.bitbucketOauthClientId,
+        BITBUCKET_OAUTH_CLIENT_SECRET: config.bitbucketOauthClientSecret,
+        BITBUCKET_OAUTH_SCOPE: config.bitbucketOauthScope,
+        BITBUCKET_OAUTH_REDIRECT_URI: config.bitbucketOauthRedirectUri,
 
         // General ENV VARS
         READ_ONLY_MODE: config.readOnlyMode !== undefined ? String(config.readOnlyMode) : 'false',

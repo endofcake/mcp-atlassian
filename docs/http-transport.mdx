@@ -18,16 +18,16 @@ For Kubernetes deployments or environments where session state should be ephemer
 
 ```bash
 # Using uvx
-uvx mcp-atlassian --transport streamable-http --stateless --port 9000 -vv
+uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --transport streamable-http --stateless --port 9000 -vv
 
 # Or using Docker
 docker run --rm -p 9000:9000 \
   --env-file /path/to/your/.env \
-  ghcr.io/sooperset/mcp-atlassian:latest \
+  mcp-atlassian:local \
   --transport streamable-http --stateless --port 9000 -vv
 
 # Or via environment variable
-STATELESS=true uvx mcp-atlassian --transport streamable-http --port 9000
+STATELESS=true uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --transport streamable-http --port 9000
 ```
 
 <Note>
@@ -40,12 +40,12 @@ The `--stateless` flag is only supported with `streamable-http` transport. Using
   <Tab title="SSE Transport">
     ```bash
     # Using uvx
-    uvx mcp-atlassian --transport sse --port 9000 -vv
+    uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --transport sse --port 9000 -vv
 
     # Or using Docker
     docker run --rm -p 9000:9000 \
       --env-file /path/to/your/.env \
-      ghcr.io/sooperset/mcp-atlassian:latest \
+      mcp-atlassian:local \
       --transport sse --port 9000 -vv
     ```
 
@@ -63,12 +63,12 @@ The `--stateless` flag is only supported with `streamable-http` transport. Using
   <Tab title="Streamable-HTTP">
     ```bash
     # Using uvx
-    uvx mcp-atlassian --transport streamable-http --port 9000 -vv
+    uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --transport streamable-http --port 9000 -vv
 
     # Or using Docker
     docker run --rm -p 9000:9000 \
       --env-file /path/to/your/.env \
-      ghcr.io/sooperset/mcp-atlassian:latest \
+      mcp-atlassian:local \
       --transport streamable-http --port 9000 -vv
     ```
 
@@ -140,6 +140,35 @@ Both transport types support per-request authentication where each user provides
       use the server-side value as a credential.
     </Warning>
   </Tab>
+  <Tab title="Bitbucket DC (OAuth)">
+    Bitbucket Data Center accepts an OAuth 2.0 access token issued by the
+    Bitbucket instance, sent as a bearer token. Bitbucket ignores
+    `X-Atlassian-Cloud-Id`.
+
+    Server-side, set the Bitbucket URL and enable user-provided tokens. No
+    server credential is needed:
+
+    ```bash
+    BITBUCKET_URL=https://bitbucket.your-company.com
+    ATLASSIAN_OAUTH_ENABLE=true
+    ```
+
+    ```json
+    {
+      "mcpServers": {
+        "mcp-atlassian-service": {
+          "url": "http://localhost:9000/mcp",
+          "headers": {
+            "Authorization": "Bearer <BITBUCKET_DC_OAUTH_ACCESS_TOKEN>"
+          }
+        }
+      }
+    }
+    ```
+
+    Alternatively, enable the [OAuth proxy for Bitbucket](/docs/authentication#bitbucket-data-center)
+    and let MCP clients obtain the token through the proxy.
+  </Tab>
 </Tabs>
 
 ### Server Setup for Multi-User
@@ -148,24 +177,24 @@ Both transport types support per-request authentication where each user provides
   <Step title="Run OAuth Setup (if using OAuth)">
     ```bash
     # Using uvx
-    uvx mcp-atlassian --oauth-setup -v
+    uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --oauth-setup -v
 
     # Or using Docker
     docker run --rm -i \
       -p 8080:8080 \
       -v "${HOME}/.mcp-atlassian:/home/app/.mcp-atlassian" \
-      ghcr.io/sooperset/mcp-atlassian:latest --oauth-setup -v
+      mcp-atlassian:local --oauth-setup -v
     ```
   </Step>
   <Step title="Start HTTP Server">
     ```bash
     # Using uvx (with env vars set)
-    uvx mcp-atlassian --transport streamable-http --port 9000 -vv
+    uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --transport streamable-http --port 9000 -vv
 
     # Or using Docker
     docker run --rm -p 9000:9000 \
       --env-file /path/to/your/.env \
-      ghcr.io/sooperset/mcp-atlassian:latest \
+      mcp-atlassian:local \
       --transport streamable-http --port 9000 -vv
     ```
   </Step>
@@ -212,11 +241,11 @@ For multi-tenant applications where each user connects to their own Atlassian cl
 1. Enable minimal OAuth mode:
    ```bash
    # Using uvx
-   ATLASSIAN_OAUTH_ENABLE=true uvx mcp-atlassian --transport streamable-http --port 9000
+   ATLASSIAN_OAUTH_ENABLE=true uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --transport streamable-http --port 9000
 
    # Or using Docker
    docker run -e ATLASSIAN_OAUTH_ENABLE=true -p 9000:9000 \
-     ghcr.io/sooperset/mcp-atlassian:latest \
+     mcp-atlassian:local \
      --transport streamable-http --port 9000
    ```
 

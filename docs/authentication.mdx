@@ -129,13 +129,13 @@ OAuth 2.0 provides enhanced security features but requires more setup. For most 
   <Step title="Run Setup Wizard">
     ```bash
     # Using uvx
-    uvx mcp-atlassian --oauth-setup -v
+    uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --oauth-setup -v
 
     # Or using Docker
     docker run --rm -i \
       -p 8080:8080 \
       -v "${HOME}/.mcp-atlassian:/home/app/.mcp-atlassian" \
-      ghcr.io/sooperset/mcp-atlassian:latest --oauth-setup -v
+      mcp-atlassian:local --oauth-setup -v
     ```
   </Step>
   <Step title="Complete Authorization">
@@ -185,56 +185,16 @@ Registration is rejected with `invalid_redirect_uri` if the two callbacks collid
 preventing a callback loop.
 </Warning>
 
-#### Choosing the upstream provider (one per instance)
+#### Upstream provider
 
-The proxy fronts **exactly one** upstream OAuth provider, selected by which
-OAuth client credentials are configured:
-
-- **Atlassian (Jira/Confluence)** — `ATLASSIAN_OAUTH_CLIENT_ID` (or the
-  `JIRA_`/`CONFLUENCE_`-prefixed variants).
-- **Bitbucket Data Center** — `BITBUCKET_OAUTH_CLIENT_ID`. Bitbucket DC is a
-  separate OAuth provider on its own host (an incoming application link serving
-  `/rest/oauth2/latest/*` on the Bitbucket instance), not the Jira/Confluence
-  identity provider.
-
-To front Bitbucket:
-
-```bash
-ATLASSIAN_OAUTH_PROXY_ENABLE=true
-BITBUCKET_URL=https://bitbucket.your-company.com
-BITBUCKET_OAUTH_CLIENT_ID=your_bitbucket_incoming_link_client_id
-BITBUCKET_OAUTH_CLIENT_SECRET=your_bitbucket_incoming_link_client_secret
-BITBUCKET_OAUTH_REDIRECT_URI=https://mcp.example.com/mcp-atlassian/callback
-BITBUCKET_OAUTH_SCOPE=REPO_READ   # required; Bitbucket DC has no default scope
-```
-
-`BITBUCKET_OAUTH_SCOPE` is enforced differently per mode. In proxy mode a
-full Bitbucket OAuth client with an empty scope stops the server at startup.
-In non-proxy (standalone) mode the same misconfiguration does **not** stop
-startup: the Bitbucket config load fails, the server logs the error and
-continues, and the Bitbucket tools are simply absent from the tool list. If
-Bitbucket tools are unexpectedly missing, check the startup log for the
-scope error.
-
-`BITBUCKET_OAUTH_REDIRECT_URI` falls back to `ATLASSIAN_OAUTH_REDIRECT_URI`
-(both address this server, not the upstream). The deployment-level settings
-(`PUBLIC_BASE_URL`, `ATLASSIAN_OAUTH_ALLOWED_CLIENT_REDIRECT_URIS`,
-`ATLASSIAN_OAUTH_ALLOWED_GRANT_TYPES`, `ATLASSIAN_OAUTH_REQUIRE_CONSENT`) keep
-their names and apply regardless of the fronted provider.
-
-<Warning>
-**One provider at a time.** If OAuth client credentials for both the Atlassian
-and Bitbucket families are set while the proxy is enabled, the server refuses
-to start — run a separate server instance per product.
-
-Tokens minted by the proxy belong to the provider it fronts and are refused by
-the other family's tools: **Bitbucket tools do not work behind a
-Jira/Confluence-fronting OAuth proxy, and Jira/Confluence tools do not work
-behind a Bitbucket-fronting proxy.** Calls to the non-fronted service fail with
-a clear error rather than sending the proxy's token to the wrong host. Use a
-separate instance (with its own proxy or direct credentials) for the other
-product.
-</Warning>
+The proxy fronts one upstream OAuth provider per server instance, chosen by
+the client credentials that are set. `ATLASSIAN_OAUTH_CLIENT_ID` (or the
+`JIRA_`/`CONFLUENCE_` variants) selects Jira and Confluence, and
+`BITBUCKET_OAUTH_CLIENT_ID` selects Bitbucket Data Center. The proxy's tokens
+work with that provider's tools. To serve Jira or Confluence and
+Bitbucket through the proxy, run one server instance per provider. Setting
+both sets of client credentials stops the server at startup. The Bitbucket
+variables are described under [Bitbucket Data Center](#bitbucket-data-center).
 
 ### Bring Your Own Token (BYOT)
 
@@ -256,11 +216,11 @@ For multi-tenant applications where users provide their own OAuth tokens:
 1. Enable minimal OAuth mode:
    ```bash
    # Using uvx
-   ATLASSIAN_OAUTH_ENABLE=true uvx mcp-atlassian --transport streamable-http --port 9000
+   ATLASSIAN_OAUTH_ENABLE=true uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --transport streamable-http --port 9000
 
    # Or using Docker
    docker run -e ATLASSIAN_OAUTH_ENABLE=true -p 9000:9000 \
-     ghcr.io/sooperset/mcp-atlassian:latest \
+     mcp-atlassian:local \
      --transport streamable-http --port 9000
    ```
 
@@ -269,3 +229,67 @@ For multi-tenant applications where users provide their own OAuth tokens:
    - `X-Atlassian-Cloud-Id: <user_cloud_id>`
 
 See [HTTP Transport](/docs/http-transport) for more details on multi-user authentication.
+
+## Bitbucket Data Center
+
+Bitbucket Data Center authenticates with OAuth 2.0. The credentials come from
+an incoming application link, the OAuth 2.0 client an administrator registers
+on the Bitbucket instance under **Administration > Application links**. The
+link issues a client ID and secret and grants scopes such as `REPO_READ` or
+`REPO_WRITE`. There are three ways to supply a token.
+
+### Access token
+
+Set an access token issued by the application link. The server uses it
+as-is, so refreshing it is your responsibility. This is the setup for a single
+user over stdio.
+
+```bash
+BITBUCKET_URL=https://bitbucket.your-company.com
+BITBUCKET_OAUTH_ACCESS_TOKEN=your_bitbucket_access_token
+```
+
+### Per-request bearer token
+
+Over HTTP, each caller can send its own access token as
+`Authorization: Bearer <token>`. Enable user-provided tokens and set the URL.
+No server-side credential is needed.
+
+```bash
+BITBUCKET_URL=https://bitbucket.your-company.com
+ATLASSIAN_OAUTH_ENABLE=true
+```
+
+Bitbucket ignores `X-Atlassian-Cloud-Id`. See
+[HTTP Transport](/docs/http-transport#multi-user-authentication) for the
+client configuration.
+
+### OAuth proxy
+
+Set the application link's client ID, secret, redirect URI, and scope, and
+enable the [OAuth proxy](#mcp-oauth-proxy-dcr--discovery). The proxy obtains a
+token for each MCP client through the standard OAuth flow and refreshes it.
+
+```bash
+ATLASSIAN_OAUTH_PROXY_ENABLE=true
+BITBUCKET_URL=https://bitbucket.your-company.com
+BITBUCKET_OAUTH_CLIENT_ID=your_client_id
+BITBUCKET_OAUTH_CLIENT_SECRET=your_client_secret
+BITBUCKET_OAUTH_REDIRECT_URI=https://mcp.example.com/mcp-atlassian/callback
+BITBUCKET_OAUTH_SCOPE=REPO_READ
+```
+
+`BITBUCKET_OAUTH_REDIRECT_URI` falls back to `ATLASSIAN_OAUTH_REDIRECT_URI`.
+Both address this server. The proxy's deployment settings (`PUBLIC_BASE_URL`,
+`ATLASSIAN_OAUTH_ALLOWED_CLIENT_REDIRECT_URIS`,
+`ATLASSIAN_OAUTH_ALLOWED_GRANT_TYPES`, `ATLASSIAN_OAUTH_REQUIRE_CONSENT`) keep
+their names for every provider.
+
+`BITBUCKET_OAUTH_SCOPE` is required, because Bitbucket Data Center grants no
+scope by default. With the proxy enabled, an empty scope stops the server at
+startup. Without the proxy, the Bitbucket configuration fails to load, the
+server logs the error and starts the other services, and the Bitbucket tools
+are missing from the tool list.
+
+Client credentials on their own produce no token. Set them for the proxy, and
+use an access token or per-request bearer tokens otherwise.

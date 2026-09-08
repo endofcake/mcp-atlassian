@@ -1,6 +1,6 @@
 ---
 title: "Common Workflows"
-description: "Practical recipes for common Jira and Confluence tasks with MCP Atlassian"
+description: "Practical recipes for common Jira, Confluence, and Bitbucket Data Center tasks with MCP Atlassian"
 ---
 
 This guide provides step-by-step workflows for common tasks using MCP Atlassian tools.
@@ -118,6 +118,30 @@ confluence_search: {"query": "space = DEV AND type = page AND lastModified < '20
 Check page view analytics:
 ```json
 confluence_get_page_views: {"page_id": "12345678"}
+```
+
+## Bitbucket Workflows
+
+### Review a Pull Request
+
+1. **Find the open pull requests in a repository** (`summary` keeps the list small):
+```json
+bitbucket_list_pull_requests: {"project_key": "PROJ", "repository_slug": "my-repo", "state": "OPEN", "limit": 20, "summary": true}
+```
+
+2. **Read the diff**, capping the output so a large change stays readable:
+```json
+bitbucket_get_pull_request_diff: {"project_key": "PROJ", "repository_slug": "my-repo", "pull_request_id": 42, "max_files": 20, "max_lines_per_file": 200}
+```
+
+3. **Comment on a specific line**. `line` is 1-based within the diff, and `line_type` is `ADDED`, `REMOVED`, or `CONTEXT`:
+```json
+bitbucket_add_pull_request_comment: {"project_key": "PROJ", "repository_slug": "my-repo", "pull_request_id": 42, "text": "This retry loop has no upper bound.", "file_path": "src/client.py", "line": 118, "line_type": "ADDED"}
+```
+
+4. **Record your review status:**
+```json
+bitbucket_set_pull_request_review_status: {"project_key": "PROJ", "repository_slug": "my-repo", "pull_request_id": 42, "status": "NEEDS_WORK"}
 ```
 
 ## Cross-Product Workflows

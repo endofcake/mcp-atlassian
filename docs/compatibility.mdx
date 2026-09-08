@@ -19,6 +19,8 @@ MCP Atlassian works with any MCP-compatible client. This page documents platform
 | OpenAI Gateway | Compatible | stdio / HTTP | |
 | ChatGPT | Not tested | HTTP | See [ChatGPT notes](#chatgpt) |
 
+Bitbucket support is a property of the Atlassian side rather than the AI platform: every platform above reaches Bitbucket Data Center through the same tools, and Bitbucket Cloud is not supported by any of them. See [Cloud vs Server/Data Center](#cloud-vs-serverdata-center) below.
+
 ## MCP stdio readiness probe
 
 Maintainers can exercise the public MCP initialize and `tools/list` boundary
@@ -51,7 +53,7 @@ uv run python scripts/mcp_wire_probe.py \
 The expected revision is lane-specific. Do not infer it from the installed MCP
 SDK major version: an SDK can retain an older protocol revision unless the
 newer protocol era is explicitly selected. See the MCP 2 / FastMCP 4 findings
-in [issue #1541](https://github.com/sooperset/mcp-atlassian/issues/1541).
+in upstream sooperset/mcp-atlassian [issue #1541](https://github.com/sooperset/mcp-atlassian/issues/1541).
 
 Repeat `--expect-tool-present` or `--expect-tool-absent` to make public tool
 discovery an explicit gate. These checks run immediately after `tools/list` and
@@ -123,7 +125,7 @@ GitHub Copilot's coding agent supports MCP servers via stdio transport. Key conf
       "mcpServers": {
         "mcp-atlassian": {
           "command": "uvx",
-          "args": ["mcp-atlassian"],
+          "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
           "env": {
             "JIRA_URL": "https://your-instance.atlassian.net",
             "JIRA_USERNAME": "your-email@example.com",
@@ -136,11 +138,11 @@ GitHub Copilot's coding agent supports MCP servers via stdio transport. Key conf
   </Step>
 
   <Step title="Verify tool discovery">
-    If Copilot reports "Retrieved 0 tools", ensure you are using `mcp-atlassian >= 0.16.0` (which includes FastMCP updates for better protocol compliance). Current releases run on FastMCP v3 (`>=3.2.4,<4.0.0`) while exposing the standard MCP protocol over stdio and HTTP, so MCP clients do not need FastMCP installed. If an older client still cannot discover tools, update the client to a current MCP-compatible release.
+    If Copilot reports "Retrieved 0 tools", ensure you are running a current build from this repository. Current releases run on FastMCP v3 (`>=3.2.4,<4.0.0`) while exposing the standard MCP protocol over stdio and HTTP, so MCP clients do not need FastMCP installed. If an older client still cannot discover tools, update the client to a current MCP-compatible release.
   </Step>
 
   <Step title="Docker alternative">
-    When using Docker, expose via stdio (not HTTP):
+    When using Docker, expose via stdio (not HTTP). Build the image first as described in [Installation](/docs/installation#docker):
 
     ```json
     {
@@ -152,7 +154,7 @@ GitHub Copilot's coding agent supports MCP servers via stdio transport. Key conf
             "-e", "JIRA_URL=https://your-instance.atlassian.net",
             "-e", "JIRA_USERNAME=your-email@example.com",
             "-e", "JIRA_API_TOKEN=your-api-token",
-            "ghcr.io/sooperset/mcp-atlassian:latest"
+            "mcp-atlassian:local"
           ]
         }
       }
@@ -165,15 +167,15 @@ GitHub Copilot's coding agent supports MCP servers via stdio transport. Key conf
 
 Vertex AI enforces strict JSON Schema validation. The automatic `anyOf` flattening resolves the `INVALID_ARGUMENT` errors previously reported with Google ADK.
 
-If you encounter schema errors, ensure you are running the latest version:
+If you encounter schema errors, ensure you are running the latest build from this repository (`uvx` caches Git installs, so refresh explicitly):
 
 ```bash
-uvx mcp-atlassian@latest
+uvx --refresh --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --help
 ```
 
 ### ChatGPT
 
-ChatGPT's MCP integration has reported vague "violates guidelines" errors. This may be related to schema validation but no specific diagnostics are available. If you encounter this, please [open an issue](https://github.com/sooperset/mcp-atlassian/issues) with the exact error message.
+ChatGPT's MCP integration has reported vague "violates guidelines" errors. This may be related to schema validation but no specific diagnostics are available. If you encounter this, please [open an issue](https://github.com/endofcake/mcp-atlassian/issues) with the exact error message.
 
 ## HTTP Transport
 
@@ -181,7 +183,7 @@ For platforms that require HTTP transport (e.g., remote deployments, gateways), 
 
 ## Cloud vs Server/Data Center
 
-MCP Atlassian supports both Atlassian Cloud and Server/Data Center deployments, but some features differ between platforms.
+MCP Atlassian supports both Atlassian Cloud and Server/Data Center deployments for Jira and Confluence, but some features differ between platforms. Bitbucket is supported on Data Center only.
 
 ### Authentication Methods
 
@@ -191,6 +193,8 @@ MCP Atlassian supports both Atlassian Cloud and Server/Data Center deployments, 
 | Personal Access Token (PAT) | No | Yes |
 | OAuth 2.0 | Yes (3LO) | Yes (Application Links) |
 | BYOT (Bring Your Own Token) | Yes | Yes |
+
+Bitbucket Data Center accepts OAuth 2.0 only (client credentials from an incoming application link, the Bitbucket-side registration that issues them, or a bring-your-own access token); there is no API-token, password, or PAT path, and Bitbucket Cloud is not supported.
 
 ### Tool Availability
 
@@ -203,6 +207,7 @@ MCP Atlassian supports both Atlassian Cloud and Server/Data Center deployments, 
 | `confluence_check_content_permissions` | Yes | No | Cloud-only content permissions API |
 | `confluence_get_space_permissions` | Yes | No | Cloud-only space permissions API |
 | `confluence_search_user` | Yes (CQL) | Yes (group member fallback) | Server/DC uses group member API; specify `group_name` |
+| `bitbucket_*` (21 tools) | No | Yes (Data Center) | Projects, repositories, refs, commits, source browsing, pull requests |
 
 ### Content Format Differences
 

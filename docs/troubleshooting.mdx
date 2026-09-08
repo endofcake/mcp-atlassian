@@ -17,6 +17,11 @@ description: "Fix auth errors (401/403), field issues, rate limiting, SSL proble
     - For older Confluence servers, try basic auth with `CONFLUENCE_USERNAME` and `CONFLUENCE_API_TOKEN` (where token is your password)
   </Accordion>
 
+  <Accordion title="Authentication Failures (Bitbucket Data Center)">
+    - Check that the OAuth 2.0 access token was issued by the Bitbucket instance in `BITBUCKET_URL` and has not expired
+    - See [Bitbucket Data Center](/docs/authentication#bitbucket-data-center) for the `BITBUCKET_OAUTH_*` variables
+  </Accordion>
+
   <Accordion title="SSL Certificate Issues">
     mcp-atlassian uses the OS native trust store by default (via
     [truststore](https://truststore.readthedocs.io/)), so certificates
@@ -30,6 +35,7 @@ description: "Fix auth errors (401/403), field issues, rate limiting, SSL proble
     ```bash
     JIRA_SSL_VERIFY=false
     CONFLUENCE_SSL_VERIFY=false
+    BITBUCKET_SSL_VERIFY=false
     ```
 
     To disable the OS trust store integration (fall back to the bundled
@@ -82,7 +88,7 @@ Test your configuration interactively:
 
 ```bash
 # With uvx
-npx @modelcontextprotocol/inspector uvx mcp-atlassian
+npx @modelcontextprotocol/inspector uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian
 
 # With local development version
 npx @modelcontextprotocol/inspector uv --directory /path/to/mcp-atlassian run mcp-atlassian
@@ -190,6 +196,37 @@ Header values containing sensitive information are automatically masked in logs.
     2. Ensure your app has `offline_access` scope for refresh tokens
     3. Check if the OAuth app is still active in your Atlassian developer console
   </Accordion>
+
+  <Accordion title="Bitbucket tools are missing from the tool list">
+    **Symptom:** `BITBUCKET_URL` is set, but no `bitbucket_*` tools appear when the
+    client lists tools.
+
+    **Cause:** The Bitbucket configuration failed to load. The most common reason is
+    an empty `BITBUCKET_OAUTH_SCOPE` with `BITBUCKET_OAUTH_CLIENT_ID` and
+    `BITBUCKET_OAUTH_CLIENT_SECRET` set. The server logs the error, starts the
+    other services, and omits the Bitbucket tools.
+
+    **Fix:**
+    1. Check the startup log for `Failed to load Bitbucket configuration`
+    2. Set `BITBUCKET_OAUTH_SCOPE` (for example `REPO_READ`) or fix the reported variable
+    3. Restart the server. The configuration is read once at startup
+
+    See [Bitbucket Data Center](/docs/authentication#bitbucket-data-center).
+  </Accordion>
+
+  <Accordion title="Bitbucket tool refused behind a Jira/Confluence OAuth proxy">
+    **Symptom:** With `ATLASSIAN_OAUTH_PROXY_ENABLE=true`, Jira and Confluence tools
+    work but every Bitbucket tool call fails with an error about the token belonging
+    to another provider.
+
+    **Cause:** The OAuth proxy fronts one upstream provider per server instance,
+    selected by the OAuth client credentials that are configured, and its tokens
+    work with that provider's tools.
+
+    **Fix:** Run a separate server instance for the other product, with its own proxy
+    or direct credentials. See
+    [Upstream provider](/docs/authentication#upstream-provider).
+  </Accordion>
 </AccordionGroup>
 
 ## Field and Data Errors
@@ -261,6 +298,11 @@ Header values containing sensitive information are automatically masked in logs.
     - Add delays between bulk operations
     - Use batch tools (`jira_batch_create_issues`, `jira_batch_get_changelogs`) instead of individual calls
     - Consider using `ENABLED_TOOLS` to limit which tools are available
+    - The `ATLASSIAN_RETRY_*`, `ATLASSIAN_MAX_CONCURRENT_REQUESTS`,
+      `ATLASSIAN_REQUESTS_PER_SECOND`, and `ATLASSIAN_CIRCUIT_BREAKER_*` settings in
+      [HTTP Hardening](/docs/configuration#http-hardening) apply to Jira, Confluence,
+      and Bitbucket alike. A 429 from any of them is reported with the server's
+      `Retry-After` value in the tool error
   </Accordion>
 </AccordionGroup>
 
@@ -275,6 +317,7 @@ Header values containing sensitive information are automatically masked in logs.
     # Disable SSL verification (not recommended for production)
     JIRA_SSL_VERIFY=false
     CONFLUENCE_SSL_VERIFY=false
+    BITBUCKET_SSL_VERIFY=false
     ```
 
     For mTLS (mutual TLS) authentication, set either a combined cert/key PEM:
@@ -298,8 +341,11 @@ Header values containing sensitive information are automatically masked in logs.
     ```bash
     JIRA_TIMEOUT=120
     CONFLUENCE_TIMEOUT=120
+    BITBUCKET_TIMEOUT=120
     ```
-    - Check if a proxy is required:
+    - Check if a proxy is required (globally, or per service with
+      `JIRA_HTTPS_PROXY`, `CONFLUENCE_HTTPS_PROXY`, `BITBUCKET_HTTPS_PROXY`
+      and their `*_HTTP_PROXY`, `*_SOCKS_PROXY`, `*_NO_PROXY` counterparts):
     ```bash
     HTTPS_PROXY=https://proxy.example.com:8443
     ```
@@ -313,6 +359,8 @@ Header values containing sensitive information are automatically masked in logs.
 
 ## Getting Help
 
-- Check [GitHub Issues](https://github.com/sooperset/mcp-atlassian/issues) for known problems
-- Review [SECURITY.md](https://github.com/sooperset/mcp-atlassian/blob/main/SECURITY.md) for security-related concerns
-- Open a new issue with debug logs if the problem persists
+- Check [GitHub Issues](https://github.com/endofcake/mcp-atlassian/issues) for known problems
+- Review [SECURITY.md](https://github.com/endofcake/mcp-atlassian/blob/main/SECURITY.md) for security-related concerns
+- Open a new issue with debug logs if the problem persists. Jira and Confluence
+  bugs that also reproduce on [upstream](https://github.com/sooperset/mcp-atlassian)
+  belong in the upstream issue tracker

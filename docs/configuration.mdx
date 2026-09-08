@@ -23,7 +23,7 @@ This guide covers IDE integration, environment variables, and advanced configura
   "mcpServers": {
     "mcp-atlassian": {
       "command": "uvx",
-      "args": ["mcp-atlassian"],
+      "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
       "env": {
         "JIRA_URL": "https://your-company.atlassian.net",
         "JIRA_USERNAME": "your.email@company.com",
@@ -44,7 +44,7 @@ This guide covers IDE integration, environment variables, and advanced configura
       "args": [
         "run", "--rm", "-i",
         "--env-file", "/path/to/your/mcp-atlassian.env",
-        "ghcr.io/sooperset/mcp-atlassian:latest"
+        "mcp-atlassian:local"
       ]
     }
   }
@@ -58,7 +58,7 @@ This guide covers IDE integration, environment variables, and advanced configura
   "mcpServers": {
     "mcp-atlassian": {
       "command": "uvx",
-      "args": ["mcp-atlassian"],
+      "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
       "env": {
         "JIRA_URL": "https://jira.your-company.com",
         "JIRA_PERSONAL_TOKEN": "your_pat",
@@ -79,7 +79,7 @@ For mTLS, replace the personal token variables with client certificate variables
   "mcpServers": {
     "mcp-atlassian": {
       "command": "uvx",
-      "args": ["mcp-atlassian"],
+      "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
       "env": {
         "JIRA_URL": "https://jira.your-company.com",
         "JIRA_CLIENT_CERT": "/etc/mcp-atlassian/jira-client-cert.pem",
@@ -103,7 +103,7 @@ For mTLS, replace the personal token variables with client certificate variables
       "mcpServers": {
         "mcp-atlassian": {
           "command": "uvx",
-          "args": ["mcp-atlassian"],
+          "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
           "env": {
             "CONFLUENCE_URL": "https://your-company.atlassian.net/wiki",
             "CONFLUENCE_USERNAME": "your.email@company.com",
@@ -120,7 +120,7 @@ For mTLS, replace the personal token variables with client certificate variables
       "mcpServers": {
         "mcp-atlassian": {
           "command": "uvx",
-          "args": ["mcp-atlassian"],
+          "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
           "env": {
             "JIRA_URL": "https://your-company.atlassian.net",
             "JIRA_USERNAME": "your.email@company.com",
@@ -130,6 +130,27 @@ For mTLS, replace the personal token variables with client certificate variables
       }
     }
     ```
+  </Tab>
+  <Tab title="Bitbucket Only">
+    Bitbucket Data Center with an access token from its application link:
+
+    ```json
+    {
+      "mcpServers": {
+        "mcp-atlassian": {
+          "command": "uvx",
+          "args": ["--from", "git+https://github.com/endofcake/mcp-atlassian", "mcp-atlassian"],
+          "env": {
+            "BITBUCKET_URL": "https://bitbucket.your-company.com",
+            "BITBUCKET_OAUTH_ACCESS_TOKEN": "your_bitbucket_oauth_access_token"
+          }
+        }
+      }
+    }
+    ```
+
+    For per-request tokens and the OAuth proxy, see
+    [Bitbucket Data Center](/docs/authentication#bitbucket-data-center).
   </Tab>
 </Tabs>
 
@@ -155,9 +176,17 @@ For mTLS, replace the personal token variables with client certificate variables
 | `CONFLUENCE_CLIENT_KEY` | Confluence mTLS private key PEM path when the certificate is separate (Server/DC) |
 | `CONFLUENCE_CLIENT_KEY_PASSWORD` | Not supported for encrypted private keys; decrypt the key before use |
 | `CONFLUENCE_SSL_VERIFY` | SSL verification (`true`/`false`) |
+| `BITBUCKET_URL` | Bitbucket Data Center base URL |
+| `BITBUCKET_SSL_VERIFY` | SSL verification (`true`/`false`, default: `true`) |
+| `JIRA_TIMEOUT` | Jira request timeout in seconds (default: `75`) |
+| `CONFLUENCE_TIMEOUT` | Confluence request timeout in seconds (default: `75`) |
+| `BITBUCKET_TIMEOUT` | Bitbucket request timeout in seconds (default: `75`) |
 | `MCP_ATLASSIAN_USE_SYSTEM_TRUSTSTORE` | Use OS native trust store (`true`/`false`, default: `true`) |
 | `MCP_ATLASSIAN_VALIDATION_CACHE_TTL` | Multi-user credential validation cache lifetime in seconds (`0` disables, default: `300`) |
 | `MCP_ATLASSIAN_VALIDATION_CACHE_MAXSIZE` | Maximum cached multi-user credential validations (default: `100`) |
+
+Bitbucket authenticates with OAuth 2.0. Its `BITBUCKET_OAUTH_*` variables are
+described under [Bitbucket Data Center](/docs/authentication#bitbucket-data-center).
 
 <Warning>
 Encrypted private keys are not supported. Setting `JIRA_CLIENT_KEY_PASSWORD` or
@@ -174,6 +203,7 @@ openssl rsa -in encrypted.key -out decrypted.key
 |----------|-------------|---------|
 | `JIRA_PROJECTS_FILTER` | Limit to specific Jira projects | `PROJ,DEV,SUPPORT` |
 | `CONFLUENCE_SPACES_FILTER` | Limit to specific Confluence spaces | `DEV,TEAM,DOC` |
+| `BITBUCKET_PROJECTS_FILTER` | Allowlist of Bitbucket project keys applied to project discovery and listing (`bitbucket_list_projects`). Other tools accept any project key | `PROJ,DEVOPS` |
 | `ENABLED_TOOLS` | Enable only specific tools | `confluence_search,jira_get_issue` |
 | `TOOLSETS` | Enable tool groups (see [Toolset Filtering](#toolset-filtering)) | `default`, `legacy`, `all`, `default,jira_agile` |
 
@@ -209,6 +239,8 @@ JIRA_PROJECT_KEY_PATTERN=^[A-Z0-9][A-Z0-9_]*$
 | `MCP_VERBOSE` | Enable verbose logging (`true`/`false`) |
 | `MCP_VERY_VERBOSE` | Enable debug logging (`true`/`false`) |
 | `MCP_LOGGING_STDOUT` | Log to stdout instead of stderr (`true`/`false`) |
+| `JIRA_FETCHER_MAX_WORKERS` | Maximum concurrent Jira tool calls offloaded to worker threads (default: `8`) |
+| `BITBUCKET_FETCHER_MAX_WORKERS` | Maximum concurrent Bitbucket tool calls offloaded to worker threads (default: `8`) |
 | `CONFLUENCE_ATTACHMENT_DOWNLOAD_USE_V1` | Download Confluence attachments via the v1 REST endpoint instead of the legacy `/download/` link (removed on Cloud). Unset = auto (v1 on Cloud, legacy on Server/DC); `true`/`false` to force. |
 | `ATLASSIAN_OAUTH_PROXY_ENABLE` | Enable OAuth proxy + DCR + `/.well-known/*` routes (`true`/`false`) |
 | `PUBLIC_BASE_URL` | Public base URL for OAuth discovery metadata |
@@ -217,7 +249,7 @@ JIRA_PROJECT_KEY_PATTERN=^[A-Z0-9][A-Z0-9_]*$
 | `ATLASSIAN_OAUTH_REQUIRE_CONSENT` | Require local consent page before upstream redirect (`true`/`false`) |
 | `IGNORE_HEADER_AUTH` | Bypass proxy-injected auth headers. For GCP Cloud Run, AWS ALB deployments where load balancers inject Authorization headers (`true`/`false`) |
 
-See [.env.example](https://github.com/sooperset/mcp-atlassian/blob/main/.env.example) for all available options.
+See [.env.example](https://github.com/endofcake/mcp-atlassian/blob/main/.env.example) for all available options.
 
 ### HTTP Hardening
 
@@ -230,7 +262,7 @@ instances from runaway request loops. They are disabled by default.
 | `ATLASSIAN_RETRY_BACKOFF` | Retry exponential backoff factor in seconds (default: `1.0` when retries are enabled). |
 | `ATLASSIAN_RETRY_INCLUDE_WRITES` | Also retry write methods (`POST`/`PUT`/`PATCH`/`DELETE`). Use only when writes are known to be idempotent. |
 | `ATLASSIAN_RETRY_IGNORE_RETRY_AFTER` | Ignore the server's `Retry-After` header and use exponential backoff instead. Enable this for gateways that emit bogus values such as `Retry-After: 0`. |
-| `ATLASSIAN_MAX_CONCURRENT_REQUESTS` | Process-wide cap for concurrent Jira and Confluence requests. `0` or unset disables the cap. |
+| `ATLASSIAN_MAX_CONCURRENT_REQUESTS` | Process-wide cap for concurrent requests across all enabled services (Jira, Confluence, and Bitbucket). `0` or unset disables the cap. |
 | `ATLASSIAN_REQUESTS_PER_SECOND` | Process-wide outbound request rate limit. `0` or unset disables the limit. |
 | `ATLASSIAN_MAX_PAGINATION_LIMIT` | Clamp user-supplied page sizes for high-fanout list/search calls. `0` or unset disables clamping. |
 | `ATLASSIAN_CIRCUIT_BREAKER_THRESHOLD` | Open a process-wide circuit breaker after this many consecutive `429/503` responses. `0` or unset disables it. |
@@ -253,12 +285,16 @@ with optional PAC/WPAD auto-configuration.
 | `JIRA_PROXY_WPAD_ENABLE`, `JIRA_PROXY_WPAD_URL` | Jira-specific PAC/WPAD overrides |
 | `CONFLUENCE_HTTP_PROXY`, `CONFLUENCE_HTTPS_PROXY`, `CONFLUENCE_SOCKS_PROXY`, `CONFLUENCE_NO_PROXY` | Confluence-specific explicit proxy overrides |
 | `CONFLUENCE_PROXY_WPAD_ENABLE`, `CONFLUENCE_PROXY_WPAD_URL` | Confluence-specific PAC/WPAD overrides |
+| `BITBUCKET_HTTP_PROXY`, `BITBUCKET_HTTPS_PROXY`, `BITBUCKET_SOCKS_PROXY`, `BITBUCKET_NO_PROXY` | Bitbucket-specific explicit proxy overrides |
+| `BITBUCKET_PROXY_WPAD_ENABLE`, `BITBUCKET_PROXY_WPAD_URL` | Bitbucket-specific PAC/WPAD overrides |
 
 Service-specific variables override global ones. PAC/WPAD is opt-in and is
 only evaluated when no explicit proxy is configured for that service.
-PAC/WPAD support is provided by the optional `wpad` extra. Install it with
-`pip install "mcp-atlassian[wpad]"` or `uv add "mcp-atlassian[wpad]"` before
-enabling the feature. The published Docker image includes this extra.
+PAC/WPAD support is provided by the optional `wpad` extra. Install it before
+enabling the feature, for example with
+`uvx --from "mcp-atlassian[wpad] @ git+https://github.com/endofcake/mcp-atlassian" mcp-atlassian`
+or `uv sync --extra wpad` in a checkout. The Dockerfile in this repository
+installs this extra.
 
 ## Custom HTTP Headers
 
@@ -293,11 +329,8 @@ Some header names are ignored even when listed: `Authorization`,
 `Proxy-Authorization`, `Host`, and hop-by-hop headers (such as `Connection`,
 `Transfer-Encoding`, `Keep-Alive`) are dropped with a warning, because
 forwarding them would replace the session's own upstream credential or corrupt
-the upstream request. `Authorization` is forwarded only in external auth mode,
-where the incoming bearer is the intended upstream credential. Deployments
-that previously listed `Authorization` for a non-external session were
-forwarding the wrong token; that configuration is now ignored rather than
-honored.
+the upstream request. In external auth mode the incoming bearer is the intended
+upstream credential, so `Authorization` is forwarded there.
 
 Only configure headers that are set by a trusted proxy or gateway. Clients can
 control any passthrough header they are allowed to send to the MCP endpoint.
@@ -306,13 +339,12 @@ When external auth uses a client-supplied Jira or Confluence URL, configure
 trusted session headers cannot be forwarded to an attacker-controlled host.
 
 Each `MCP_ALLOWED_URL_DOMAINS` entry is a suffix match that also trusts every
-subdomain beneath it — list full hostnames (`jira.corp.example.com`), never a
-bare apex or label. The configured `JIRA_URL` / `CONFLUENCE_URL` /
-`BITBUCKET_URL` hosts, by contrast, are trusted exactly, not as suffixes: a
-deployment whose load balancer redirects to per-node private hostnames (for
-example `node1.jira.internal`) must add those hostnames to
-`MCP_ALLOWED_URL_DOMAINS`, or requests to them are refused with a non-global
-address rejection.
+subdomain beneath it, so list full hostnames such as `jira.corp.example.com`.
+The configured `JIRA_URL`, `CONFLUENCE_URL`, and `BITBUCKET_URL` hosts are
+trusted as exact matches. A deployment whose load balancer redirects to
+per-node private hostnames (for example `node1.jira.internal`) must add those
+hostnames to `MCP_ALLOWED_URL_DOMAINS`, or requests to them are refused as
+non-global addresses.
 
 <Note>
 Header values are masked in debug logs for security.
@@ -332,7 +364,7 @@ READ_ONLY_MODE=true
 
 Command-line alternative:
 ```bash
-uvx mcp-atlassian --enabled-tools "confluence_search,jira_get_issue"
+uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --enabled-tools "confluence_search,jira_get_issue"
 ```
 
 ### Toolset Filtering
@@ -359,7 +391,7 @@ TOOLSETS=all
 
 Command-line alternative:
 ```bash
-uvx mcp-atlassian --toolsets "default,jira_agile"
+uvx --from git+https://github.com/endofcake/mcp-atlassian mcp-atlassian --toolsets "default,jira_agile"
 ```
 
 **Core toolsets** (included with `TOOLSETS=default`):
