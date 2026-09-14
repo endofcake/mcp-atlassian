@@ -10,6 +10,10 @@ from typing import Annotated
 from fastmcp import Context
 from pydantic import Field
 
+from mcp_atlassian.bitbucket.builds import (
+    DEFAULT_BUILD_STATUSES_LIMIT,
+    MAX_BUILD_STATUSES_LIMIT,
+)
 from mcp_atlassian.bitbucket.client import (
     DEFAULT_PROJECTS_LIMIT,
     MAX_PROJECTS_LIMIT,
@@ -814,6 +818,110 @@ async def get_commit(
         commit_id=commit_id,
     )
     return json.dumps(commit.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Get Bitbucket Commit Build Status", "readOnlyHint": True},
+)
+async def get_commit_build_status(
+    ctx: Context,
+    commit_id: Annotated[
+        str,
+        Field(
+            description=(
+                "The full 40-character commit SHA. Abbreviated ids are rejected "
+                "because this lookup is not repository scoped and cannot resolve "
+                "them. For a pull request's head commit, use "
+                "'from_ref.latest_commit' from get_pull_request."
+            ),
+        ),
+    ],
+    order_by: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional ordering: 'NEWEST' (most recently updated first), "
+                "'OLDEST', or 'STATUS' (grouped by state). Any other value is "
+                "rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first status to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of statuses to return in this window. If more "
+                "exist than are returned, the response sets 'truncated' to true "
+                "and 'next_page_start' to the cursor for the next call. The "
+                "instance serves at most the 100 most recent statuses per commit."
+            ),
+            default=DEFAULT_BUILD_STATUSES_LIMIT,
+            ge=1,
+            le=MAX_BUILD_STATUSES_LIMIT,
+        ),
+    ] = DEFAULT_BUILD_STATUSES_LIMIT,
+) -> str:
+    """Get the CI build statuses posted against a commit.
+
+    Each status carries a 'state' (normally SUCCESSFUL, FAILED, INPROGRESS,
+    CANCELLED, or UNKNOWN), the CI plan key and name, the build URL, and
+    optional test counts. The lookup is by commit id alone (not repository
+    scoped); to check a pull request's CI state, pass the
+    'from_ref.latest_commit' value returned by get_pull_request. An empty
+    list means no status was posted against that exact SHA; it does not
+    confirm the commit exists, so verify the SHA with get_commit when that
+    matters. The endpoint returns at most 100 statuses per commit.
+
+    Args:
+        ctx: The FastMCP context.
+        commit_id: The commit SHA.
+        order_by: Optional ordering (NEWEST, OLDEST, or STATUS).
+        start: Pagination cursor (offset of the first status); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of statuses to return in this window.
+
+    Returns:
+        JSON string with the list of build statuses plus ``count`` (the size
+        of this window), ``page_counts`` (statuses in this window per state,
+        with a status that has no state tallied under UNKNOWN),
+        ``is_last_page``, ``truncated``, and ``next_page_start``.
+        ``page_counts`` covers only the returned window. It covers every
+        status the endpoint returns for the commit only when the call used
+        ``start=0`` and came back with ``is_last_page`` true and ``truncated``
+        false, and the endpoint itself returns at most 100 statuses.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.get_commit_build_statuses,
+        commit_id=commit_id,
+        order_by=order_by,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "commit_id": commit_id.strip().lower(),
+        "build_statuses": [status.to_simplified_dict() for status in page.statuses],
+        "count": len(page.statuses),
+        "page_counts": page.page_counts,
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
 
 
 @bitbucket_mcp.tool(

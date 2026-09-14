@@ -6,6 +6,7 @@ composes single-responsibility domain mixins over the ``BitbucketClient`` base,
 mirroring the Jira/Confluence architecture.
 """
 
+from .builds import BuildsMixin
 from .commits import CommitsMixin
 from .config import BitbucketConfig
 from .projects import ProjectsMixin
@@ -16,7 +17,13 @@ from .source import SourceMixin
 
 
 class BitbucketFetcher(
-    ProjectsMixin, ReposMixin, RefsMixin, PullRequestsMixin, CommitsMixin, SourceMixin
+    ProjectsMixin,
+    ReposMixin,
+    RefsMixin,
+    PullRequestsMixin,
+    CommitsMixin,
+    SourceMixin,
+    BuildsMixin,
 ):
     """Bitbucket Data Center client composing all domain mixins.
 
@@ -35,6 +42,8 @@ class BitbucketFetcher(
       single-commit lookup, and pull-request commit listing.
     - :class:`~mcp_atlassian.bitbucket.source.SourceMixin`: directory and file
       browsing over the ``browse`` endpoint.
+    - :class:`~mcp_atlassian.bitbucket.builds.BuildsMixin`: CI build statuses
+      for a commit, over the ``build-status`` REST module.
     """
 
     pass

@@ -16,6 +16,7 @@ from fastmcp.exceptions import ToolError
 from starlette.requests import Request
 
 from src.mcp_atlassian.bitbucket import BitbucketFetcher
+from src.mcp_atlassian.bitbucket.builds import BitbucketBuildStatusesPage
 from src.mcp_atlassian.bitbucket.client import (
     BitbucketProjectsPage,
     BitbucketResourceNotFoundError,
@@ -41,6 +42,7 @@ from src.mcp_atlassian.utils.oauth import OAuthConfig
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://bitbucket.example.com"
+FULL_SHA = "e00cf62997a027bbf785614a93e2e55bb331d268"
 
 
 def _model_mock(simplified: dict, summary: dict | None = None) -> MagicMock:
@@ -110,6 +112,23 @@ def mock_bitbucket_fetcher() -> MagicMock:
     mock_fetcher.list_commits.return_value = commits_page
     mock_fetcher.get_pull_request_commits.return_value = commits_page
     mock_fetcher.get_commit.return_value = commit
+
+    build_status = _model_mock(
+        {
+            "key": "PLAN-UNIT",
+            "state": "SUCCESSFUL",
+            "name": "Unit tests",
+            "url": "https://ci.example.com/browse/PLAN-UNIT-3",
+            "test_results": {"successful": 10, "failed": 0, "skipped": 1},
+        }
+    )
+    mock_fetcher.get_commit_build_statuses.return_value = BitbucketBuildStatusesPage(
+        statuses=[build_status],
+        is_last_page=True,
+        truncated=False,
+        next_page_start=None,
+        page_counts={"SUCCESSFUL": 1},
+    )
 
     directory_entry = _model_mock({"path": "app.py", "type": "FILE", "size": 12})
     mock_fetcher.browse.return_value = BitbucketBrowseResult(
@@ -200,6 +219,7 @@ def test_bitbucket_mcp(
         delete_pull_request_comment,
         edit_pull_request_comment,
         get_commit,
+        get_commit_build_status,
         get_default_branch,
         get_pull_request,
         get_pull_request_activities,
@@ -242,6 +262,7 @@ def test_bitbucket_mcp(
     bitbucket_sub_mcp.add_tool(get_default_branch)
     bitbucket_sub_mcp.add_tool(list_commits)
     bitbucket_sub_mcp.add_tool(get_commit)
+    bitbucket_sub_mcp.add_tool(get_commit_build_status)
     bitbucket_sub_mcp.add_tool(browse_path)
     bitbucket_sub_mcp.add_tool(list_pull_requests)
     bitbucket_sub_mcp.add_tool(get_pull_request)
@@ -730,6 +751,71 @@ class TestGetCommit:
         result = _result_json(response)
         assert result["id"] == "abc123def456"
         assert result["display_id"] == "abc123d"
+
+
+@pytest.mark.anyio
+class TestGetCommitBuildStatus:
+    """The get_commit_build_status tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the statuses with the page envelope."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_commit_build_status",
+            {"commit_id": FULL_SHA.upper()},
+        )
+
+        mock_bitbucket_fetcher.get_commit_build_statuses.assert_called_once_with(
+            commit_id=FULL_SHA.upper(),
+            order_by=None,
+            start=0,
+            limit=25,
+        )
+        result = _result_json(response)
+        # The echoed id is normalised to the lower-case form the fetcher sends.
+        assert result["commit_id"] == FULL_SHA
+        assert result["count"] == 1
+        assert result["build_statuses"][0]["state"] == "SUCCESSFUL"
+        assert result["build_statuses"][0]["test_results"]["successful"] == 10
+        assert result["page_counts"] == {"SUCCESSFUL": 1}
+        assert result["is_last_page"] is True
+        assert result["truncated"] is False
+        assert result["next_page_start"] is None
+
+    async def test_order_by_and_paging_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """order_by, start, and limit reach the fetcher unchanged."""
+        await bitbucket_client.call_tool(
+            "bitbucket_get_commit_build_status",
+            {"commit_id": FULL_SHA, "order_by": "STATUS", "start": 25, "limit": 50},
+        )
+
+        mock_bitbucket_fetcher.get_commit_build_statuses.assert_called_once_with(
+            commit_id=FULL_SHA, order_by="STATUS", start=25, limit=50
+        )
+
+    async def test_limit_above_ceiling_is_rejected(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A limit over the endpoint's 100-status cap fails schema validation."""
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_get_commit_build_status",
+                {"commit_id": FULL_SHA, "limit": 101},
+            )
+        mock_bitbucket_fetcher.get_commit_build_statuses.assert_not_called()
+
+    async def test_invalid_commit_id_surfaces_value_error(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A fetcher ValueError reaches the client as a tool error."""
+        mock_bitbucket_fetcher.get_commit_build_statuses.side_effect = ValueError(
+            "commit_id must be a full commit SHA of 40 hexadecimal characters."
+        )
+        with pytest.raises(ToolError, match="commit_id must be a full commit SHA"):
+            await bitbucket_client.call_tool(
+                "bitbucket_get_commit_build_status", {"commit_id": "not-a-sha"}
+            )
 
 
 @pytest.mark.anyio
@@ -1800,7 +1886,7 @@ class TestFetcherOffload:
         tools = self._tool_functions()
         # The registered tool count is part of the contract: a new tool must
         # be routed through the helper and this pin bumped in the same change.
-        assert len(tools) == 21
+        assert len(tools) == 22
 
         for name, function in tools.items():
             fetcher_names = self._fetcher_names(function)

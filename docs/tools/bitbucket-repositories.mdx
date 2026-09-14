@@ -1,6 +1,6 @@
 ---
 title: "Bitbucket Repositories"
-description: "Repositories, branches, tags, commits, and source browsing"
+description: "Repositories, branches, tags, commits, build statuses, and source browsing"
 ---
 
 ### List Bitbucket Repositories
@@ -116,6 +116,21 @@ Get a single commit by id in a Bitbucket Data Center repository.
 | `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
 | `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
 | `commit_id` | `string` | Yes | The commit SHA (full or abbreviated). Returned strictly by id. |
+
+---
+
+### Get Bitbucket Commit Build Status
+
+Get the CI build statuses posted against a commit.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `commit_id` | `string` | Yes | The full 40-character commit SHA. Abbreviated ids are rejected because this lookup is not repository scoped and cannot resolve them. For a pull request's head commit, use 'from_ref.latest_commit' from get_pull_request. |
+| `order_by` | `string` | No | Optional ordering: 'NEWEST' (most recently updated first), 'OLDEST', or 'STATUS' (grouped by state). Any other value is rejected. |
+| `start` | `integer` | No | Pagination cursor: the offset of the first status to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of statuses to return in this window. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. The instance serves at most the 100 most recent statuses per commit. |
 
 ---
 

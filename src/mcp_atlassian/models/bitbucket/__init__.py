@@ -16,6 +16,7 @@ default; a scalar that is present with a value of another type raises
 """
 
 from .activity import BitbucketActivity, BitbucketComment
+from .build import BitbucketBuildStatus, BitbucketTestResults
 from .change import BitbucketChange
 from .commit import BitbucketCommit
 from .diff import (
@@ -39,6 +40,7 @@ from .user import BitbucketUser
 __all__ = [
     "BitbucketActivity",
     "BitbucketBranch",
+    "BitbucketBuildStatus",
     "BitbucketChange",
     "BitbucketComment",
     "BitbucketCommit",
@@ -54,5 +56,6 @@ __all__ = [
     "BitbucketRef",
     "BitbucketRepository",
     "BitbucketTag",
+    "BitbucketTestResults",
     "BitbucketUser",
 ]

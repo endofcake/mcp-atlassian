@@ -7,6 +7,7 @@ import pytest
 from mcp_atlassian.models.bitbucket import (
     BitbucketActivity,
     BitbucketBranch,
+    BitbucketBuildStatus,
     BitbucketChange,
     BitbucketComment,
     BitbucketCommit,
@@ -19,6 +20,7 @@ from mcp_atlassian.models.bitbucket import (
     BitbucketPullRequestDiff,
     BitbucketRepository,
     BitbucketTag,
+    BitbucketTestResults,
     BitbucketUser,
 )
 
@@ -1108,6 +1110,89 @@ class TestBitbucketDirectoryEntry:
         }
 
 
+_BUILD_STATUS_API = {
+    "key": "PLAN-UNIT",
+    "name": "Unit tests",
+    "state": "FAILED",
+    "url": "https://ci.corp.example.com/browse/PLAN-UNIT-3",
+    "description": "Unit test build",
+    "buildNumber": "3",
+    "duration": 1500000,
+    "ref": "refs/heads/main",
+    "parent": "PLAN",
+    "projectKey": "PROJ",
+    "repositorySlug": "my-repo",
+    "createdDate": 1587533099278,
+    "updatedDate": 1587533699278,
+    "testResults": {"successful": 134, "failed": 1, "skipped": 5},
+}
+
+
+class TestBitbucketBuildStatus:
+    """BitbucketBuildStatus parsing and simplification."""
+
+    def test_from_api_response_maps_fields(self):
+        status = BitbucketBuildStatus.from_api_response(_BUILD_STATUS_API)
+        assert status.key == "PLAN-UNIT"
+        assert status.name == "Unit tests"
+        assert status.state == "FAILED"
+        assert status.url == "https://ci.corp.example.com/browse/PLAN-UNIT-3"
+        assert status.build_number == "3"
+        assert status.duration == 1500000
+        assert status.ref == "refs/heads/main"
+        assert status.parent == "PLAN"
+        assert status.project_key == "PROJ"
+        assert status.repository_slug == "my-repo"
+        assert status.created_date == 1587533099278
+        assert status.updated_date == 1587533699278
+        assert isinstance(status.test_results, BitbucketTestResults)
+        assert status.test_results.failed == 1
+
+    def test_simplified_dict_nests_test_results_and_uses_snake_case(self):
+        result = BitbucketBuildStatus.from_api_response(
+            _BUILD_STATUS_API
+        ).to_simplified_dict()
+        assert result["build_number"] == "3"
+        assert result["test_results"] == {
+            "successful": 134,
+            "failed": 1,
+            "skipped": 5,
+        }
+        assert "buildNumber" not in result
+        assert "testResults" not in result
+
+    def test_absent_test_results_is_omitted(self):
+        data = {k: v for k, v in _BUILD_STATUS_API.items() if k != "testResults"}
+        status = BitbucketBuildStatus.from_api_response(data)
+        assert status.test_results is None
+        assert "test_results" not in status.to_simplified_dict()
+
+    @pytest.mark.parametrize("wire_value", [None, {}, [], "n/a"])
+    def test_null_empty_or_non_object_test_results_is_omitted(self, wire_value):
+        """A nested object that is null, empty, or not an object takes the default."""
+        data = {**_BUILD_STATUS_API, "testResults": wire_value}
+        status = BitbucketBuildStatus.from_api_response(data)
+        assert status.test_results is None
+        assert "test_results" not in status.to_simplified_dict()
+
+    def test_partial_test_results_omit_missing_counts(self):
+        data = {**_BUILD_STATUS_API, "testResults": {"successful": 3}}
+        result = BitbucketBuildStatus.from_api_response(data).to_simplified_dict()
+        assert result["test_results"] == {"successful": 3}
+
+    def test_minimal_status_omits_absent_optionals(self):
+        result = BitbucketBuildStatus.from_api_response(
+            {"key": "K", "state": "SUCCESSFUL"}
+        ).to_simplified_dict()
+        assert result == {"key": "K", "state": "SUCCESSFUL"}
+
+    def test_empty_input_returns_default_instance(self):
+        status = BitbucketBuildStatus.from_api_response({})
+        assert status.key == ""
+        assert status.state == ""
+        assert status.to_simplified_dict() == {}
+
+
 class TestBitbucketWireShapes:
     """The read models parse the DC 9.x runtime wire shapes."""
 
@@ -1395,6 +1480,24 @@ class TestScalarFieldTypes:
                 BitbucketCommit,
                 {"id": "sha", "authorTimestamp": "yesterday"},
                 "authorTimestamp",
+                "an integer",
+            ),
+            (
+                BitbucketBuildStatus,
+                {"key": "K", "state": "SUCCESSFUL", "duration": "long"},
+                "duration",
+                "an integer",
+            ),
+            (
+                BitbucketBuildStatus,
+                {"key": "K", "state": 1},
+                "state",
+                "a string",
+            ),
+            (
+                BitbucketTestResults,
+                {"successful": True},
+                "successful",
                 "an integer",
             ),
             (BitbucketPullRequest, {"id": 7, "state": 5}, "state", "a string"),
