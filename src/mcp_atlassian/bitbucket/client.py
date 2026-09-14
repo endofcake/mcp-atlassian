@@ -246,7 +246,41 @@ class BitbucketClient:
         Returns:
             The base URL joined with the ``/rest/api/1.0`` path.
         """
-        return f"{self.config.url.rstrip('/')}{API_BASE_PATH}"
+        return self._module_root(API_BASE_PATH)
+
+    def _module_root(self, base_path: str) -> str:
+        """Return the root URL of one Bitbucket DC REST module.
+
+        Bitbucket DC exposes more than one REST module under ``/rest``: the
+        core API at ``/rest/api/1.0`` and, for example, the build-status
+        module at ``/rest/build-status/1.0``. Every module shares the host,
+        session, and error taxonomy. Only the path prefix differs.
+
+        The prefix is an internal constant, never caller input. Its shape is
+        checked as a guard against a mis-typed constant: it must start with a
+        single ``/`` and carry no ``?``, ``#``, or ``..``. The check does not
+        require a ``/rest/`` prefix, so it relies on callers passing a module
+        constant.
+
+        Args:
+            base_path: The module's path prefix (e.g. ``API_BASE_PATH``).
+
+        Returns:
+            The base URL joined with ``base_path``.
+
+        Raises:
+            ValueError: If ``base_path`` is not a plain absolute path prefix.
+        """
+        if (
+            not base_path.startswith("/")
+            or base_path.startswith("//")
+            or any(token in base_path for token in ("?", "#", ".."))
+        ):
+            raise ValueError(
+                "base_path must be an absolute REST module prefix such as "
+                f"{API_BASE_PATH!r}."
+            )
+        return f"{self.config.url.rstrip('/')}{base_path}"
 
     def _request(
         self,
@@ -257,8 +291,9 @@ class BitbucketClient:
         json_body: Any | None = None,
         allow_empty: bool = False,
         max_response_bytes: int | None = None,
+        base_path: str = API_BASE_PATH,
     ) -> Any:
-        """Issue a request against the Bitbucket DC core REST API.
+        """Issue a request against a Bitbucket DC REST module.
 
         Carries the leak-free error taxonomy shared by every verb:
         :meth:`_get`/:meth:`_post`/:meth:`_put`/:meth:`_delete` are thin
@@ -272,7 +307,7 @@ class BitbucketClient:
 
         Args:
             method: HTTP method (``"GET"``, ``"POST"``, ``"PUT"``, ``"DELETE"``).
-            path: API path relative to ``/rest/api/1.0`` (e.g. ``"/projects"``).
+            path: API path relative to ``base_path`` (e.g. ``"/projects"``).
             params: Optional query parameters.
             json_body: Optional JSON request body (writes only). When None no
                 body is attached, so a GET issues the exact original call.
@@ -286,6 +321,9 @@ class BitbucketClient:
                 bounds the bytes pulled over the network and buffered in memory.
                 The upstream server still generates the full body; only the
                 download is bounded.
+            base_path: The REST module prefix the path is relative to. The
+                core API (``/rest/api/1.0``) unless a caller addresses another
+                module (see :meth:`_module_root`).
 
         Returns:
             The parsed JSON response, or ``None`` for an empty body when
@@ -302,7 +340,7 @@ class BitbucketClient:
                 returns a non-JSON body (e.g. an HTML proxy login page on a
                 200).
         """
-        url = f"{self._api_root}{path}"
+        url = f"{self._module_root(base_path)}{path}"
         # Only a write attaches a body; a GET is issued without ``json=``.
         # Every response is streamed so the byte cap can stop the download.
         request_kwargs: dict[str, Any] = {
@@ -701,23 +739,30 @@ class BitbucketClient:
         params: dict[str, Any] | None = None,
         *,
         max_response_bytes: int | None = None,
+        base_path: str = API_BASE_PATH,
     ) -> Any:
-        """Issue a GET against the Bitbucket DC core REST API.
+        """Issue a GET against a Bitbucket DC REST module.
 
         Thin wrapper over :meth:`_request`; see it for the shared error
         taxonomy.
 
         Args:
-            path: API path relative to ``/rest/api/1.0`` (e.g. ``"/projects"``).
+            path: API path relative to ``base_path`` (e.g. ``"/projects"``).
             params: Optional query parameters.
             max_response_bytes: Optional cap on the downloaded body size (see
+                :meth:`_request`).
+            base_path: The REST module prefix, the core API unless given (see
                 :meth:`_request`).
 
         Returns:
             The parsed JSON response.
         """
         return self._request(
-            "GET", path, params=params, max_response_bytes=max_response_bytes
+            "GET",
+            path,
+            params=params,
+            max_response_bytes=max_response_bytes,
+            base_path=base_path,
         )
 
     def _post(self, path: str, *, json_body: Any) -> Any:
@@ -959,6 +1004,7 @@ class BitbucketClient:
         start: int = 0,
         params: dict[str, Any] | None = None,
         transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+        base_path: str = API_BASE_PATH,
     ) -> BitbucketPage:
         """Fetch one window of a Bitbucket DC paged endpoint.
 
@@ -974,7 +1020,7 @@ class BitbucketClient:
         window.
 
         Args:
-            path: API path relative to ``/rest/api/1.0`` (e.g. ``"/projects"``).
+            path: API path relative to ``base_path`` (e.g. ``"/projects"``).
             limit: The window size, sent as the ``limit`` query param; the result
                 is sliced to it. Callers clamp this to their own domain ceiling
                 first.
@@ -982,6 +1028,8 @@ class BitbucketClient:
                 from the beginning.
             params: Extra query params merged into the request.
             transform: Optional narrowing of the window's ``values`` list.
+            base_path: The REST module prefix, the core API unless given (see
+                :meth:`_request`).
 
         Returns:
             A :class:`BitbucketPage` with the window's items (at most ``limit``),
@@ -1002,7 +1050,7 @@ class BitbucketClient:
             MCPAtlassianAuthenticationError: If the bearer token is rejected.
         """
         page_params = {**(params or {}), "start": start, "limit": limit}
-        page = self._get(path, params=page_params)
+        page = self._get(path, params=page_params, base_path=base_path)
         values = self._page_values(page, path)
         if transform is not None:
             values = transform(values)

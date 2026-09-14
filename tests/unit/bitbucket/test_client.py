@@ -230,6 +230,67 @@ class TestBitbucketFetcherCalls:
             "https://bitbucket.corp.example.com/rest/api/1.0/inbox/pull-requests/count"
         )
 
+    def test_get_defaults_to_core_api_module(self):
+        """_get composes the URL under /rest/api/1.0 when no base_path is given."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        attach_json(response, {"ok": True})
+
+        with patch.object(fetcher._session, "get", return_value=response) as mock_get:
+            result = fetcher._get("/projects/PROJ")
+
+        assert result == {"ok": True}
+        assert mock_get.call_args[0][0] == (
+            "https://bitbucket.corp.example.com/rest/api/1.0/projects/PROJ"
+        )
+
+    def test_get_addresses_another_rest_module_via_base_path(self):
+        """A base_path swaps the module prefix without touching the path."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        response = MagicMock()
+        response.raise_for_status.return_value = None
+        attach_json(response, {"ok": True})
+
+        with patch.object(fetcher._session, "get", return_value=response) as mock_get:
+            fetcher._get("/commits/abc123", base_path="/rest/build-status/1.0")
+
+        assert mock_get.call_args[0][0] == (
+            "https://bitbucket.corp.example.com/rest/build-status/1.0/commits/abc123"
+        )
+
+    @pytest.mark.parametrize(
+        "bad_prefix",
+        ["rest/api/1.0", "//evil.example/rest", "/rest/api/1.0?x=1", "/rest/../x"],
+    )
+    def test_malformed_base_path_raises_without_request(self, bad_prefix):
+        """A mis-shaped module prefix is rejected before any request is issued."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+
+        with patch.object(fetcher._session, "get") as mock_get:
+            with pytest.raises(ValueError, match="base_path must be"):
+                fetcher._get("/projects", base_path=bad_prefix)
+        mock_get.assert_not_called()
+
+    def test_fetch_page_forwards_base_path(self):
+        """_fetch_page issues its single request under the given module."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([{"key": "A"}], is_last_page=True),
+        ) as mock_get:
+            page = fetcher._fetch_page(
+                "/commits/abc123", limit=5, base_path="/rest/build-status/1.0"
+            )
+
+        assert page.values == [{"key": "A"}]
+        assert mock_get.call_args[0][0] == (
+            "https://bitbucket.corp.example.com/rest/build-status/1.0/commits/abc123"
+        )
+        assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 5}
+
     def test_get_current_user_rejects_non_dict_response(self):
         """A non-object validation body is an auth error."""
         fetcher = BitbucketFetcher(config=_byo_config())
