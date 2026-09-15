@@ -15,6 +15,8 @@ from mcp_atlassian.models.bitbucket import (
     BitbucketDiffSegment,
     BitbucketDirectoryEntry,
     BitbucketFileDiff,
+    BitbucketMergeStatus,
+    BitbucketMergeVeto,
     BitbucketProject,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
@@ -1191,6 +1193,120 @@ class TestBitbucketBuildStatus:
         assert status.key == ""
         assert status.state == ""
         assert status.to_simplified_dict() == {}
+
+
+# Shapes mirror RestPullRequestMergeability. ``canMerge`` is a runtime-only key.
+_MERGE_CLEAN_API = {
+    "canMerge": True,
+    "conflicted": False,
+    "outcome": "CLEAN",
+    "vetoes": [],
+}
+
+_MERGE_VETOED_API = {
+    "canMerge": False,
+    "conflicted": False,
+    "outcome": "CLEAN",
+    "vetoes": [
+        {
+            "summaryMessage": "Requires approvals",
+            "detailedMessage": "You need 2 approvals before this can be merged.",
+        },
+        {
+            "summaryMessage": "Not all required builds are successful yet",
+            "detailedMessage": "You still need 1 successful build.",
+        },
+    ],
+}
+
+
+class TestBitbucketMergeStatus:
+    """BitbucketMergeStatus / BitbucketMergeVeto parsing and projection."""
+
+    def test_clean(self):
+        status = BitbucketMergeStatus.from_api_response(_MERGE_CLEAN_API)
+        assert status.can_merge is True
+        assert status.conflicted is False
+        assert status.outcome == "CLEAN"
+        assert status.vetoes == []
+        assert status.to_simplified_dict() == {
+            "can_merge": True,
+            "conflicted": False,
+            "outcome": "CLEAN",
+            "vetoes": [],
+        }
+
+    def test_conflicted(self):
+        status = BitbucketMergeStatus.from_api_response(
+            {"canMerge": False, "conflicted": True, "outcome": "CONFLICTED"}
+        )
+        assert status.can_merge is False
+        assert status.conflicted is True
+        assert status.outcome == "CONFLICTED"
+        assert status.to_simplified_dict()["vetoes"] == []
+
+    def test_vetoed(self):
+        status = BitbucketMergeStatus.from_api_response(_MERGE_VETOED_API)
+        assert status.can_merge is False
+        assert [v.summary for v in status.vetoes] == [
+            "Requires approvals",
+            "Not all required builds are successful yet",
+        ]
+        simplified = status.to_simplified_dict()
+        assert simplified["vetoes"][0] == {
+            "summary": "Requires approvals",
+            "detail": "You need 2 approvals before this can be merged.",
+        }
+
+    def test_missing_can_merge_is_omitted(self):
+        """``canMerge`` is undocumented in the specification, so it may be absent."""
+        status = BitbucketMergeStatus.from_api_response(
+            {"conflicted": False, "outcome": "CLEAN", "vetoes": []}
+        )
+        assert status.can_merge is None
+        assert "can_merge" not in status.to_simplified_dict()
+
+    def test_unknown_outcome_passes_through(self):
+        """A value outside the documented enum passes through."""
+        status = BitbucketMergeStatus.from_api_response({"outcome": "PENDING"})
+        assert status.outcome == "PENDING"
+
+    @pytest.mark.parametrize("body", [{"outcome": "CLEAN"}, {"vetoes": None}])
+    def test_missing_or_null_vetoes_is_empty(self, body):
+        status = BitbucketMergeStatus.from_api_response(body)
+        assert status.vetoes == []
+        assert status.to_simplified_dict()["vetoes"] == []
+
+    @pytest.mark.parametrize("vetoes", [{}, "none", 0, True])
+    def test_non_list_vetoes_raises(self, vetoes):
+        with pytest.raises(
+            ValueError,
+            match=f"'vetoes' in BitbucketMergeStatus is {type(vetoes).__name__}, "
+            "not a list",
+        ):
+            BitbucketMergeStatus.from_api_response({"vetoes": vetoes})
+
+    def test_non_object_veto_entry_raises(self):
+        with pytest.raises(
+            ValueError, match="an entry of 'vetoes' in BitbucketMergeStatus is str"
+        ):
+            BitbucketMergeStatus.from_api_response({"vetoes": ["Requires approvals"]})
+
+    def test_wrong_typed_scalars_raise(self):
+        with pytest.raises(ValueError, match="'canMerge' in BitbucketMergeStatus"):
+            BitbucketMergeStatus.from_api_response({"canMerge": "yes"})
+        with pytest.raises(ValueError, match="'summaryMessage' in BitbucketMergeVeto"):
+            BitbucketMergeVeto.from_api_response({"summaryMessage": 1})
+
+    def test_message_less_veto_projects_as_empty_object(self):
+        """A veto with no messages still counts as a blocker in the list."""
+        status = BitbucketMergeStatus.from_api_response({"vetoes": [{}]})
+        assert status.to_simplified_dict()["vetoes"] == [{}]
+
+    def test_empty_input_gives_defaults(self):
+        status = BitbucketMergeStatus.from_api_response({})
+        assert status.to_simplified_dict() == {"vetoes": []}
+        assert BitbucketMergeVeto.from_api_response({}).to_simplified_dict() == {}
 
 
 class TestBitbucketWireShapes:

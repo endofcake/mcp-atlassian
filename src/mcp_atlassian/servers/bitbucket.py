@@ -1246,6 +1246,57 @@ async def get_pull_request(
 @bitbucket_mcp.tool(
     tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
     annotations={
+        "title": "Get Bitbucket Pull Request Merge Status",
+        "readOnlyHint": True,
+    },
+)
+async def get_pull_request_merge_status(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+) -> str:
+    """Check whether a Bitbucket Data Center pull request can be merged.
+
+    Reports conflicts between the source and target branches and the merge
+    checks (required reviewers, required builds, and other repository hooks)
+    that veto the merge. Only an open pull request can be checked. A merged
+    or declined one fails with the server's message.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+
+    Returns:
+        JSON string with ``can_merge`` (when the server reports it),
+        ``conflicted``, ``outcome`` (``CLEAN``, ``CONFLICTED``, or
+        ``UNKNOWN`` when the server has not determined it yet, in which case
+        check again shortly; any other server value is passed through as
+        reported), and ``vetoes`` (each with ``summary`` and ``detail``;
+        empty when nothing blocks the merge).
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    merge_status = await run_bitbucket_fetcher_call(
+        bitbucket.get_pull_request_merge_status,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+    )
+    return json.dumps(merge_status.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={
         "title": "Get Bitbucket Pull Request Commits",
         "readOnlyHint": True,
     },

@@ -153,6 +153,14 @@ def mock_bitbucket_fetcher() -> MagicMock:
         next_page_start=None,
     )
     mock_fetcher.get_pull_request.return_value = pull_request
+    mock_fetcher.get_pull_request_merge_status.return_value = _model_mock(
+        {
+            "can_merge": False,
+            "conflicted": False,
+            "outcome": "CLEAN",
+            "vetoes": [{"summary": "Requires approvals", "detail": "Need 2."}],
+        }
+    )
     change = _model_mock({"path": "src/app.py", "type": "MODIFY", "node_type": "FILE"})
     mock_fetcher.get_pull_request_changes.return_value = BitbucketChangesPage(
         changes=[change], is_last_page=True, truncated=False, next_page_start=None
@@ -227,6 +235,7 @@ def test_bitbucket_mcp(
         get_pull_request_comments,
         get_pull_request_commits,
         get_pull_request_diff,
+        get_pull_request_merge_status,
         get_tag,
         list_branches,
         list_commits,
@@ -267,6 +276,7 @@ def test_bitbucket_mcp(
     bitbucket_sub_mcp.add_tool(list_pull_requests)
     bitbucket_sub_mcp.add_tool(get_pull_request)
     bitbucket_sub_mcp.add_tool(get_pull_request_commits)
+    bitbucket_sub_mcp.add_tool(get_pull_request_merge_status)
     bitbucket_sub_mcp.add_tool(get_pull_request_changes)
     bitbucket_sub_mcp.add_tool(get_pull_request_diff)
     bitbucket_sub_mcp.add_tool(get_pull_request_activities)
@@ -1165,6 +1175,88 @@ class TestGetPullRequest:
 
 
 @pytest.mark.anyio
+class TestGetPullRequestMergeStatus:
+    """The get_pull_request_merge_status tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the mergeability entity directly."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_get_pull_request_merge_status",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+            },
+        )
+
+        mock_bitbucket_fetcher.get_pull_request_merge_status.assert_called_once_with(
+            project_key="PROJ", repository_slug="my-repo", pull_request_id=5
+        )
+        result = _result_json(response)
+        assert result["can_merge"] is False
+        assert result["outcome"] == "CLEAN"
+        assert result["vetoes"][0]["summary"] == "Requires approvals"
+
+    async def test_invalid_id_rejected_before_call(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A non-positive id fails schema validation without reaching the fetcher."""
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_get_pull_request_merge_status",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 0,
+                },
+            )
+        mock_bitbucket_fetcher.get_pull_request_merge_status.assert_not_called()
+
+    async def test_not_open_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The 409 message for a closed pull request surfaces as a ToolError."""
+        mock_bitbucket_fetcher.get_pull_request_merge_status.side_effect = ValueError(
+            "Bitbucket API request to .../merge failed with HTTP 409: "
+            "The pull request is not open."
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_get_pull_request_merge_status",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 5,
+                },
+            )
+
+        assert "not open" in str(excinfo.value)
+
+    async def test_not_found_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A not-found error surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.get_pull_request_merge_status.side_effect = (
+            BitbucketResourceNotFoundError(
+                "Bitbucket resource not found (HTTP 404) for the pull request."
+            )
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_get_pull_request_merge_status",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 999,
+                },
+            )
+
+        assert "Bitbucket resource not found (HTTP 404)" in str(excinfo.value)
+
+
+@pytest.mark.anyio
 class TestGetPullRequestCommits:
     """The get_pull_request_commits tool."""
 
@@ -1886,7 +1978,7 @@ class TestFetcherOffload:
         tools = self._tool_functions()
         # The registered tool count is part of the contract: a new tool must
         # be routed through the helper and this pin bumped in the same change.
-        assert len(tools) == 22
+        assert len(tools) == 23
 
         for name, function in tools.items():
             fetcher_names = self._fetcher_names(function)

@@ -182,6 +182,7 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "bitbucket_list_pull_requests",
         "bitbucket_get_pull_request",
         "bitbucket_get_pull_request_commits",
+        "bitbucket_get_pull_request_merge_status",
         "bitbucket_get_pull_request_changes",
         "bitbucket_get_pull_request_diff",
         "bitbucket_get_pull_request_activities",

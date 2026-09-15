@@ -26,6 +26,7 @@ from .diff import (
     BitbucketFileDiff,
     BitbucketPullRequestDiff,
 )
+from .merge_status import BitbucketMergeStatus, BitbucketMergeVeto
 from .project import BitbucketProject
 from .pull_request import (
     BitbucketParticipant,
@@ -49,6 +50,8 @@ __all__ = [
     "BitbucketDiffSegment",
     "BitbucketDirectoryEntry",
     "BitbucketFileDiff",
+    "BitbucketMergeStatus",
+    "BitbucketMergeVeto",
     "BitbucketParticipant",
     "BitbucketProject",
     "BitbucketPullRequest",

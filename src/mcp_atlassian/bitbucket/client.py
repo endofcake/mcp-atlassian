@@ -302,8 +302,9 @@ class BitbucketClient:
         failure map to a crafted message that omits the raw transport error, so
         internal host/pool details do not reach the client. The sole exception
         is a 400/409, where the instance's own ``errors[].message`` text (and
-        nothing else from the body) is appended so a write rejection is
-        actionable.
+        nothing else from the body) is appended so a rejected request (a write
+        the server refuses, or a read such as the merge status of a closed
+        pull request) is actionable.
 
         Args:
             method: HTTP method (``"GET"``, ``"POST"``, ``"PUT"``, ``"DELETE"``).
@@ -412,9 +413,11 @@ class BitbucketClient:
                 logger.error(error_msg)
                 raise BitbucketResourceNotFoundError(error_msg) from e
             if status in (400, 409):
-                # A write rejection (bad anchor, author-self-approve, stale
-                # version). Surface only the instance's own errors[].message so
-                # the caller can act on it.
+                # A rejected request, either a write the server refuses (bad
+                # anchor, author-self-approve, stale version) or a read it
+                # declines (merge status of a closed pull request). Only the
+                # instance's own errors[].message is appended so the caller
+                # can act on it.
                 detail = self._extract_error_messages(e.response, path)
                 error_msg = (
                     f"Bitbucket API request to {path} failed with HTTP {status}"

@@ -56,6 +56,20 @@ List the commits that make up a Bitbucket Data Center pull request.
 
 ---
 
+### Get Bitbucket Pull Request Merge Status
+
+Check whether a Bitbucket Data Center pull request can be merged.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+
+---
+
 ### Get Bitbucket Pull Request Changes
 
 List the files a Bitbucket Data Center pull request changes.

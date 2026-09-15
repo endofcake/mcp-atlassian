@@ -75,3 +75,37 @@ def _opt_bool(data: dict[str, Any], key: str, *, model: str) -> bool | None:
     if value is None or isinstance(value, bool):
         return value
     raise _shape_error(model, key, value, "a boolean")
+
+
+def _opt_list(data: dict[str, Any], key: str, *, model: str) -> list[Any]:
+    """Read an optional collection of objects.
+
+    A collection that is absent or null is empty, since the server omits it
+    when there is nothing to report. A collection present with any other type, or
+    holding an entry that is not an object, is reported as a shape error,
+    because dropping entries would report a corrupt body as a complete one.
+
+    Args:
+        data: The raw API object.
+        key: The wire key to read.
+        model: The model name, for the error message.
+
+    Returns:
+        The list of raw entry objects (empty when the key is absent or null).
+
+    Raises:
+        ValueError: If the value is present and is not a list, or if any
+            entry is not an object.
+    """
+    value = data.get(key)
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise _shape_error(model, key, value, "a list")
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError(
+                "Bitbucket returned an unexpected response shape: an entry of "
+                f"'{key}' in {model} is {type(item).__name__}, not an object."
+            )
+    return value

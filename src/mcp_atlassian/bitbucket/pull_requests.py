@@ -10,6 +10,7 @@ from ..models.bitbucket import (
     BitbucketChange,
     BitbucketComment,
     BitbucketFileDiff,
+    BitbucketMergeStatus,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
     BitbucketUser,
@@ -294,6 +295,43 @@ class PullRequestsMixin(BitbucketClient):
                 f"{base}/{pr_id}; expected a non-empty pull-request object."
             )
         return BitbucketPullRequest.from_api_response(data)
+
+    def get_pull_request_merge_status(
+        self, project_key: str, repository_slug: str, pull_request_id: int | str
+    ) -> BitbucketMergeStatus:
+        """Get whether a pull request can merge: conflicts and merge-check vetoes.
+
+        Calls ``GET .../pull-requests/{pullRequestId}/merge`` (one request).
+        The endpoint answers only for an open pull request. For a merged or
+        declined one the server replies 409 and the raised error carries the
+        instance's own message.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+
+        Returns:
+            A :class:`~mcp_atlassian.models.bitbucket.BitbucketMergeStatus`.
+
+        Raises:
+            ValueError: If a segment is blank, the id is not a positive integer,
+                the response is not a non-empty object, the pull request is not
+                open (HTTP 409), or the request fails.
+            BitbucketResourceNotFoundError: If the pull request does not exist or
+                is not accessible.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        path = f"{base}/{pr_id}/merge"
+        data = self._get(path)
+        if not isinstance(data, dict) or not data:
+            raise ValueError(
+                "Bitbucket returned an unexpected response shape for "
+                f"{path}; expected a non-empty mergeability object."
+            )
+        return BitbucketMergeStatus.from_api_response(data)
 
     def get_pull_request_diff(
         self,

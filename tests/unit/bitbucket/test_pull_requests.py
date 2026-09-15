@@ -371,6 +371,119 @@ class TestGetPullRequest:
                 fetcher.get_pull_request("P", "r", 999)
 
 
+_MERGE_STATUS = {
+    "canMerge": False,
+    "conflicted": False,
+    "outcome": "CLEAN",
+    "vetoes": [
+        {
+            "summaryMessage": "Requires approvals",
+            "detailedMessage": "You need 2 approvals before this can be merged.",
+        }
+    ],
+}
+
+
+class TestGetPullRequestMergeStatus:
+    """get_pull_request_merge_status: single fetch, id validation, shape, 409."""
+
+    def test_returns_model_with_one_request(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "get", return_value=_json_response(_MERGE_STATUS)
+        ) as mock_get:
+            status = fetcher.get_pull_request_merge_status("PROJ", "my-repo", 5)
+
+        assert status.can_merge is False
+        assert status.conflicted is False
+        assert status.outcome == "CLEAN"
+        assert [v.summary for v in status.vetoes] == ["Requires approvals"]
+        assert mock_get.call_count == 1
+        called_url = mock_get.call_args[0][0]
+        assert called_url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/5/merge"
+        )
+        assert mock_get.call_args[1]["params"] is None
+
+    def test_conflicted(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"canMerge": False, "conflicted": True, "outcome": "CONFLICTED"}
+        with patch.object(fetcher._session, "get", return_value=_json_response(body)):
+            status = fetcher.get_pull_request_merge_status("PROJ", "my-repo", 5)
+
+        assert status.conflicted is True
+        assert status.outcome == "CONFLICTED"
+        assert status.vetoes == []
+
+    def test_missing_can_merge_is_none(self):
+        """The specification omits ``canMerge``; the model tolerates its absence."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"conflicted": False, "outcome": "CLEAN", "vetoes": []}
+        with patch.object(fetcher._session, "get", return_value=_json_response(body)):
+            status = fetcher.get_pull_request_merge_status("PROJ", "my-repo", 5)
+
+        assert status.can_merge is None
+        assert status.outcome == "CLEAN"
+
+    def test_null_vetoes_is_empty(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"conflicted": False, "outcome": "CLEAN", "vetoes": None}
+        with patch.object(fetcher._session, "get", return_value=_json_response(body)):
+            status = fetcher.get_pull_request_merge_status("PROJ", "my-repo", 5)
+
+        assert status.vetoes == []
+
+    def test_non_list_vetoes_raises(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"conflicted": False, "outcome": "CLEAN", "vetoes": {}}
+        with patch.object(fetcher._session, "get", return_value=_json_response(body)):
+            with pytest.raises(ValueError, match="'vetoes' .* is dict, not a list"):
+                fetcher.get_pull_request_merge_status("PROJ", "my-repo", 5)
+
+    @pytest.mark.parametrize("bad_id", [0, -1, "abc", None])
+    def test_invalid_id_raises_without_request(self, bad_id):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "get") as mock_get:
+            with pytest.raises(ValueError, match="positive integer"):
+                fetcher.get_pull_request_merge_status("P", "r", bad_id)
+        mock_get.assert_not_called()
+
+    @pytest.mark.parametrize(("key", "slug"), [("", "r"), ("P", " "), ("..", "r")])
+    def test_blank_or_dot_segment_raises_without_request(self, key, slug):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "get") as mock_get:
+            with pytest.raises(ValueError):
+                fetcher.get_pull_request_merge_status(key, slug, 5)
+        mock_get.assert_not_called()
+
+    @pytest.mark.parametrize("body", [["not", "an", "object"], {}])
+    def test_misshaped_response_raises(self, body):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "get", return_value=_json_response(body)):
+            with pytest.raises(ValueError, match="non-empty mergeability object"):
+                fetcher.get_pull_request_merge_status("PROJ", "my-repo", 5)
+
+    def test_not_open_surfaces_server_message(self):
+        """A 409 (pull request merged or declined) carries the instance's message."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [{"message": "The pull request is not open (state: MERGED)."}]
+        }
+        with patch.object(
+            fetcher._session, "get", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="HTTP 409.*not open"):
+                fetcher.get_pull_request_merge_status("PROJ", "my-repo", 5)
+
+    def test_404_raises_resource_not_found(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "get", return_value=_http_error_response(404)
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError):
+                fetcher.get_pull_request_merge_status("P", "r", 999)
+
+
 _DIFF_BODY = {
     "fromHash": "abc123",
     "toHash": "def456",
