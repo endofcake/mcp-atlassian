@@ -377,11 +377,38 @@ class TestBitbucketCommit:
         commit = BitbucketCommit.from_api_response(_COMMIT_API)
         assert commit.parents == ["parent1sha", "parent2sha"]
 
-    def test_malformed_parents_entries_skipped(self):
-        """Non-dict / id-less parent entries are skipped."""
-        data = {**_COMMIT_API, "parents": [{"id": "ok"}, {"displayId": "x"}, "junk"]}
+    def test_id_less_parent_entries_skipped(self):
+        """A parent object without an id contributes nothing."""
+        data = {**_COMMIT_API, "parents": [{"id": "ok"}, {"displayId": "x"}]}
         commit = BitbucketCommit.from_api_response(data)
         assert commit.parents == ["ok"]
+
+    @pytest.mark.parametrize("parents", [None, []])
+    def test_null_or_empty_parents_is_empty(self, parents):
+        commit = BitbucketCommit.from_api_response({**_COMMIT_API, "parents": parents})
+        assert commit.parents == []
+
+    def test_non_list_parents_raises(self):
+        with pytest.raises(
+            ValueError, match="'parents' in BitbucketCommit is dict, not a list"
+        ):
+            BitbucketCommit.from_api_response({**_COMMIT_API, "parents": {}})
+
+    def test_wrong_typed_parent_id_names_the_parent(self):
+        """The error points at the parent entry, not the commit's own id."""
+        data = {**_COMMIT_API, "parents": [{"id": 7}]}
+        with pytest.raises(
+            ValueError, match="'id' in BitbucketCommit.parents is int, not a string"
+        ):
+            BitbucketCommit.from_api_response(data)
+
+    def test_non_object_parent_entry_raises(self):
+        """A non-object entry raises a response-shape error."""
+        data = {**_COMMIT_API, "parents": [{"id": "ok"}, "junk"]}
+        with pytest.raises(
+            ValueError, match="an entry of 'parents' in BitbucketCommit is str"
+        ):
+            BitbucketCommit.from_api_response(data)
 
     def test_from_api_response_empty_returns_default(self):
         commit = BitbucketCommit.from_api_response({})
@@ -573,6 +600,28 @@ class TestBitbucketPullRequest:
         assert result["reviewers"][0]["status"] == "APPROVED"
         # The write-only links object is not surfaced.
         assert "links" not in result
+
+    @pytest.mark.parametrize("field", ["reviewers", "participants"])
+    def test_null_participant_list_is_empty(self, field):
+        pr = BitbucketPullRequest.from_api_response({"id": 1, field: None})
+        assert getattr(pr, field) == []
+
+    @pytest.mark.parametrize("field", ["reviewers", "participants"])
+    def test_non_list_participant_collection_raises(self, field):
+        with pytest.raises(
+            ValueError,
+            match=f"'{field}' in BitbucketPullRequest is dict, not a list",
+        ):
+            BitbucketPullRequest.from_api_response({"id": 1, field: {}})
+
+    @pytest.mark.parametrize("field", ["reviewers", "participants"])
+    def test_non_object_participant_entry_raises(self, field):
+        """A non-object entry raises a response-shape error."""
+        with pytest.raises(
+            ValueError,
+            match=f"an entry of '{field}' in BitbucketPullRequest is str",
+        ):
+            BitbucketPullRequest.from_api_response({"id": 1, field: ["alice"]})
 
 
 # The /diff endpoint body is a RestDiffResponse wrapping RestDiff objects in a
@@ -1005,6 +1054,23 @@ class TestBitbucketComment:
         comment = BitbucketComment.from_api_response({"id": 9, "version": 4})
         assert comment.thread_resolved is None
         assert "thread_resolved" not in comment.to_simplified_dict()
+
+    def test_null_replies_count_zero(self):
+        comment = BitbucketComment.from_api_response({"id": 9, "comments": None})
+        assert comment.reply_count == 0
+
+    def test_non_list_replies_raises(self):
+        with pytest.raises(
+            ValueError, match="'comments' in BitbucketComment is str, not a list"
+        ):
+            BitbucketComment.from_api_response({"id": 9, "comments": "none"})
+
+    def test_non_object_reply_entry_raises(self):
+        """A non-object reply raises a response-shape error."""
+        with pytest.raises(
+            ValueError, match="an entry of 'comments' in BitbucketComment is int"
+        ):
+            BitbucketComment.from_api_response({"id": 9, "comments": [1]})
 
 
 # Wire-shape guards. The shapes below are synthetic but mirror the *structure*

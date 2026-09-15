@@ -4,7 +4,7 @@ from typing import Any
 
 from ..base import ApiModel
 from ..constants import EMPTY_STRING
-from ._fields import _opt_bool, _opt_int, _opt_str
+from ._fields import _opt_bool, _opt_int, _opt_list, _opt_str
 from .user import BitbucketUser
 
 
@@ -56,8 +56,7 @@ class BitbucketComment(ApiModel):
             if isinstance(author_data, dict)
             else None
         )
-        replies = data.get("comments")
-        reply_count = len(replies) if isinstance(replies, list) else 0
+        reply_count = len(_opt_list(data, "comments", model=model))
         return cls(
             id=_opt_int(data, "id", model=model) or 0,
             version=_opt_int(data, "version", model=model),

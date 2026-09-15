@@ -4,12 +4,14 @@ Pydantic models for Bitbucket Data Center API data structures, organized by
 entity type, mirroring the Jira and Confluence model packages.
 
 Malformed-data contract shared by every ``from_api_response`` here. A
-nested diff collection (``hunks``, ``segments``, ``lines``) that is absent or
-null is empty: a binary or server-truncated file carries no ``hunks``. A
-collection that is present with a value other than null or a list, or that
-holds a non-object entry, raises ``ValueError``, because dropping entries
-would report a corrupt body as a complete one. The top-level ``diffs`` key
-must be a list in a non-empty body; a null or absent ``diffs`` raises there.
+nested collection (``reviewers``, ``participants``, ``parents``, ``comments``,
+``vetoes``, and the diff's ``hunks``, ``segments``, ``lines``) that is absent
+or null is empty, since a binary or server-truncated file carries no ``hunks``
+and the server omits a list with nothing to report. A collection that is present
+with a value other than null or a list, or that holds a non-object entry,
+raises ``ValueError``, because dropping entries would report a corrupt body
+as a complete one. The top-level ``diffs`` key must be a list in a non-empty
+body. A null or absent ``diffs`` raises there.
 An optional scalar or nested object that is absent or null takes the field's
 default; a scalar that is present with a value of another type raises
 ``ValueError`` through the readers in ``_fields``.

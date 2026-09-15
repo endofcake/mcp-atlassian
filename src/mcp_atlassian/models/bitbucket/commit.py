@@ -4,7 +4,7 @@ from typing import Any
 
 from ..base import ApiModel
 from ..constants import EMPTY_STRING
-from ._fields import _opt_int, _opt_str
+from ._fields import _opt_int, _opt_list, _opt_str
 from .user import BitbucketUser
 
 
@@ -57,13 +57,12 @@ class BitbucketCommit(ApiModel):
 
         author_data = data.get("author")
         committer_data = data.get("committer")
-        parents_data = data.get("parents")
-        parents = (
-            [p["id"] for p in parents_data if isinstance(p, dict) and p.get("id")]
-            if isinstance(parents_data, list)
-            else []
-        )
         model = cls.__name__
+        parents = [
+            parent_id
+            for parent in _opt_list(data, "parents", model=model)
+            if (parent_id := _opt_str(parent, "id", model=f"{model}.parents"))
+        ]
         return cls(
             id=_opt_str(data, "id", model=model) or EMPTY_STRING,
             display_id=_opt_str(data, "displayId", model=model) or EMPTY_STRING,

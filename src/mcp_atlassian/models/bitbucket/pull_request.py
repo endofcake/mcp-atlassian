@@ -4,7 +4,7 @@ from typing import Any
 
 from ..base import ApiModel
 from ..constants import EMPTY_STRING, UNKNOWN
-from ._fields import _opt_bool, _opt_int, _opt_str
+from ._fields import _opt_bool, _opt_int, _opt_list, _opt_str
 from .user import BitbucketUser
 
 
@@ -149,13 +149,9 @@ class BitbucketPullRequest(ApiModel):
     @staticmethod
     def _participants(data: dict[str, Any], field: str) -> list[BitbucketParticipant]:
         """Build the participant list for ``field`` (reviewers/participants)."""
-        raw = data.get(field)
-        if not isinstance(raw, list):
-            return []
         return [
             BitbucketParticipant.from_api_response(item)
-            for item in raw
-            if isinstance(item, dict)
+            for item in _opt_list(data, field, model=BitbucketPullRequest.__name__)
         ]
 
     @classmethod
