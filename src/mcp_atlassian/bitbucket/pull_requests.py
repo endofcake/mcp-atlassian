@@ -36,6 +36,20 @@ _PR_STATES = ("OPEN", "DECLINED", "MERGED", "ALL")
 _PR_DIRECTIONS = ("INCOMING", "OUTGOING")
 _PR_ORDERS = ("NEWEST", "OLDEST")
 
+# --- list_user_pull_requests filters ---
+# The enum-valued filters of the dashboard endpoint, in the case it expects.
+# Unlike the repository list, its ``state`` has no ``ALL``. Omit it for any state.
+_DASHBOARD_ROLES = ("REVIEWER", "AUTHOR", "PARTICIPANT")
+_DASHBOARD_PARTICIPANT_STATUSES = ("UNAPPROVED", "NEEDS_WORK", "APPROVED")
+_DASHBOARD_STATES = ("OPEN", "DECLINED", "MERGED")
+_DASHBOARD_ORDERS = (
+    "NEWEST",
+    "OLDEST",
+    "DRAFT_STATUS",
+    "PARTICIPANT_STATUS",
+    "CLOSED_DATE",
+)
+
 # --- get_activities bounds ---
 # Default number of activity entries a single get_activities call returns.
 DEFAULT_ACTIVITIES_LIMIT = 25
@@ -72,7 +86,7 @@ MAX_CONTEXT_LINES = 1000
 
 @dataclass
 class BitbucketPullRequestsPage:
-    """A bounded, possibly-truncated view of a repository's pull requests.
+    """A bounded, possibly-truncated view of a list of pull requests.
 
     ``truncated`` is the authoritative completeness signal (see
     :class:`~mcp_atlassian.bitbucket.client.BitbucketProjectsPage` for the full
@@ -250,6 +264,121 @@ class PullRequestsMixin(BitbucketClient):
             params["draft"] = "true" if draft else "false"
         page = self._fetch_page(
             path,
+            limit=limit,
+            start=start,
+            params=params or None,
+        )
+        pull_requests = [
+            BitbucketPullRequest.from_api_response(value) for value in page.values
+        ]
+        return BitbucketPullRequestsPage(
+            pull_requests=pull_requests,
+            is_last_page=page.is_last_page,
+            truncated=page.truncated,
+            next_page_start=page.next_page_start,
+        )
+
+    def list_user_pull_requests(
+        self,
+        *,
+        user: str | None = None,
+        role: str | None = None,
+        participant_status: list[str] | None = None,
+        state: str | None = None,
+        order: str | None = None,
+        closed_since: int | None = None,
+        start: int = 0,
+        limit: int = DEFAULT_PRS_LIMIT,
+    ) -> BitbucketPullRequestsPage:
+        """List the pull requests a user is involved in, across repositories.
+
+        Calls ``GET /rest/api/1.0/dashboard/pull-requests`` (paged with
+        ``start``/``limit``); one window per call, resumable via the returned
+        ``next_page_start``. The server applies every filter and returns only
+        the pull requests the authenticated caller may see, so naming another
+        ``user`` does not widen access.
+
+        The enum-valued filters (``role``, ``participant_status``, ``state``,
+        ``order``) are normalized through :meth:`BitbucketClient._enum_param`,
+        which drops a blank value and raises on an unrecognised one before any
+        request. A blank ``user`` is dropped as well, so the server default (the
+        authenticated user) applies.
+
+        Args:
+            user: Optional Bitbucket username whose pull requests to list.
+                Omitted (or blank) means the authenticated user.
+            role: Optional role the user holds on each pull request
+                (``REVIEWER``, ``AUTHOR``, or ``PARTICIPANT``). Omit for any
+                role.
+            participant_status: Optional participant statuses to match, any of
+                ``UNAPPROVED``, ``NEEDS_WORK``, or ``APPROVED``, sent
+                comma-separated. Omit (or pass only blanks) for any status.
+            state: Optional state filter (``OPEN``, ``DECLINED``, or
+                ``MERGED``). Omit for any state. This endpoint has no ``ALL``.
+            order: Optional ordering: ``NEWEST`` (the upstream default),
+                ``OLDEST``, ``DRAFT_STATUS``, ``PARTICIPANT_STATUS``, or
+                ``CLOSED_DATE``.
+            closed_since: Optional window in seconds. Only pull requests closed
+                within the last ``closed_since`` seconds are returned. Must be a
+                positive integer.
+            start: The offset to resume from (the ``next_page_start`` of a prior
+                call). 0 starts from the beginning.
+            limit: Maximum number of pull requests to return. Clamped to
+                ``[1, MAX_PRS_LIMIT]``.
+
+        Returns:
+            A :class:`BitbucketPullRequestsPage` carrying the collected pull
+            requests, whether the upstream list was fully consumed
+            (``is_last_page``), whether PRs were omitted (``truncated``), and the
+            ``next_page_start`` resume cursor.
+
+        Raises:
+            ValueError: If ``role``, an entry of ``participant_status``,
+                ``state``, or ``order`` is not a recognised value,
+                ``closed_since`` is not a positive integer, a page is misshaped,
+                or the request fails (see :meth:`BitbucketClient._get`).
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        limit = max(
+            1,
+            min(
+                clamp_limit(limit, context="bitbucket.list_user_pull_requests"),
+                MAX_PRS_LIMIT,
+            ),
+        )
+        # bool is an int subclass, so ``True`` would otherwise be sent as a
+        # one-second window. Reject it with the other non-positive values.
+        if closed_since is not None and (
+            isinstance(closed_since, bool) or closed_since < 1
+        ):
+            raise ValueError("closed_since must be a positive integer (seconds).")
+        params: dict[str, Any] = {}
+        if user and user.strip():
+            params["user"] = user.strip()
+        enum_filters = (
+            ("role", role, _DASHBOARD_ROLES),
+            ("state", state, _DASHBOARD_STATES),
+            ("order", order, _DASHBOARD_ORDERS),
+        )
+        for name, value, allowed in enum_filters:
+            normalized = self._enum_param(value, name=name, allowed=allowed)
+            if normalized is not None:
+                params[name] = normalized
+        statuses: list[str] = []
+        for entry in participant_status or []:
+            normalized = self._enum_param(
+                entry,
+                name="participant_status",
+                allowed=_DASHBOARD_PARTICIPANT_STATUSES,
+            )
+            if normalized is not None and normalized not in statuses:
+                statuses.append(normalized)
+        if statuses:
+            params["participantStatus"] = ",".join(statuses)
+        if closed_since is not None:
+            params["closedSince"] = closed_since
+        page = self._fetch_page(
+            "/dashboard/pull-requests",
             limit=limit,
             start=start,
             params=params or None,

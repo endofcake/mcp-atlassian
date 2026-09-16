@@ -21,7 +21,27 @@ List pull requests in a Bitbucket Data Center repository.
 | `draft` | `boolean` | No | Optional filter by draft status. |
 | `start` | `integer` | No | Pagination cursor: the offset of the first pull request to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
 | `limit` | `integer` | No | Maximum number of pull requests to return in this window. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
-| `summary` | `boolean` | No | When true, return only each pull request's triage fields (id, title, state, author) instead of the full record, for scanning a large list to pick one before fetching its full detail. |
+| `summary` | `boolean` | No | When true, return only each pull request's triage fields (id, title, state, author, and the target repository's project_key and repository_slug) instead of the full record, for scanning a large list to pick one before fetching its full detail. |
+
+---
+
+### List Bitbucket Pull Requests for a User
+
+List the pull requests a user is involved in, across all repositories.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `user` | `string` | No | Bitbucket username whose pull requests to list. Defaults to the authenticated user (the identity behind the server's Bitbucket credentials), so a call without it answers 'my pull requests'. Results are still limited to what the caller may see. |
+| `role` | `string` | No | Filter by the user's role on each pull request: 'REVIEWER', 'AUTHOR', or 'PARTICIPANT'. Omit for any role. Any other value is rejected. |
+| `participant_status` | `array` | No | Filter by the user's participant status: any of 'UNAPPROVED', 'NEEDS_WORK', 'APPROVED'. Omit for any status. Any other value is rejected. |
+| `state` | `string` | No | Filter by pull-request state: 'OPEN', 'DECLINED', or 'MERGED'. Omit for any state. Any other value is rejected. |
+| `order` | `string` | No | Ordering: 'NEWEST' (default), 'OLDEST', 'DRAFT_STATUS', 'PARTICIPANT_STATUS', or 'CLOSED_DATE'. Any other value is rejected. |
+| `closed_since` | `integer` | No | Only pull requests closed within the last N seconds (e.g. 86400 for the previous 24 hours). Omit for no closed-date window. |
+| `start` | `integer` | No | Pagination cursor: the offset of the first pull request to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of pull requests to return in this window. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
+| `summary` | `boolean` | No | When true, return only each pull request's triage fields (id, title, state, author, and the target repository's project_key and repository_slug) instead of the full record, for scanning a large list to pick one before fetching its full detail. |
 
 ---
 

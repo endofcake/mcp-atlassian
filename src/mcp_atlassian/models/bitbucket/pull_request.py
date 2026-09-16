@@ -12,14 +12,19 @@ class BitbucketRef(ApiModel):
     """A Bitbucket pull-request ref (the ``fromRef``/``toRef`` endpoints).
 
     Models the read-relevant fields of the ref object in ``RestPullRequest``:
-    the fully-qualified ref id, its short display id, and the latest commit. The
-    nested ``repository`` object is not modelled here (the PR already carries the
-    project/repo context through the tool's path parameters).
+    the fully-qualified ref id, its short display id, the latest commit, and
+    the identity of the repository the ref lives in (``repository.slug`` and
+    ``repository.project.key``). The repository identity is what lets a
+    cross-repository listing be followed up with the repository-scoped tools,
+    which take a project key and repository slug. The rest of the nested
+    ``repository`` object is not modelled.
     """
 
     id: str = EMPTY_STRING
     display_id: str = EMPTY_STRING
     latest_commit: str | None = None
+    project_key: str | None = None
+    repository_slug: str | None = None
 
     @classmethod
     def from_api_response(cls, data: dict[str, Any], **kwargs: Any) -> "BitbucketRef":
@@ -39,10 +44,18 @@ class BitbucketRef(ApiModel):
         if not isinstance(data, dict) or not data:
             return cls()
         model = cls.__name__
+        repository = data.get("repository")
+        if not isinstance(repository, dict):
+            repository = {}
+        project = repository.get("project")
+        if not isinstance(project, dict):
+            project = {}
         return cls(
             id=_opt_str(data, "id", model=model) or EMPTY_STRING,
             display_id=_opt_str(data, "displayId", model=model) or EMPTY_STRING,
             latest_commit=_opt_str(data, "latestCommit", model=model),
+            project_key=_opt_str(project, "key", model=model),
+            repository_slug=_opt_str(repository, "slug", model=model),
         )
 
     def to_simplified_dict(self) -> dict[str, Any]:
@@ -54,6 +67,10 @@ class BitbucketRef(ApiModel):
             result["id"] = self.id
         if self.latest_commit:
             result["latest_commit"] = self.latest_commit
+        if self.project_key:
+            result["project_key"] = self.project_key
+        if self.repository_slug:
+            result["repository_slug"] = self.repository_slug
         return result
 
 
@@ -250,11 +267,19 @@ class BitbucketPullRequest(ApiModel):
         """Minimal projection for list triage.
 
         Carries the fields needed to choose a pull request (``id``, ``title``,
-        ``state``, ``author``) before fetching its full detail.
+        ``state``, ``author``) before fetching its full detail, plus the target
+        repository's ``project_key`` and ``repository_slug`` when the response
+        carries them, since a pull-request id is only unique within its
+        repository and the detail tools take the repository as path parameters.
         """
         result: dict[str, Any] = {"id": self.id, "title": self.title}
         if self.state:
             result["state"] = self.state
+        if self.to_ref is not None:
+            if self.to_ref.project_key:
+                result["project_key"] = self.to_ref.project_key
+            if self.to_ref.repository_slug:
+                result["repository_slug"] = self.to_ref.repository_slug
         if self.author is not None:
             author = self.author.to_simplified_dict()
             if author:

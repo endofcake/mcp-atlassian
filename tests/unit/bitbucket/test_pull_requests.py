@@ -16,6 +16,7 @@ from mcp_atlassian.bitbucket.pull_requests import (
     MAX_CHANGES_LIMIT,
     MAX_COMMENT_TEXT_CHARS,
     MAX_CONTEXT_LINES,
+    MAX_PRS_LIMIT,
 )
 from mcp_atlassian.utils.oauth import BYOAccessTokenOAuthConfig
 from tests.unit.bitbucket.mock_responses import attach_body, attach_json
@@ -321,6 +322,242 @@ class TestListPullRequests:
             )
 
         assert mock_get.call_args[1]["params"]["filterText"] == "login"
+
+
+class TestListUserPullRequests:
+    """list_user_pull_requests: params, single-window pagination, validation."""
+
+    _REVIEWING = {
+        "id": 7,
+        "title": "Fix Y",
+        "state": "OPEN",
+        "toRef": {
+            "id": "refs/heads/main",
+            "displayId": "main",
+            "repository": {"slug": "svc-a", "project": {"key": "PROJ"}},
+        },
+        "author": {"user": {"name": "bob", "displayName": "Bob"}, "role": "AUTHOR"},
+        "reviewers": [
+            {
+                "user": {"name": "alice", "displayName": "Alice"},
+                "role": "REVIEWER",
+                "approved": False,
+                "status": "UNAPPROVED",
+            }
+        ],
+    }
+    _AUTHORED = {
+        "id": 9,
+        "title": "Add Z",
+        "state": "MERGED",
+        "toRef": {
+            "id": "refs/heads/main",
+            "displayId": "main",
+            "repository": {"slug": "svc-b", "project": {"key": "OTHER"}},
+        },
+        "author": {"user": {"name": "alice", "displayName": "Alice"}, "role": "AUTHOR"},
+        "reviewers": [],
+    }
+
+    def test_returns_models_and_default_params(self):
+        """No filters: the dashboard path, the window params, no user param."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response(
+                [self._REVIEWING, self._AUTHORED], is_last_page=True
+            ),
+        ) as mock_get:
+            page = fetcher.list_user_pull_requests()
+
+        assert [pr.id for pr in page.pull_requests] == [7, 9]
+        # Each entry names its repository: ids are only unique per repository.
+        assert [
+            (pr.to_ref.project_key, pr.to_ref.repository_slug)
+            for pr in page.pull_requests
+            if pr.to_ref is not None
+        ] == [("PROJ", "svc-a"), ("OTHER", "svc-b")]
+        assert page.pull_requests[0].reviewers[0].user.name == "alice"
+        author = page.pull_requests[1].author
+        assert author is not None
+        assert author.user.name == "alice"
+        assert page.is_last_page is True
+        assert page.truncated is False
+        assert page.next_page_start is None
+        called_url = mock_get.call_args[0][0]
+        assert called_url.endswith("/rest/api/1.0/dashboard/pull-requests")
+        assert mock_get.call_args[1]["params"] == {"start": 0, "limit": 25}
+
+    def test_forwards_every_filter(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([self._REVIEWING], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_user_pull_requests(
+                user="alice",
+                role="REVIEWER",
+                participant_status=["UNAPPROVED", "NEEDS_WORK"],
+                state="OPEN",
+                order="PARTICIPANT_STATUS",
+                closed_since=86400,
+            )
+
+        params = mock_get.call_args[1]["params"]
+        assert params["user"] == "alice"
+        assert params["role"] == "REVIEWER"
+        assert params["participantStatus"] == "UNAPPROVED,NEEDS_WORK"
+        assert params["state"] == "OPEN"
+        assert params["order"] == "PARTICIPANT_STATUS"
+        assert params["closedSince"] == 86400
+
+    def test_user_is_stripped_on_the_wire(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_user_pull_requests(user="  alice ")
+
+        assert mock_get.call_args[1]["params"]["user"] == "alice"
+
+    @pytest.mark.parametrize("blank", ["", "   "])
+    def test_blank_user_is_dropped(self, blank):
+        """A blank user is not sent, so the server default (the caller) applies."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_user_pull_requests(user=blank)
+
+        assert "user" not in mock_get.call_args[1]["params"]
+
+    def test_enum_filters_are_case_normalized(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_user_pull_requests(
+                role="author",
+                participant_status=[" approved "],
+                state="merged",
+                order="closed_date",
+            )
+
+        params = mock_get.call_args[1]["params"]
+        assert params["role"] == "AUTHOR"
+        assert params["participantStatus"] == "APPROVED"
+        assert params["state"] == "MERGED"
+        assert params["order"] == "CLOSED_DATE"
+
+    @pytest.mark.parametrize(
+        "statuses",
+        [[], ["", "   "], None],
+        ids=["empty-list", "blank-entries", "none"],
+    )
+    def test_blank_or_empty_participant_status_is_dropped(self, statuses):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_user_pull_requests(participant_status=statuses)
+
+        assert "participantStatus" not in mock_get.call_args[1]["params"]
+
+    def test_duplicate_participant_status_sent_once(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_user_pull_requests(
+                participant_status=["APPROVED", "approved", "NEEDS_WORK"]
+            )
+
+        params = mock_get.call_args[1]["params"]
+        assert params["participantStatus"] == "APPROVED,NEEDS_WORK"
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"role": "OWNER"}, "role must be one of"),
+            ({"participant_status": ["APPROVED", "PENDING"]}, "participant_status"),
+            ({"state": "ALL"}, "state must be one of"),
+            ({"order": "RANDOM"}, "order must be one of"),
+        ],
+        ids=["role", "participant_status", "state-all", "order"],
+    )
+    def test_unrecognised_enum_raises_before_request(self, kwargs, match):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with (
+            patch.object(fetcher._session, "get") as mock_get,
+            pytest.raises(ValueError, match=match),
+        ):
+            fetcher.list_user_pull_requests(**kwargs)
+        mock_get.assert_not_called()
+
+    @pytest.mark.parametrize("closed_since", [0, -1, True])
+    def test_non_positive_closed_since_raises_before_request(self, closed_since):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with (
+            patch.object(fetcher._session, "get") as mock_get,
+            pytest.raises(ValueError, match="closed_since"),
+        ):
+            fetcher.list_user_pull_requests(closed_since=closed_since)
+        mock_get.assert_not_called()
+
+    def test_single_window_issues_one_request_and_surfaces_cursor(self):
+        """One upstream GET; a non-last window returns the upstream cursor."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response(
+                [{"id": 1, "title": "a"}], is_last_page=False, next_page_start=25
+            ),
+        ) as mock_get:
+            page = fetcher.list_user_pull_requests()
+
+        assert [pr.id for pr in page.pull_requests] == [1]
+        assert page.is_last_page is False
+        assert page.truncated is True
+        assert page.next_page_start == 25
+        assert mock_get.call_count == 1
+
+    def test_start_and_limit_are_clamped_and_sent(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "get",
+            return_value=_page_response([], is_last_page=True),
+        ) as mock_get:
+            fetcher.list_user_pull_requests(start=25, limit=MAX_PRS_LIMIT + 50)
+
+        params = mock_get.call_args[1]["params"]
+        assert params["start"] == 25
+        assert params["limit"] == MAX_PRS_LIMIT
+
+    def test_misshaped_page_raises(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with (
+            patch.object(
+                fetcher._session,
+                "get",
+                return_value=_json_response({"values": "not-a-list"}),
+            ),
+            pytest.raises(ValueError, match="unexpected response shape"),
+        ):
+            fetcher.list_user_pull_requests()
 
 
 class TestGetPullRequest:

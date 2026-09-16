@@ -10,7 +10,7 @@ Server/Data Center. Bitbucket support covers Data Center.
 ## About this fork
 
 This is a fork of [sooperset/mcp-atlassian](https://github.com/sooperset/mcp-atlassian)
-that adds **Bitbucket Data Center** as a third service. The 23 Bitbucket tools
+that adds **Bitbucket Data Center** as a third service. The 24 Bitbucket tools
 cover projects, repositories, branches and tags, commits, source browsing, and
 pull-request review. Install from this repository with `uvx --from git+...`
 or build the container image yourself (see [Installation](docs/installation.mdx)).
@@ -148,7 +148,7 @@ Documentation lives in this repository under [`docs/`](docs/).
 | `jira_update_issue` - Update issues | `confluence_update_page` - Update pages | `bitbucket_browse_path` - Browse source |
 | `jira_transition_issue` - Change status | `confluence_add_comment` - Add comments | `bitbucket_list_commits` - List commits |
 
-**121 tools total** — See the [Tools Reference](docs/tools-reference.mdx) for the complete list.
+**122 tools total** — See the [Tools Reference](docs/tools-reference.mdx) for the complete list.
 
 ## Security
 

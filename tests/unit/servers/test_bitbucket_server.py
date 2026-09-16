@@ -152,6 +152,32 @@ def mock_bitbucket_fetcher() -> MagicMock:
         truncated=False,
         next_page_start=None,
     )
+    dashboard_pull_request = _model_mock(
+        {
+            "id": 5,
+            "title": "Add X",
+            "state": "OPEN",
+            "to_ref": {
+                "display_id": "main",
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+            },
+            "reviewers": [],
+        },
+        {
+            "id": 5,
+            "title": "Add X",
+            "state": "OPEN",
+            "project_key": "PROJ",
+            "repository_slug": "my-repo",
+        },
+    )
+    mock_fetcher.list_user_pull_requests.return_value = BitbucketPullRequestsPage(
+        pull_requests=[dashboard_pull_request],
+        is_last_page=True,
+        truncated=False,
+        next_page_start=None,
+    )
     mock_fetcher.get_pull_request.return_value = pull_request
     mock_fetcher.get_pull_request_merge_status.return_value = _model_mock(
         {
@@ -243,6 +269,7 @@ def test_bitbucket_mcp(
         list_pull_requests,
         list_repositories,
         list_tags,
+        list_user_pull_requests,
         resolve_pull_request_comment,
         set_pull_request_review_status,
     )
@@ -274,6 +301,7 @@ def test_bitbucket_mcp(
     bitbucket_sub_mcp.add_tool(get_commit_build_status)
     bitbucket_sub_mcp.add_tool(browse_path)
     bitbucket_sub_mcp.add_tool(list_pull_requests)
+    bitbucket_sub_mcp.add_tool(list_user_pull_requests)
     bitbucket_sub_mcp.add_tool(get_pull_request)
     bitbucket_sub_mcp.add_tool(get_pull_request_commits)
     bitbucket_sub_mcp.add_tool(get_pull_request_merge_status)
@@ -1089,6 +1117,116 @@ class TestListPullRequests:
         result = _result_json(response)
         assert result["pull_requests"] == []
         assert result["count"] == 0
+
+
+@pytest.mark.anyio
+class TestListUserPullRequests:
+    """The list_user_pull_requests tool."""
+
+    async def test_success_defaults_to_the_caller(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A no-argument call lists the caller's pull requests."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_user_pull_requests", {}
+        )
+
+        mock_bitbucket_fetcher.list_user_pull_requests.assert_called_once_with(
+            user=None,
+            role=None,
+            participant_status=None,
+            state=None,
+            order=None,
+            closed_since=None,
+            start=0,
+            limit=25,
+        )
+        result = _result_json(response)
+        assert result["pull_requests"] == [
+            {
+                "id": 5,
+                "title": "Add X",
+                "state": "OPEN",
+                "to_ref": {
+                    "display_id": "main",
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                },
+                "reviewers": [],
+            }
+        ]
+        assert result["count"] == 1
+        assert result["is_last_page"] is True
+        assert result["truncated"] is False
+        assert result["next_page_start"] is None
+
+    async def test_filters_and_cursor_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """Every filter, the user, and the cursor thread through to the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_list_user_pull_requests",
+            {
+                "user": "alice",
+                "role": "REVIEWER",
+                "participant_status": ["UNAPPROVED", "NEEDS_WORK"],
+                "state": "OPEN",
+                "order": "PARTICIPANT_STATUS",
+                "closed_since": 86400,
+                "start": 10,
+                "limit": 50,
+            },
+        )
+
+        mock_bitbucket_fetcher.list_user_pull_requests.assert_called_once_with(
+            user="alice",
+            role="REVIEWER",
+            participant_status=["UNAPPROVED", "NEEDS_WORK"],
+            state="OPEN",
+            order="PARTICIPANT_STATUS",
+            closed_since=86400,
+            start=10,
+            limit=50,
+        )
+
+    async def test_summary_uses_triage_fields(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        response = await bitbucket_client.call_tool(
+            "bitbucket_list_user_pull_requests", {"summary": True}
+        )
+
+        result = _result_json(response)
+        assert result["pull_requests"] == [
+            {
+                "id": 5,
+                "title": "Add X",
+                "state": "OPEN",
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+            }
+        ]
+
+    async def test_non_positive_closed_since_is_rejected(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_list_user_pull_requests", {"closed_since": 0}
+            )
+        mock_bitbucket_fetcher.list_user_pull_requests.assert_not_called()
+
+    async def test_fetcher_value_error_is_surfaced(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """An unrecognised enum raised by the fetcher reaches the client."""
+        mock_bitbucket_fetcher.list_user_pull_requests.side_effect = ValueError(
+            "role must be one of REVIEWER, AUTHOR, PARTICIPANT."
+        )
+        with pytest.raises(ToolError, match="role must be one of"):
+            await bitbucket_client.call_tool(
+                "bitbucket_list_user_pull_requests", {"role": "OWNER"}
+            )
 
 
 @pytest.mark.anyio
@@ -1978,7 +2116,7 @@ class TestFetcherOffload:
         tools = self._tool_functions()
         # The registered tool count is part of the contract: a new tool must
         # be routed through the helper and this pin bumped in the same change.
-        assert len(tools) == 23
+        assert len(tools) == 24
 
         for name, function in tools.items():
             fetcher_names = self._fetcher_names(function)

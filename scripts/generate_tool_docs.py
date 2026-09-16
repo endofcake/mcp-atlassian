@@ -180,6 +180,7 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
     ],
     "bitbucket-pull-requests": [
         "bitbucket_list_pull_requests",
+        "bitbucket_list_user_pull_requests",
         "bitbucket_get_pull_request",
         "bitbucket_get_pull_request_commits",
         "bitbucket_get_pull_request_merge_status",

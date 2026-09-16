@@ -20,6 +20,7 @@ from mcp_atlassian.models.bitbucket import (
     BitbucketProject,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
+    BitbucketRef,
     BitbucketRepository,
     BitbucketTag,
     BitbucketTestResults,
@@ -1545,6 +1546,59 @@ class TestBitbucketWireShapes:
         assert "futureField" not in entry.to_simplified_dict()
 
 
+class TestBitbucketRefRepository:
+    """The repository identity carried by a pull-request ref."""
+
+    def test_repository_identity_is_projected(self):
+        ref = BitbucketRef.from_api_response(
+            {
+                "id": "refs/heads/main",
+                "displayId": "main",
+                "repository": {
+                    "slug": "my-repo",
+                    "name": "My Repo",
+                    "project": {"key": "PROJ", "name": "My Project"},
+                },
+            }
+        )
+        assert ref.project_key == "PROJ"
+        assert ref.repository_slug == "my-repo"
+        assert ref.to_simplified_dict() == {
+            "display_id": "main",
+            "id": "refs/heads/main",
+            "project_key": "PROJ",
+            "repository_slug": "my-repo",
+        }
+
+    def test_absent_repository_is_omitted(self):
+        ref = BitbucketRef.from_api_response({"id": "refs/heads/main"})
+        assert ref.project_key is None
+        assert ref.repository_slug is None
+        assert ref.to_simplified_dict() == {"id": "refs/heads/main"}
+
+    @pytest.mark.parametrize(
+        ("repository", "expected_slug"),
+        [
+            ("not-a-dict", None),
+            ({"slug": "my-repo", "project": "not-a-dict"}, "my-repo"),
+        ],
+        ids=["repository-not-object", "project-not-object"],
+    )
+    def test_malformed_nesting_defaults(self, repository, expected_slug):
+        """A malformed level defaults on its own; a well-formed sibling survives."""
+        ref = BitbucketRef.from_api_response(
+            {"id": "refs/heads/main", "repository": repository}
+        )
+        assert ref.project_key is None
+        assert ref.repository_slug == expected_slug
+
+    def test_wrong_typed_slug_raises(self):
+        with pytest.raises(ValueError, match="slug"):
+            BitbucketRef.from_api_response(
+                {"id": "refs/heads/main", "repository": {"slug": 7}}
+            )
+
+
 class TestSummaryProjections:
     """to_summary_dict, the minimal identity projection for list triage."""
 
@@ -1565,6 +1619,22 @@ class TestSummaryProjections:
         # The bulk fields of the full projection are absent.
         for absent in ("reviewers", "description", "from_ref", "to_ref", "version"):
             assert absent not in result
+
+    def test_pull_request_summary_carries_target_repository(self):
+        """A ref with a repository object surfaces the repository identity."""
+        data = dict(_PR_API)
+        data["toRef"] = {
+            **_PR_API["toRef"],
+            "repository": {"slug": "my-repo", "project": {"key": "PROJ"}},
+        }
+        result = BitbucketPullRequest.from_api_response(data).to_summary_dict()
+        assert result["project_key"] == "PROJ"
+        assert result["repository_slug"] == "my-repo"
+
+    def test_pull_request_summary_omits_absent_repository(self):
+        result = BitbucketPullRequest.from_api_response(_PR_API).to_summary_dict()
+        assert "project_key" not in result
+        assert "repository_slug" not in result
 
     def test_pull_request_summary_omits_absent_author(self):
         data = {k: v for k, v in _PR_API.items() if k != "author"}

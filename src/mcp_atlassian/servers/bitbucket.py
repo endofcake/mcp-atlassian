@@ -1146,7 +1146,8 @@ async def list_pull_requests(
         Field(
             description=(
                 "When true, return only each pull request's triage fields (id, "
-                "title, state, author) instead of the full record, for scanning "
+                "title, state, author, and the target repository's project_key "
+                "and repository_slug) instead of the full record, for scanning "
                 "a large list to pick one before fetching its full detail."
             ),
             default=False,
@@ -1188,6 +1189,170 @@ async def list_pull_requests(
         order=order,
         filter_text=filter_text,
         draft=draft,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "pull_requests": [
+            pr.to_summary_dict() if summary else pr.to_simplified_dict()
+            for pr in page.pull_requests
+        ],
+        "count": len(page.pull_requests),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "List Bitbucket Pull Requests for a User",
+        "readOnlyHint": True,
+    },
+)
+async def list_user_pull_requests(
+    ctx: Context,
+    user: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Bitbucket username whose pull requests to list. Defaults to "
+                "the authenticated user (the identity behind the server's "
+                "Bitbucket credentials), so a call without it answers 'my pull "
+                "requests'. Results are still limited to what the caller may see."
+            ),
+            default=None,
+        ),
+    ] = None,
+    role: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Filter by the user's role on each pull request: 'REVIEWER', "
+                "'AUTHOR', or 'PARTICIPANT'. Omit for any role. Any other value "
+                "is rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    participant_status: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "Filter by the user's participant status: any of 'UNAPPROVED', "
+                "'NEEDS_WORK', 'APPROVED'. Omit for any status. Any other value "
+                "is rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    state: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Filter by pull-request state: 'OPEN', 'DECLINED', or 'MERGED'. "
+                "Omit for any state. Any other value is rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    order: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Ordering: 'NEWEST' (default), 'OLDEST', 'DRAFT_STATUS', "
+                "'PARTICIPANT_STATUS', or 'CLOSED_DATE'. Any other value is "
+                "rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    closed_since: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Only pull requests closed within the last N seconds (e.g. 86400 "
+                "for the previous 24 hours). Omit for no closed-date window."
+            ),
+            default=None,
+            ge=1,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first pull request to "
+                "return. Use 0 (default) for the first window, then pass the "
+                "response's 'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of pull requests to return in this window. If "
+                "more exist than are returned, the response sets 'truncated' to "
+                "true and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_PRS_LIMIT,
+            ge=1,
+            le=MAX_PRS_LIMIT,
+        ),
+    ] = DEFAULT_PRS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return only each pull request's triage fields (id, "
+                "title, state, author, and the target repository's project_key "
+                "and repository_slug) instead of the full record, for scanning "
+                "a large list to pick one before fetching its full detail."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List the pull requests a user is involved in, across all repositories.
+
+    Answers "what is waiting for my review" and "what do I have open" in one
+    server-filtered request to the Bitbucket Data Center dashboard endpoint,
+    without walking repositories.
+
+    Args:
+        ctx: The FastMCP context.
+        user: Optional Bitbucket username; defaults to the authenticated user.
+        role: Optional role filter (reviewer, author, or participant).
+        participant_status: Optional participant statuses to match.
+        state: Optional pull-request state filter.
+        order: Optional ordering.
+        closed_since: Optional window in seconds on the closed date.
+        start: Pagination cursor (offset of the first pull request); 0 for the
+            first window, else a prior response's ``next_page_start``.
+        limit: Maximum number of pull requests to return in this window.
+        summary: When true, pull-request records carry triage fields only.
+
+    Returns:
+        JSON string with the list of pull requests plus ``count`` (the size of this
+        window), ``is_last_page``, ``truncated``, and ``next_page_start``. The
+        list is complete when ``is_last_page`` is true and ``truncated`` is
+        false. A null ``next_page_start`` with ``truncated`` true cannot be
+        resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.list_user_pull_requests,
+        user=user,
+        role=role,
+        participant_status=participant_status,
+        state=state,
+        order=order,
+        closed_since=closed_since,
         start=start,
         limit=limit,
     )
