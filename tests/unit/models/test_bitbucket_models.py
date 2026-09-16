@@ -25,6 +25,7 @@ from mcp_atlassian.models.bitbucket import (
     BitbucketTag,
     BitbucketTestResults,
     BitbucketUser,
+    BitbucketUserProfile,
 )
 
 # Shapes mirror the pinned Bitbucket DC REST spec (RestProject / RestRepository).
@@ -87,6 +88,80 @@ class TestBitbucketUser:
     def test_empty_and_non_dict_input_default(self):
         assert BitbucketUser.from_api_response({}).name == ""
         assert BitbucketUser.from_api_response(None).name == ""  # type: ignore[arg-type]
+
+
+class TestBitbucketUserProfile:
+    """BitbucketUserProfile: identity and account fields, contact details dropped."""
+
+    _API = {
+        "name": "jdoe",
+        "emailAddress": "jdoe@example.com",
+        "id": 101,
+        "displayName": "J. Doe",
+        "active": True,
+        "slug": "jdoe-slug",
+        "type": "NORMAL",
+        "avatarUrl": "https://bitbucket.example.com/avatar",
+        "links": {"self": [{"href": "https://bitbucket.example.com/users/jdoe"}]},
+    }
+
+    def test_maps_identity_fields_and_drops_contact_and_link_fields(self):
+        profile = BitbucketUserProfile.from_api_response(self._API)
+        assert profile.to_simplified_dict() == {
+            "name": "jdoe",
+            "slug": "jdoe-slug",
+            "id": 101,
+            "display_name": "J. Doe",
+            "active": True,
+            "type": "NORMAL",
+        }
+
+    def test_slug_is_not_collapsed_into_name(self):
+        """The slug can differ from the username; both are kept as returned."""
+        profile = BitbucketUserProfile.from_api_response(
+            {"name": "J.Doe", "slug": "j.doe"}
+        )
+        assert profile.name == "J.Doe"
+        assert profile.slug == "j.doe"
+
+    def test_absent_optionals_are_omitted(self):
+        profile = BitbucketUserProfile.from_api_response({"name": "jdoe"})
+        assert profile.display_name == "Unknown"
+        assert profile.to_simplified_dict() == {"name": "jdoe", "slug": ""}
+
+    def test_explicit_nulls_fall_back_to_defaults(self):
+        profile = BitbucketUserProfile.from_api_response(
+            {"name": None, "slug": None, "id": None, "active": None, "type": None}
+        )
+        assert profile.to_simplified_dict() == {"name": "", "slug": ""}
+
+    def test_inactive_service_account_is_reported(self):
+        profile = BitbucketUserProfile.from_api_response(
+            {"name": "bot", "slug": "bot", "active": False, "type": "SERVICE"}
+        )
+        assert profile.to_simplified_dict() == {
+            "name": "bot",
+            "slug": "bot",
+            "active": False,
+            "type": "SERVICE",
+        }
+
+    @pytest.mark.parametrize(
+        ("key", "value", "expected"),
+        [
+            ("id", "101", "an integer"),
+            ("id", True, "an integer"),
+            ("active", "true", "a boolean"),
+            ("name", 42, "a string"),
+        ],
+    )
+    def test_wrong_typed_scalar_raises(self, key, value, expected):
+        with pytest.raises(ValueError, match=f"'{key}' in BitbucketUserProfile"):
+            BitbucketUserProfile.from_api_response({**self._API, key: value})
+
+    def test_empty_and_non_dict_input_default(self):
+        assert BitbucketUserProfile.from_api_response({}).name == ""
+        assert BitbucketUserProfile.from_api_response(None).slug == ""  # type: ignore[arg-type]
 
 
 class TestBitbucketProject:

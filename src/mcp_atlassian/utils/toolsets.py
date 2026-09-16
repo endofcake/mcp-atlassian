@@ -1,6 +1,6 @@
 """Toolset definitions and filtering utilities for MCP Atlassian.
 
-Groups 122 tools into 28 named toolsets controlled via the TOOLSETS env var.
+Groups 123 tools into 29 named toolsets controlled via the TOOLSETS env var.
 Supports 'all', 'default', and comma-separated toolset names.
 """
 
@@ -152,7 +152,7 @@ CONFLUENCE_TOOLSETS: dict[str, ToolsetDefinition] = {
     ),
 }
 
-# --- Bitbucket toolsets (3) ---
+# --- Bitbucket toolsets (4) ---
 
 BITBUCKET_TOOLSETS: dict[str, ToolsetDefinition] = {
     "bitbucket_projects": ToolsetDefinition(
@@ -170,6 +170,11 @@ BITBUCKET_TOOLSETS: dict[str, ToolsetDefinition] = {
         name="bitbucket_pull_requests",
         description="Bitbucket Data Center pull-request review (list, changed "
         "files, diff, activities, comments)",
+        default=False,
+    ),
+    "bitbucket_users": ToolsetDefinition(
+        name="bitbucket_users",
+        description="Bitbucket Data Center caller identity",
         default=False,
     ),
 }
@@ -195,7 +200,7 @@ DEFAULT_TOOLSETS: set[str] = {
 def get_enabled_toolsets() -> set[str]:
     """Parse the TOOLSETS env var into a set of enabled toolset names.
 
-    Supports keywords 'all' (all 28 toolsets) and 'default' (6 defaults),
+    Supports keywords 'all' (all 29 toolsets) and 'default' (6 defaults),
     plus comma-separated specific toolset names. Case-insensitive for keywords.
 
     When TOOLSETS is unset or empty, returns all toolsets with a deprecation
@@ -208,9 +213,9 @@ def get_enabled_toolsets() -> set[str]:
         names are given, returns an empty set (fail-closed).
 
     Examples:
-        TOOLSETS unset -> all 28 toolsets (with deprecation warning)
-        TOOLSETS="" -> all 28 toolsets (with deprecation warning)
-        TOOLSETS="all" -> all 28 names
+        TOOLSETS unset -> all 29 toolsets (with deprecation warning)
+        TOOLSETS="" -> all 29 toolsets (with deprecation warning)
+        TOOLSETS="all" -> all 29 names
         TOOLSETS="default" -> 6 default names
         TOOLSETS="default,jira_agile" -> defaults + jira_agile
         TOOLSETS="typo_name" -> set() (fail-closed)

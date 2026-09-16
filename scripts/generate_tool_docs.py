@@ -194,6 +194,9 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "bitbucket_resolve_pull_request_comment",
         "bitbucket_delete_pull_request_comment",
     ],
+    "bitbucket-users": [
+        "bitbucket_get_current_user",
+    ],
 }
 
 CATEGORY_META: dict[str, dict[str, str]] = {
@@ -271,6 +274,10 @@ CATEGORY_META: dict[str, dict[str, str]] = {
         "description": (
             "Pull requests, diffs, activity timelines, comments, and reviews"
         ),
+    },
+    "bitbucket-users": {
+        "title": "Bitbucket Users",
+        "description": "Identify the user the server is acting as",
     },
 }
 

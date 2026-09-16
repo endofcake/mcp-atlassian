@@ -25,7 +25,7 @@ from mcp_atlassian.utils.oauth import BYOAccessTokenOAuthConfig
 from tests.unit.bitbucket.mock_responses import (
     attach_body,
     attach_json,
-    json_response,
+    response_with_header,
 )
 
 
@@ -1031,14 +1031,6 @@ class TestDeleteVerb:
                 fetcher._delete("/x", params={"version": 1})
 
 
-def _response_with_header(body, username):
-    """A successful response carrying an X-AUSERNAME header and JSON body."""
-    response = json_response(body)
-    if username:
-        response.headers["X-AUSERNAME"] = username
-    return response
-
-
 class TestCurrentUserResolution:
     """X-AUSERNAME capture and username→slug resolution for the write path."""
 
@@ -1048,7 +1040,7 @@ class TestCurrentUserResolution:
         with patch.object(
             fetcher._session,
             "get",
-            return_value=_response_with_header({"count": 0}, "jdoe"),
+            return_value=response_with_header({"count": 0}, "jdoe"),
         ):
             fetcher._get("/inbox/pull-requests/count")
 
@@ -1060,7 +1052,7 @@ class TestCurrentUserResolution:
         with patch.object(
             fetcher._session,
             "get",
-            return_value=_response_with_header({"count": 0}, None),
+            return_value=response_with_header({"count": 0}, None),
         ):
             fetcher._get("/inbox/pull-requests/count")
 
@@ -1072,12 +1064,12 @@ class TestCurrentUserResolution:
 
         def _get(url, params=None, timeout=None, **kwargs):
             if url.endswith("/inbox/pull-requests/count"):
-                return _response_with_header({"count": 0}, username)
+                return response_with_header({"count": 0}, username)
             if url.endswith("/users"):
-                return _response_with_header(
+                return response_with_header(
                     {"values": users, "isLastPage": True}, username
                 )
-            return _response_with_header({}, username)
+            return response_with_header({}, username)
 
         return _get
 
@@ -1139,8 +1131,8 @@ class TestCurrentUserResolution:
 
         def _bad_flag(url, params=None, timeout=None, **kwargs):
             if url.endswith("/inbox/pull-requests/count"):
-                return _response_with_header({"count": 0}, "jdoe")
-            return _response_with_header(
+                return response_with_header({"count": 0}, "jdoe")
+            return response_with_header(
                 {"values": [{"name": "x", "slug": "x"}], "isLastPage": "false"},
                 "jdoe",
             )
@@ -1155,8 +1147,8 @@ class TestCurrentUserResolution:
 
         def _stuck(url, params=None, timeout=None, **kwargs):
             if url.endswith("/inbox/pull-requests/count"):
-                return _response_with_header({"count": 0}, "jdoe")
-            return _response_with_header(
+                return response_with_header({"count": 0}, "jdoe")
+            return response_with_header(
                 {
                     "values": [{"name": "jdoer", "slug": "jdoer-slug"}],
                     "isLastPage": False,
@@ -1179,9 +1171,9 @@ class TestCurrentUserResolution:
 
         def _endless(url, params=None, timeout=None, **kwargs):
             if url.endswith("/inbox/pull-requests/count"):
-                return _response_with_header({"count": 0}, "jdoe")
+                return response_with_header({"count": 0}, "jdoe")
             start = (params or {}).get("start", 0)
-            return _response_with_header(
+            return response_with_header(
                 {
                     "values": [{"name": f"jdoe{start}", "slug": f"s{start}"}],
                     "isLastPage": False,
@@ -1204,10 +1196,10 @@ class TestCurrentUserResolution:
 
         def _paged(url, params=None, timeout=None, **kwargs):
             if url.endswith("/inbox/pull-requests/count"):
-                return _response_with_header({"count": 0}, "jdoe")
+                return response_with_header({"count": 0}, "jdoe")
             # Page 1 carries only a prefix sibling; the exact match is on page 2.
             if (params or {}).get("start", 0) == 0:
-                return _response_with_header(
+                return response_with_header(
                     {
                         "values": [{"name": "jdoer", "slug": "jdoer-slug"}],
                         "isLastPage": False,
@@ -1215,7 +1207,7 @@ class TestCurrentUserResolution:
                     },
                     "jdoe",
                 )
-            return _response_with_header(
+            return response_with_header(
                 {
                     "values": [{"name": "jdoe", "slug": "jdoe-slug"}],
                     "isLastPage": True,

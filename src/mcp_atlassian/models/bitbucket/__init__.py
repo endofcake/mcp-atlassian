@@ -38,7 +38,7 @@ from .pull_request import (
 from .ref import BitbucketBranch, BitbucketTag
 from .repository import BitbucketRepository
 from .source import BitbucketDirectoryEntry
-from .user import BitbucketUser
+from .user import BitbucketUser, BitbucketUserProfile
 
 __all__ = [
     "BitbucketActivity",
@@ -63,4 +63,5 @@ __all__ = [
     "BitbucketTag",
     "BitbucketTestResults",
     "BitbucketUser",
+    "BitbucketUserProfile",
 ]

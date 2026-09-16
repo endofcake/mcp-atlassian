@@ -14,6 +14,7 @@ from .pull_requests import PullRequestsMixin
 from .refs import RefsMixin
 from .repositories import ReposMixin
 from .source import SourceMixin
+from .users import UsersMixin
 
 
 class BitbucketFetcher(
@@ -24,6 +25,7 @@ class BitbucketFetcher(
     CommitsMixin,
     SourceMixin,
     BuildsMixin,
+    UsersMixin,
 ):
     """Bitbucket Data Center client composing all domain mixins.
 
@@ -44,6 +46,8 @@ class BitbucketFetcher(
       browsing over the ``browse`` endpoint.
     - :class:`~mcp_atlassian.bitbucket.builds.BuildsMixin`: CI build statuses
       for a commit, over the ``build-status`` REST module.
+    - :class:`~mcp_atlassian.bitbucket.users.UsersMixin`: the authenticated
+      caller's profile.
     """
 
     pass

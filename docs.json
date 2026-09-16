@@ -3,7 +3,7 @@
   "theme": "mint",
   "name": "MCP Atlassian",
   "metadata": {
-    "og:description": "MCP server for Atlassian Jira, Confluence, and Bitbucket — all 122 tools enabled by default"
+    "og:description": "MCP server for Atlassian Jira, Confluence, and Bitbucket — all 123 tools enabled by default"
   },
   "seo": {
     "indexHiddenPages": false
@@ -83,7 +83,8 @@
             "pages": [
               "docs/tools/bitbucket-projects",
               "docs/tools/bitbucket-repositories",
-              "docs/tools/bitbucket-pull-requests"
+              "docs/tools/bitbucket-pull-requests",
+              "docs/tools/bitbucket-users"
             ]
           },
           {

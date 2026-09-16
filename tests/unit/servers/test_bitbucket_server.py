@@ -85,6 +85,16 @@ def mock_bitbucket_fetcher() -> MagicMock:
     mock_fetcher.get_default_branch.return_value = _model_mock(
         {"id": "refs/heads/main", "display_id": "main", "type": "BRANCH"}
     )
+    mock_fetcher.get_current_user_profile.return_value = _model_mock(
+        {
+            "name": "jdoe",
+            "slug": "jdoe-slug",
+            "id": 101,
+            "display_name": "J. Doe",
+            "active": True,
+            "type": "NORMAL",
+        }
+    )
 
     tag = _model_mock(
         {"id": "refs/tags/v1.0.0", "display_id": "v1.0.0", "latest_commit": "def456"},
@@ -254,6 +264,7 @@ def test_bitbucket_mcp(
         edit_pull_request_comment,
         get_commit,
         get_commit_build_status,
+        get_current_user,
         get_default_branch,
         get_pull_request,
         get_pull_request_activities,
@@ -314,6 +325,7 @@ def test_bitbucket_mcp(
     bitbucket_sub_mcp.add_tool(edit_pull_request_comment)
     bitbucket_sub_mcp.add_tool(resolve_pull_request_comment)
     bitbucket_sub_mcp.add_tool(delete_pull_request_comment)
+    bitbucket_sub_mcp.add_tool(get_current_user)
 
     test_mcp.mount(bitbucket_sub_mcp, namespace="bitbucket")
 
@@ -2116,7 +2128,7 @@ class TestFetcherOffload:
         tools = self._tool_functions()
         # The registered tool count is part of the contract: a new tool must
         # be routed through the helper and this pin bumped in the same change.
-        assert len(tools) == 24
+        assert len(tools) == 25
 
         for name, function in tools.items():
             fetcher_names = self._fetcher_names(function)
@@ -2159,3 +2171,84 @@ class TestFetcherOffload:
 
         assert _result_json(response)["count"] == 1
         assert call_threads and call_threads[0] != loop_thread
+
+
+@pytest.mark.anyio
+class TestGetCurrentUser:
+    """The get_current_user tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the caller's profile directly."""
+        response = await bitbucket_client.call_tool("bitbucket_get_current_user", {})
+
+        mock_bitbucket_fetcher.get_current_user_profile.assert_called_once_with(
+            refresh=False
+        )
+        assert _result_json(response) == {
+            "name": "jdoe",
+            "slug": "jdoe-slug",
+            "id": 101,
+            "display_name": "J. Doe",
+            "active": True,
+            "type": "NORMAL",
+        }
+
+    async def test_refresh_is_forwarded(self, bitbucket_client, mock_bitbucket_fetcher):
+        """The refresh flag reaches the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_get_current_user", {"refresh": True}
+        )
+
+        mock_bitbucket_fetcher.get_current_user_profile.assert_called_once_with(
+            refresh=True
+        )
+
+    async def test_is_read_only_and_in_the_users_toolset(self, bitbucket_client):
+        """The tool is tagged read-only and belongs to the users toolset."""
+        from src.mcp_atlassian.servers.bitbucket import bitbucket_mcp
+
+        tool = await bitbucket_mcp.get_tool("get_current_user")
+        assert "toolset:bitbucket_users" in tool.tags
+        assert "read" in tool.tags
+        assert tool.annotations is not None
+        assert tool.annotations.readOnlyHint is True
+
+    async def test_auth_error_preserved(self, bitbucket_client, mock_bitbucket_fetcher):
+        """An authentication error surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.get_current_user_profile.side_effect = (
+            MCPAtlassianAuthenticationError("token rejected")
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool("bitbucket_get_current_user", {})
+
+        assert "token rejected" in str(excinfo.value)
+
+    async def test_not_found_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A not-found error surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.get_current_user_profile.side_effect = (
+            BitbucketResourceNotFoundError(
+                "Bitbucket resource not found (HTTP 404) for the user."
+            )
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool("bitbucket_get_current_user", {})
+
+        assert "Bitbucket resource not found (HTTP 404)" in str(excinfo.value)
+
+    async def test_value_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """An identity-resolution failure surfaces as a ToolError with its message."""
+        mock_bitbucket_fetcher.get_current_user_profile.side_effect = ValueError(
+            "Could not determine the authenticated user: the Bitbucket instance "
+            "did not return an X-AUSERNAME header."
+        )
+
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool("bitbucket_get_current_user", {})
+
+        assert "X-AUSERNAME" in str(excinfo.value)

@@ -54,7 +54,7 @@ DEFAULT_MAX_RESPONSE_BYTES = 10 * 1024 * 1024
 # X-AUSERNAME to a slug. The ``filter`` query is a substring match, so the exact
 # name match can fall on a later page in a large directory; the cap bounds the
 # scan so a pathological filter cannot walk the whole user base. The lookup is
-# internal to a single write call and cannot be resumed by the MCP client, so
+# internal to a single tool call and cannot be resumed by the MCP client, so
 # it is the client's only multi-request path, and the cap is kept in single
 # digits (5 * 100 = 500 filtered users) to bound upstream load.
 _USERS_PAGE_SIZE = 100
@@ -174,8 +174,8 @@ class BitbucketClient:
         """
         self.config = config or BitbucketConfig.from_env()
 
-        # Per-user identity cache for write paths that need the caller's slug
-        # (review status). X-AUSERNAME is captured opportunistically from
+        # Per-user identity cache for paths that need the caller's slug (the
+        # current-user profile, review status). X-AUSERNAME is captured from
         # authenticated responses and the resolved slug is memoised. The client
         # is built per authenticated user, so the cache is per-user.
         self._auth_username: str | None = None
@@ -862,7 +862,7 @@ class BitbucketClient:
         Bitbucket DC's REST surface has no self/whoami endpoint, so the caller's
         identity is learned in two steps: the username comes from the
         ``X-AUSERNAME`` header (primed here with a cheap authenticated call if no
-        prior response has set it), then the *slug* the participant path needs is
+        prior response has set it), then the *slug* that user-scoped paths need is
         resolved from ``GET /users?filter=<username>`` by exact-matching the
         ``name`` field. The slug is cached for the life of this (per-user) client.
 
@@ -886,8 +886,7 @@ class BitbucketClient:
         if not username:
             raise ValueError(
                 "Could not determine the authenticated user: the Bitbucket "
-                "instance did not return an X-AUSERNAME header, so review status "
-                "cannot be set without the caller's identity."
+                "instance did not return an X-AUSERNAME header."
             )
 
         # The filter is a substring match, so several users can come back and the

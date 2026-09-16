@@ -39,6 +39,14 @@ def json_response(body: Any) -> MagicMock:
     return attach_json(response, body)
 
 
+def response_with_header(body: Any, username: str | None) -> MagicMock:
+    """A successful JSON response carrying an ``X-AUSERNAME`` header, if given."""
+    response = json_response(body)
+    if username:
+        response.headers["X-AUSERNAME"] = username
+    return response
+
+
 def no_content_response() -> MagicMock:
     """Build a 204 success: an empty body that must not be parsed as JSON."""
     response = MagicMock()

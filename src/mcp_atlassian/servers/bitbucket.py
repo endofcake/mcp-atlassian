@@ -2383,3 +2383,47 @@ async def delete_pull_request_comment(
     )
     # A 204 has no body to echo, so confirm with the deleted id.
     return json.dumps({"comment_id": comment_id}, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_users"},
+    annotations={"title": "Get Bitbucket Current User", "readOnlyHint": True},
+)
+async def get_current_user(
+    ctx: Context,
+    refresh: Annotated[
+        bool,
+        Field(
+            description=(
+                "Resolve the caller's identity again instead of reusing the "
+                "value cached on this client. Only needed on a long-lived "
+                "client after the account has been renamed."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """Get the Bitbucket Data Center user the server is acting as.
+
+    Use this before an author-sensitive step (self-approval rules, "my" pull
+    requests) to learn the caller's username and slug. Bitbucket DC has no
+    self/whoami endpoint, so resolving the caller's slug costs a priming
+    request plus a bounded user-directory lookup before the profile read.
+    The resolution is cached per client. A stateless HTTP transport builds a
+    client per request, so every call pays it. A long-lived stdio client pays
+    it once.
+
+    Args:
+        ctx: The FastMCP context.
+        refresh: Whether to discard the cached identity and resolve it again.
+
+    Returns:
+        JSON string with the caller's profile: id, username (``name``),
+        ``slug``, display name, active flag, and account type (``NORMAL`` or
+        ``SERVICE``). Contact details are not included.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    profile = await run_bitbucket_fetcher_call(
+        bitbucket.get_current_user_profile, refresh=refresh
+    )
+    return json.dumps(profile.to_simplified_dict(), indent=2, ensure_ascii=False)
