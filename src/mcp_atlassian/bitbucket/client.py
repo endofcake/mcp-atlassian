@@ -12,7 +12,11 @@ from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import RequestException, SSLError, Timeout
 
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
-from mcp_atlassian.models.bitbucket import BitbucketProject
+from mcp_atlassian.models.bitbucket import (
+    BitbucketFileDiff,
+    BitbucketProject,
+    BitbucketPullRequestDiff,
+)
 from mcp_atlassian.utils.http import (
     configure_circuit_breaker,
     configure_concurrency,
@@ -735,6 +739,72 @@ class BitbucketClient:
         if pr_id <= 0:
             raise ValueError("pull_request_id must be a positive integer.")
         return pr_id
+
+    @staticmethod
+    def _build_diff(
+        data: Any,
+        url: str,
+        *,
+        single_file: bool,
+        max_lines_per_file: int,
+        max_files: int,
+    ) -> BitbucketPullRequestDiff:
+        """Build a bounded diff model from a ``diff`` endpoint body.
+
+        Shared by the pull-request and compare diff endpoints. Two body
+        shapes are accepted for either form: the ``RestDiffResponse``
+        envelope (one ``RestDiff`` per file under ``diffs``), which the
+        pull-request endpoint returns at runtime, and a bare ``RestDiff``,
+        which the Bitbucket Data Center 9.4 REST specification declares for
+        the single-file form and for the whole comparison. A bare diff is
+        wrapped as a one-file envelope. A non-empty body of any other shape
+        raises, so an unrecognised body is not reported as an empty diff.
+
+        Args:
+            data: The decoded JSON body.
+            url: The request path, for error messages.
+            single_file: Whether the single-file form was called (a ``path``
+                was appended to the endpoint).
+            max_lines_per_file: Per-file diff-line cap, already clamped.
+            max_files: File cap for the whole-diff form, already clamped.
+                Ignored when ``single_file`` is set.
+
+        Returns:
+            A :class:`~mcp_atlassian.models.bitbucket.BitbucketPullRequestDiff`.
+
+        Raises:
+            ValueError: If the body is not a JSON object, or a non-empty body
+                is neither a diff object nor a ``diffs`` envelope.
+        """
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Bitbucket returned an unexpected response shape for "
+                f"{url} (expected a diff object)."
+            )
+        if single_file:
+            max_files = 1
+        if isinstance(data.get("diffs"), list):
+            return BitbucketPullRequestDiff.from_api_response(
+                data, max_lines_per_file=max_lines_per_file, max_files=max_files
+            )
+        if not single_file and not data:
+            return BitbucketPullRequestDiff.from_api_response(
+                data, max_lines_per_file=max_lines_per_file, max_files=max_files
+            )
+        if not any(key in data for key in ("hunks", "source", "destination")):
+            raise ValueError(
+                "Bitbucket returned an unexpected diff response shape for "
+                f"{url} (neither a diff object nor a 'diffs' list), so it is "
+                "not reported as an empty diff."
+            )
+        file_diff = BitbucketFileDiff.from_api_response(
+            data, max_lines_per_file=max_lines_per_file
+        )
+        return BitbucketPullRequestDiff(
+            files=[file_diff],
+            total_files=1,
+            truncated=file_diff.line_truncated or file_diff.server_truncated,
+        )
 
     def _get(
         self,

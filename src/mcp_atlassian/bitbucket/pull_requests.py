@@ -9,7 +9,6 @@ from ..models.bitbucket import (
     BitbucketActivity,
     BitbucketChange,
     BitbucketComment,
-    BitbucketFileDiff,
     BitbucketMergeStatus,
     BitbucketPullRequest,
     BitbucketPullRequestDiff,
@@ -560,36 +559,12 @@ class PullRequestsMixin(BitbucketClient):
                     "context_lines."
                 )
             raise BitbucketResponseTooLargeError(f"{e} {options}") from e
-        if not isinstance(data, dict):
-            raise ValueError(
-                "Bitbucket returned an unexpected response shape for "
-                f"{url}; expected a diff object."
-            )
-        if not encoded_path:
-            return BitbucketPullRequestDiff.from_api_response(
-                data, max_lines_per_file=max_lines_per_file, max_files=max_files
-            )
-        # The single-file form answers with a bare RestDiff. A body carrying
-        # the whole-PR ``diffs`` envelope is accepted as well, since the
-        # endpoint has no live capture; any other shape is a parse failure
-        # and must not read as an empty diff.
-        if isinstance(data.get("diffs"), list):
-            return BitbucketPullRequestDiff.from_api_response(
-                data, max_lines_per_file=max_lines_per_file, max_files=1
-            )
-        if not any(key in data for key in ("hunks", "source", "destination")):
-            raise ValueError(
-                "Bitbucket returned an unexpected diff response shape for "
-                f"{url}: neither a diff object nor a 'diffs' list. Refusing to "
-                "report the malformed body as an empty diff."
-            )
-        file_diff = BitbucketFileDiff.from_api_response(
-            data, max_lines_per_file=max_lines_per_file
-        )
-        return BitbucketPullRequestDiff(
-            files=[file_diff],
-            total_files=1,
-            truncated=file_diff.line_truncated or file_diff.server_truncated,
+        return self._build_diff(
+            data,
+            url,
+            single_file=bool(encoded_path),
+            max_lines_per_file=max_lines_per_file,
+            max_files=max_files,
         )
 
     def get_pull_request_changes(
