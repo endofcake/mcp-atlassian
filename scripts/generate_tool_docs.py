@@ -177,6 +177,9 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "bitbucket_get_commit",
         "bitbucket_get_commit_build_status",
         "bitbucket_browse_path",
+        "bitbucket_compare_changes",
+        "bitbucket_compare_commits",
+        "bitbucket_compare_diff",
     ],
     "bitbucket-pull-requests": [
         "bitbucket_list_pull_requests",
@@ -266,7 +269,7 @@ CATEGORY_META: dict[str, dict[str, str]] = {
     "bitbucket-repositories": {
         "title": "Bitbucket Repositories",
         "description": (
-            "Repositories, branches, tags, commits, build statuses, and source browsing"
+            "Repositories, branches, tags, commits, build statuses, source browsing, and ref comparison"
         ),
     },
     "bitbucket-pull-requests": {

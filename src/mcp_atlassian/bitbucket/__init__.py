@@ -8,6 +8,7 @@ mirroring the Jira/Confluence architecture.
 
 from .builds import BuildsMixin
 from .commits import CommitsMixin
+from .compare import CompareMixin
 from .config import BitbucketConfig
 from .projects import ProjectsMixin
 from .pull_requests import PullRequestsMixin
@@ -26,6 +27,7 @@ class BitbucketFetcher(
     SourceMixin,
     BuildsMixin,
     UsersMixin,
+    CompareMixin,
 ):
     """Bitbucket Data Center client composing all domain mixins.
 
@@ -48,6 +50,8 @@ class BitbucketFetcher(
       for a commit, over the ``build-status`` REST module.
     - :class:`~mcp_atlassian.bitbucket.users.UsersMixin`: the authenticated
       caller's profile.
+    - :class:`~mcp_atlassian.bitbucket.compare.CompareMixin`: changed files,
+      commits, and diff between two refs or commits.
     """
 
     pass

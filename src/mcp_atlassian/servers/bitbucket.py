@@ -1040,6 +1040,429 @@ async def browse_path(
 
 
 @bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Compare Bitbucket Changes", "readOnlyHint": True},
+)
+async def compare_changes(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    from_ref: Annotated[
+        str,
+        Field(
+            description=(
+                "The source commit or ref whose changes are reported: a full or "
+                "partial commit SHA, or a branch or tag name (e.g. 'feature/x', "
+                "'refs/tags/v1.2')."
+            ),
+            min_length=1,
+        ),
+    ],
+    to_ref: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The target commit or ref to compare against. Omit for the "
+                "repository's default branch."
+            ),
+            default=None,
+        ),
+    ] = None,
+    from_repo: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The repository holding 'from_ref' when it is a fork of this "
+                "one, as 'PROJECT/slug' (e.g. 'FORK/my-repo'). Omit when "
+                "'from_ref' lives in this repository."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first changed file to "
+                "return. Use 0 (default) for the first window, then pass the "
+                "response's 'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of changed files to return in this window. If "
+                "more exist than are returned, the response sets 'truncated' to "
+                "true and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_CHANGES_LIMIT,
+            ge=1,
+            le=MAX_CHANGES_LIMIT,
+        ),
+    ] = DEFAULT_CHANGES_LIMIT,
+) -> str:
+    """List the files that differ between two refs of a Bitbucket repository.
+
+    Reports the changes present in 'from_ref' but not in 'to_ref' (the
+    repository's default branch when omitted), e.g. what a release branch
+    adds on top of a tag. Each entry carries the file's 'path', its
+    'src_path' for a move or copy, the change 'type' (ADD, COPY, DELETE,
+    MODIFY, MOVE, UNKNOWN), and its 'node_type'. Use it to pick files for
+    bitbucket_compare_diff with 'path' (and 'src_path') when the whole diff
+    is too large to download. An empty result usually means 'from_ref' is already
+    contained in 'to_ref'. Swap the two to see the reverse direction.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        from_ref: The source commit or ref.
+        to_ref: The target commit or ref; the default branch when omitted.
+        from_repo: The fork holding 'from_ref', as 'PROJECT/slug'.
+        start: Pagination cursor (offset of the first file); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of changed files to return in this window.
+
+    Returns:
+        JSON string with the list of ``changes`` plus ``count`` (the size of this
+        window), ``is_last_page``, ``truncated``, and ``next_page_start``. The
+        list is complete when ``is_last_page`` is true and ``truncated`` is
+        false. A null ``next_page_start`` with ``truncated`` true cannot be
+        resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.compare_changes,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        from_ref=from_ref,
+        to_ref=to_ref,
+        from_repo=from_repo,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "changes": [change.to_simplified_dict() for change in page.changes],
+        "count": len(page.changes),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Compare Bitbucket Commits", "readOnlyHint": True},
+)
+async def compare_commits(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    from_ref: Annotated[
+        str,
+        Field(
+            description=(
+                "The source commit or ref whose commits are reported: a full or "
+                "partial commit SHA, or a branch or tag name (e.g. 'feature/x', "
+                "'refs/tags/v1.2')."
+            ),
+            min_length=1,
+        ),
+    ],
+    to_ref: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The target commit or ref to compare against. Omit for the "
+                "repository's default branch."
+            ),
+            default=None,
+        ),
+    ] = None,
+    from_repo: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The repository holding 'from_ref' when it is a fork of this "
+                "one, as 'PROJECT/slug' (e.g. 'FORK/my-repo'). Omit when "
+                "'from_ref' lives in this repository."
+            ),
+            default=None,
+        ),
+    ] = None,
+    start: Annotated[
+        int,
+        Field(
+            description=(
+                "Pagination cursor: the offset of the first commit to return. "
+                "Use 0 (default) for the first window, then pass the response's "
+                "'next_page_start' to fetch the next window."
+            ),
+            default=0,
+            ge=0,
+        ),
+    ] = 0,
+    limit: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of commits to return in this window. If more "
+                "exist than are returned, the response sets 'truncated' to true "
+                "and 'next_page_start' to the cursor for the next call."
+            ),
+            default=DEFAULT_COMMITS_LIMIT,
+            ge=1,
+            le=MAX_COMMITS_LIMIT,
+        ),
+    ] = DEFAULT_COMMITS_LIMIT,
+    summary: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true, return a compact projection per commit (id, "
+                "display id, author, timestamp, first message line) for "
+                "scanning many commits cheaply."
+            ),
+            default=False,
+        ),
+    ] = False,
+) -> str:
+    """List the commits reachable from one ref but not from another.
+
+    Reports the commits reachable from 'from_ref' that are not reachable
+    from 'to_ref' (the repository's default branch when omitted), e.g. the
+    commits a branch adds since it diverged, or everything since a release
+    tag. Each commit carries its id, message, author, committer, timestamps,
+    and parents. An empty result usually means 'from_ref' is already
+    contained in 'to_ref'. Swap the two to see the reverse direction.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        from_ref: The source commit or ref.
+        to_ref: The target commit or ref; the default branch when omitted.
+        from_repo: The fork holding 'from_ref', as 'PROJECT/slug'.
+        start: Pagination cursor (offset of the first commit); 0 for the first
+            window, else a prior response's ``next_page_start``.
+        limit: Maximum number of commits to return in this window.
+        summary: When true, commit records carry triage fields only.
+
+    Returns:
+        JSON string with the list of ``commits`` plus ``count`` (the size of this
+        window), ``is_last_page``, ``truncated``, and ``next_page_start``. The
+        list is complete when ``is_last_page`` is true and ``truncated`` is
+        false. A null ``next_page_start`` with ``truncated`` true cannot be
+        resumed.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    page = await run_bitbucket_fetcher_call(
+        bitbucket.compare_commits,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        from_ref=from_ref,
+        to_ref=to_ref,
+        from_repo=from_repo,
+        start=start,
+        limit=limit,
+    )
+    response_data: dict[str, object] = {
+        "commits": [
+            commit.to_summary_dict() if summary else commit.to_simplified_dict()
+            for commit in page.commits
+        ],
+        "count": len(page.commits),
+        "is_last_page": page.is_last_page,
+        "truncated": page.truncated,
+        "next_page_start": page.next_page_start,
+    }
+    return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
+    annotations={"title": "Compare Bitbucket Diff", "readOnlyHint": True},
+)
+async def compare_diff(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    from_ref: Annotated[
+        str,
+        Field(
+            description=(
+                "The source commit or ref whose changes are reported: a full or "
+                "partial commit SHA, or a branch or tag name (e.g. 'feature/x', "
+                "'refs/tags/v1.2')."
+            ),
+            min_length=1,
+        ),
+    ],
+    to_ref: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The target commit or ref to compare against. Omit for the "
+                "repository's default branch."
+            ),
+            default=None,
+        ),
+    ] = None,
+    from_repo: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The repository holding 'from_ref' when it is a fork of this "
+                "one, as 'PROJECT/slug' (e.g. 'FORK/my-repo'). Omit when "
+                "'from_ref' lives in this repository."
+            ),
+            default=None,
+        ),
+    ] = None,
+    max_lines_per_file: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum diff lines to return per file (token control). Files "
+                "exceeding this are truncated. The response flags the file with "
+                "'line_truncated' and counts the dropped lines in 'omitted_lines'."
+            ),
+            default=DEFAULT_MAX_LINES_PER_FILE,
+            ge=1,
+            le=MAX_MAX_LINES_PER_FILE,
+        ),
+    ] = DEFAULT_MAX_LINES_PER_FILE,
+    max_files: Annotated[
+        int,
+        Field(
+            description=(
+                "Maximum number of changed files to return (token control). If "
+                "the comparison changes more files than this, the response "
+                "returns the first 'max_files' and sets 'truncated' to true. "
+                "'total_files' reports the full count."
+            ),
+            default=DEFAULT_MAX_FILES,
+            ge=1,
+            le=MAX_MAX_FILES,
+        ),
+    ] = DEFAULT_MAX_FILES,
+    context_lines: Annotated[
+        int | None,
+        Field(
+            description=(
+                "Number of unchanged context lines to include around each "
+                "change, applied by the server before download. Omit for the "
+                "server default (10). Lower it to shrink a large diff."
+            ),
+            default=None,
+            ge=0,
+            le=MAX_CONTEXT_LINES,
+        ),
+    ] = None,
+    path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Diff a single file at this path instead of the whole "
+                "comparison. Use bitbucket_compare_changes to list the paths. "
+                "'.'/'..' and traversal paths are rejected."
+            ),
+            default=None,
+        ),
+    ] = None,
+    src_path: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The file's previous path when it was moved, copied, or "
+                "renamed (the 'src_path' of its changed-file entry). Only "
+                "valid together with 'path'."
+            ),
+            default=None,
+        ),
+    ] = None,
+    whitespace: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Whitespace handling. The only accepted value is 'ignore-all', "
+                "which drops whitespace-only changes from the diff. Omit for "
+                "the server default (whitespace is significant)."
+            ),
+            default=None,
+        ),
+    ] = None,
+) -> str:
+    """Get the structured diff between two refs of a Bitbucket repository.
+
+    Reports the changes present in 'from_ref' but not in 'to_ref' (the
+    repository's default branch when omitted) as a structured hunk model
+    (files → hunks → segments → lines), not raw unified-diff text. The diff
+    is bounded for token control: each file is capped at
+    ``max_lines_per_file`` lines and the file list is capped at
+    ``max_files``; the top-level ``truncated`` flag reports whether anything
+    was omitted. A hunk whose lines all fell past the per-file cap is kept
+    with its line coordinates and no lines, so the change's location
+    survives. The raw download itself is capped at 10 MiB. When a comparison
+    exceeds that, narrow the request: list its files with
+    bitbucket_compare_changes and fetch one at a time with 'path', or lower
+    'context_lines'. An empty result usually means 'from_ref' is already
+    contained in 'to_ref'. Swap the two to see the reverse direction.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        from_ref: The source commit or ref.
+        to_ref: The target commit or ref; the default branch when omitted.
+        from_repo: The fork holding 'from_ref', as 'PROJECT/slug'.
+        max_lines_per_file: Per-file diff-line cap.
+        max_files: Maximum number of changed files to return.
+        context_lines: Server-side context lines around each change.
+        path: When set, diff only this file.
+        src_path: The file's previous path for a move or rename (with path).
+        whitespace: 'ignore-all' to drop whitespace-only changes.
+
+    Returns:
+        JSON string with the structured diff: ``files``, ``count``,
+        ``total_files``, and ``truncated``.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    diff = await run_bitbucket_fetcher_call(
+        bitbucket.compare_diff,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        from_ref=from_ref,
+        to_ref=to_ref,
+        from_repo=from_repo,
+        max_lines_per_file=max_lines_per_file,
+        max_files=max_files,
+        context_lines=context_lines,
+        path=path,
+        src_path=src_path,
+        whitespace=whitespace,
+    )
+    return json.dumps(diff.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
     tags={"bitbucket", "read", "toolset:bitbucket_pull_requests"},
     annotations={"title": "List Bitbucket Pull Requests", "readOnlyHint": True},
 )

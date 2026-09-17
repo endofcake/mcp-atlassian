@@ -122,6 +122,7 @@ def mock_bitbucket_fetcher() -> MagicMock:
     mock_fetcher.list_commits.return_value = commits_page
     mock_fetcher.get_pull_request_commits.return_value = commits_page
     mock_fetcher.get_commit.return_value = commit
+    mock_fetcher.compare_commits.return_value = commits_page
 
     build_status = _model_mock(
         {
@@ -198,12 +199,16 @@ def mock_bitbucket_fetcher() -> MagicMock:
         }
     )
     change = _model_mock({"path": "src/app.py", "type": "MODIFY", "node_type": "FILE"})
-    mock_fetcher.get_pull_request_changes.return_value = BitbucketChangesPage(
+    changes_page = BitbucketChangesPage(
         changes=[change], is_last_page=True, truncated=False, next_page_start=None
     )
-    mock_fetcher.get_pull_request_diff.return_value = _model_mock(
+    mock_fetcher.get_pull_request_changes.return_value = changes_page
+    mock_fetcher.compare_changes.return_value = changes_page
+    diff = _model_mock(
         {"files": [{"path": "f.py"}], "count": 1, "total_files": 1, "truncated": False}
     )
+    mock_fetcher.get_pull_request_diff.return_value = diff
+    mock_fetcher.compare_diff.return_value = diff
 
     comment = _model_mock({"id": 9, "version": 1, "text": "nit", "author": "r"})
     activity = MagicMock()
@@ -260,6 +265,9 @@ def test_bitbucket_mcp(
     from src.mcp_atlassian.servers.bitbucket import (
         add_pull_request_comment,
         browse_path,
+        compare_changes,
+        compare_commits,
+        compare_diff,
         delete_pull_request_comment,
         edit_pull_request_comment,
         get_commit,
@@ -311,6 +319,9 @@ def test_bitbucket_mcp(
     bitbucket_sub_mcp.add_tool(get_commit)
     bitbucket_sub_mcp.add_tool(get_commit_build_status)
     bitbucket_sub_mcp.add_tool(browse_path)
+    bitbucket_sub_mcp.add_tool(compare_changes)
+    bitbucket_sub_mcp.add_tool(compare_commits)
+    bitbucket_sub_mcp.add_tool(compare_diff)
     bitbucket_sub_mcp.add_tool(list_pull_requests)
     bitbucket_sub_mcp.add_tool(list_user_pull_requests)
     bitbucket_sub_mcp.add_tool(get_pull_request)
@@ -1036,6 +1047,270 @@ class TestBrowsePath:
             )
 
         assert "path traversal rejected" in str(excinfo.value)
+
+
+@pytest.mark.anyio
+class TestCompareChanges:
+    """The compare_changes tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful call returns the changed files plus pagination fields."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_compare_changes",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "from_ref": "feature/x",
+            },
+        )
+
+        mock_bitbucket_fetcher.compare_changes.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            from_ref="feature/x",
+            to_ref=None,
+            from_repo=None,
+            start=0,
+            limit=25,
+        )
+        result = _result_json(response)
+        assert result["changes"] == [
+            {"path": "src/app.py", "type": "MODIFY", "node_type": "FILE"}
+        ]
+        assert result["count"] == 1
+        assert result["is_last_page"] is True
+        assert result["truncated"] is False
+        assert result["next_page_start"] is None
+
+    async def test_refs_and_cursor_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        mock_bitbucket_fetcher.compare_changes.return_value = BitbucketChangesPage(
+            changes=[], is_last_page=False, truncated=True, next_page_start=50
+        )
+        response = await bitbucket_client.call_tool(
+            "bitbucket_compare_changes",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "from_ref": "feature/x",
+                "to_ref": "main",
+                "from_repo": "FORK/my-repo",
+                "start": 25,
+                "limit": 25,
+            },
+        )
+
+        call_kwargs = mock_bitbucket_fetcher.compare_changes.call_args.kwargs
+        assert call_kwargs["to_ref"] == "main"
+        assert call_kwargs["from_repo"] == "FORK/my-repo"
+        assert call_kwargs["start"] == 25
+        result = _result_json(response)
+        assert result["next_page_start"] == 50
+        assert result["truncated"] is True
+
+    async def test_from_ref_is_required(self, bitbucket_client, mock_bitbucket_fetcher):
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_compare_changes",
+                {"project_key": "PROJ", "repository_slug": "my-repo"},
+            )
+        mock_bitbucket_fetcher.compare_changes.assert_not_called()
+
+    async def test_limit_above_ceiling_rejected(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_compare_changes",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "from_ref": "x",
+                    "limit": 101,
+                },
+            )
+        mock_bitbucket_fetcher.compare_changes.assert_not_called()
+
+    async def test_value_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A malformed from_repo surfaces as the fetcher's message."""
+        mock_bitbucket_fetcher.compare_changes.side_effect = ValueError(
+            "from_repo must be a project key and repository slug"
+        )
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_compare_changes",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "from_ref": "x",
+                    "from_repo": "42",
+                },
+            )
+        assert "from_repo" in str(excinfo.value)
+
+
+@pytest.mark.anyio
+class TestCompareCommits:
+    """The compare_commits tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        response = await bitbucket_client.call_tool(
+            "bitbucket_compare_commits",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "from_ref": "release/1.2",
+                "to_ref": "refs/tags/v1.1",
+            },
+        )
+
+        mock_bitbucket_fetcher.compare_commits.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            from_ref="release/1.2",
+            to_ref="refs/tags/v1.1",
+            from_repo=None,
+            start=0,
+            limit=25,
+        )
+        result = _result_json(response)
+        assert result["commits"][0]["id"] == "abc123def456"
+        assert result["commits"][0]["message"] == "Add feature\n\nbody"
+        assert result["count"] == 1
+        assert result["is_last_page"] is True
+        assert result["next_page_start"] is None
+
+    async def test_summary_projection(self, bitbucket_client, mock_bitbucket_fetcher):
+        response = await bitbucket_client.call_tool(
+            "bitbucket_compare_commits",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "from_ref": "x",
+                "summary": True,
+            },
+        )
+
+        result = _result_json(response)
+        assert result["commits"] == [
+            {"display_id": "abc123d", "author": "Jane Dev", "message": "Add feature"}
+        ]
+
+    async def test_not_found_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        mock_bitbucket_fetcher.compare_commits.side_effect = (
+            BitbucketResourceNotFoundError("Bitbucket resource not found (HTTP 404)")
+        )
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_compare_commits",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "from_ref": "no-such-ref",
+                },
+            )
+        assert "not found" in str(excinfo.value)
+
+
+@pytest.mark.anyio
+class TestCompareDiff:
+    """The compare_diff tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        response = await bitbucket_client.call_tool(
+            "bitbucket_compare_diff",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "from_ref": "feature/x",
+            },
+        )
+
+        mock_bitbucket_fetcher.compare_diff.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            from_ref="feature/x",
+            to_ref=None,
+            from_repo=None,
+            max_lines_per_file=500,
+            max_files=100,
+            context_lines=None,
+            path=None,
+            src_path=None,
+            whitespace=None,
+        )
+        result = _result_json(response)
+        assert result["files"] == [{"path": "f.py"}]
+        assert result["truncated"] is False
+
+    async def test_narrowing_is_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        await bitbucket_client.call_tool(
+            "bitbucket_compare_diff",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "from_ref": "feature/x",
+                "to_ref": "main",
+                "from_repo": "FORK/my-repo",
+                "max_lines_per_file": 50,
+                "max_files": 5,
+                "context_lines": 2,
+                "path": "src/app.py",
+                "src_path": "src/old.py",
+                "whitespace": "ignore-all",
+            },
+        )
+
+        call_kwargs = mock_bitbucket_fetcher.compare_diff.call_args.kwargs
+        assert call_kwargs["to_ref"] == "main"
+        assert call_kwargs["from_repo"] == "FORK/my-repo"
+        assert call_kwargs["max_lines_per_file"] == 50
+        assert call_kwargs["max_files"] == 5
+        assert call_kwargs["context_lines"] == 2
+        assert call_kwargs["path"] == "src/app.py"
+        assert call_kwargs["src_path"] == "src/old.py"
+        assert call_kwargs["whitespace"] == "ignore-all"
+
+    async def test_context_lines_above_ceiling_rejected(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_compare_diff",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "from_ref": "x",
+                    "context_lines": 1001,
+                },
+            )
+        mock_bitbucket_fetcher.compare_diff.assert_not_called()
+
+    async def test_value_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """An unrecognised whitespace value surfaces as the fetcher's message."""
+        mock_bitbucket_fetcher.compare_diff.side_effect = ValueError(
+            "whitespace must be one of ignore-all."
+        )
+        with pytest.raises(ToolError) as excinfo:
+            await bitbucket_client.call_tool(
+                "bitbucket_compare_diff",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "from_ref": "x",
+                    "whitespace": "ignore-some",
+                },
+            )
+        assert "whitespace must be one of" in str(excinfo.value)
 
 
 @pytest.mark.anyio
@@ -2128,7 +2403,7 @@ class TestFetcherOffload:
         tools = self._tool_functions()
         # The registered tool count is part of the contract: a new tool must
         # be routed through the helper and this pin bumped in the same change.
-        assert len(tools) == 25
+        assert len(tools) == 28
 
         for name, function in tools.items():
             fetcher_names = self._fetcher_names(function)

@@ -1,6 +1,6 @@
 ---
 title: "Bitbucket Repositories"
-description: "Repositories, branches, tags, commits, build statuses, and source browsing"
+description: "Repositories, branches, tags, commits, build statuses, source browsing, and ref comparison"
 ---
 
 ### List Bitbucket Repositories
@@ -148,5 +148,64 @@ Browse a file or directory in a Bitbucket Data Center repository.
 | `at` | `string` | No | Optional commit SHA, branch, or tag ref to read at. The repository's default branch is used when omitted. |
 | `start` | `integer` | No | Pagination cursor: the 0-based offset of the first line (file) or child (directory) to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
 | `limit` | `integer` | No | Maximum number of lines (file) or children (directory) to return in this window. If more exist, the response sets 'truncated' to true and 'next_page_start' to the next cursor. |
+
+---
+
+### Compare Bitbucket Changes
+
+List the files that differ between two refs of a Bitbucket repository.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `from_ref` | `string` | Yes | The source commit or ref whose changes are reported: a full or partial commit SHA, or a branch or tag name (e.g. 'feature/x', 'refs/tags/v1.2'). |
+| `to_ref` | `string` | No | The target commit or ref to compare against. Omit for the repository's default branch. |
+| `from_repo` | `string` | No | The repository holding 'from_ref' when it is a fork of this one, as 'PROJECT/slug' (e.g. 'FORK/my-repo'). Omit when 'from_ref' lives in this repository. |
+| `start` | `integer` | No | Pagination cursor: the offset of the first changed file to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of changed files to return in this window. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
+
+---
+
+### Compare Bitbucket Commits
+
+List the commits reachable from one ref but not from another.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `from_ref` | `string` | Yes | The source commit or ref whose commits are reported: a full or partial commit SHA, or a branch or tag name (e.g. 'feature/x', 'refs/tags/v1.2'). |
+| `to_ref` | `string` | No | The target commit or ref to compare against. Omit for the repository's default branch. |
+| `from_repo` | `string` | No | The repository holding 'from_ref' when it is a fork of this one, as 'PROJECT/slug' (e.g. 'FORK/my-repo'). Omit when 'from_ref' lives in this repository. |
+| `start` | `integer` | No | Pagination cursor: the offset of the first commit to return. Use 0 (default) for the first window, then pass the response's 'next_page_start' to fetch the next window. |
+| `limit` | `integer` | No | Maximum number of commits to return in this window. If more exist than are returned, the response sets 'truncated' to true and 'next_page_start' to the cursor for the next call. |
+| `summary` | `boolean` | No | When true, return a compact projection per commit (id, display id, author, timestamp, first message line) for scanning many commits cheaply. |
+
+---
+
+### Compare Bitbucket Diff
+
+Get the structured diff between two refs of a Bitbucket repository.
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `from_ref` | `string` | Yes | The source commit or ref whose changes are reported: a full or partial commit SHA, or a branch or tag name (e.g. 'feature/x', 'refs/tags/v1.2'). |
+| `to_ref` | `string` | No | The target commit or ref to compare against. Omit for the repository's default branch. |
+| `from_repo` | `string` | No | The repository holding 'from_ref' when it is a fork of this one, as 'PROJECT/slug' (e.g. 'FORK/my-repo'). Omit when 'from_ref' lives in this repository. |
+| `max_lines_per_file` | `integer` | No | Maximum diff lines to return per file (token control). Files exceeding this are truncated. The response flags the file with 'line_truncated' and counts the dropped lines in 'omitted_lines'. |
+| `max_files` | `integer` | No | Maximum number of changed files to return (token control). If the comparison changes more files than this, the response returns the first 'max_files' and sets 'truncated' to true. 'total_files' reports the full count. |
+| `context_lines` | `integer` | No | Number of unchanged context lines to include around each change, applied by the server before download. Omit for the server default (10). Lower it to shrink a large diff. |
+| `path` | `string` | No | Diff a single file at this path instead of the whole comparison. Use bitbucket_compare_changes to list the paths. '.'/'..' and traversal paths are rejected. |
+| `src_path` | `string` | No | The file's previous path when it was moved, copied, or renamed (the 'src_path' of its changed-file entry). Only valid together with 'path'. |
+| `whitespace` | `string` | No | Whitespace handling. The only accepted value is 'ignore-all', which drops whitespace-only changes from the diff. Omit for the server default (whitespace is significant). |
 
 ---
