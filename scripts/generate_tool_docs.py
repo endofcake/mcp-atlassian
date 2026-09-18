@@ -198,6 +198,9 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "bitbucket_resolve_pull_request_comment",
         "bitbucket_resolve_pull_request_task",
         "bitbucket_delete_pull_request_comment",
+        "bitbucket_merge_pull_request",
+        "bitbucket_decline_pull_request",
+        "bitbucket_reopen_pull_request",
     ],
     "bitbucket-users": [
         "bitbucket_get_current_user",
@@ -277,7 +280,8 @@ CATEGORY_META: dict[str, dict[str, str]] = {
     "bitbucket-pull-requests": {
         "title": "Bitbucket Pull Requests",
         "description": (
-            "Pull requests, diffs, activity timelines, comments, and reviews"
+            "Pull requests, diffs, activity timelines, comments, reviews, and "
+            "merge, decline, and reopen"
         ),
     },
     "bitbucket-users": {

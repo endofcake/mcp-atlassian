@@ -902,6 +902,85 @@ class TestRequestWriteTaxonomy:
             with pytest.raises(MCPAtlassianAuthenticationError, match=str(status)):
                 fetcher._post("/x", json_body={"text": "hi"})
 
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_post_auth_status_appends_server_message(self, status):
+        """A 401/403 carries the instance's own errors[].message, bounded."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [
+                {"message": "You do not have REPO_WRITE permission."},
+                {"message": "x" * 600, "exceptionName": "Secret"},
+            ],
+            "context": "not surfaced",
+        }
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(status, body)
+        ):
+            with pytest.raises(MCPAtlassianAuthenticationError) as excinfo:
+                fetcher._post("/x", json_body={"version": 1})
+
+        message = str(excinfo.value)
+        assert f"HTTP {status}" in message
+        assert "REPO_WRITE permission" in message
+        assert "Secret" not in message
+        assert "not surfaced" not in message
+        assert "x" * 600 not in message
+
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_post_auth_status_with_broken_body_keeps_generic_message(self, status):
+        """A 401/403 whose body breaks mid-stream keeps the status message.
+
+        The optional error detail is read from the streamed body. A transport
+        failure there must not escape as a raw connection error carrying
+        internal host names.
+        """
+        fetcher = BitbucketFetcher(config=_byo_config())
+        response = MagicMock()
+        response.status_code = status
+        response.headers = {}
+        response.iter_content.side_effect = RequestsConnectionError(
+            "HTTPSConnectionPool(host='internal-proxy.example', port=8443): "
+            "Read timed out"
+        )
+        error = HTTPError(f"{status} error")
+        error.response = response
+        response.raise_for_status.side_effect = error
+        with patch.object(fetcher._session, "post", return_value=response):
+            with pytest.raises(MCPAtlassianAuthenticationError) as excinfo:
+                fetcher._post("/x", json_body={"version": 1})
+
+        message = str(excinfo.value)
+        assert f"HTTP {status}" in message
+        assert "internal-proxy.example" not in message
+        response.close.assert_called_once()
+
+    def test_post_auth_status_without_envelope_keeps_generic_message(self):
+        """A 403 with a non-Bitbucket body (a proxy page) surfaces nothing of it."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_http_error_with_body(403, "<html>login</html>"),
+        ):
+            with pytest.raises(MCPAtlassianAuthenticationError) as excinfo:
+                fetcher._post("/x", json_body={"version": 1})
+
+        message = str(excinfo.value)
+        assert message.endswith("lacks permission for this resource.")
+        assert "html" not in message
+
+    def test_post_forwards_query_params(self):
+        """_post passes params through to the session for query-string fields."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        ok = MagicMock()
+        ok.raise_for_status.return_value = None
+        attach_json(ok, {"id": 1})
+        with patch.object(fetcher._session, "post", return_value=ok) as mock_post:
+            fetcher._post("/x/merge", json_body={"version": 3}, params={"version": 3})
+
+        assert mock_post.call_args[1]["params"] == {"version": 3}
+        assert mock_post.call_args[1]["json"] == {"version": 3}
+
     def test_post_404_raises_resource_not_found(self):
         """404 surfaces as the typed not-found error for writes too."""
         fetcher = BitbucketFetcher(config=_byo_config())

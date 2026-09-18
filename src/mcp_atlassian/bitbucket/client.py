@@ -38,12 +38,12 @@ logger = logging.getLogger("mcp-atlassian.bitbucket")
 # Bitbucket Data Center core REST API base path.
 API_BASE_PATH = "/rest/api/1.0"
 
-# Max characters of upstream error text surfaced from a 400/409 write
+# Max characters of upstream error text taken from a 400/401/403/409
 # rejection. The instance's own ``errors[].message`` is actionable, but it must
 # be bounded so a pathological upstream body cannot bloat the client-facing
 # error message.
 _ERROR_MESSAGE_MAX_CHARS = 500
-# Cap on the bytes read from a 400/409 error body to extract that text. The
+# Cap on the bytes read from a rejection's error body to extract that text. The
 # documented error envelope is small; anything larger is not Bitbucket's.
 _ERROR_BODY_MAX_BYTES = 64 * 1024
 
@@ -305,10 +305,11 @@ class BitbucketClient:
         client/conflict (400/409), non-JSON-body, and any other transport
         failure map to a crafted message that omits the raw transport error, so
         internal host/pool details do not reach the client. The sole exception
-        is a 400/409, where the instance's own ``errors[].message`` text (and
-        nothing else from the body) is appended so a rejected request (a write
-        the server refuses, or a read such as the merge status of a closed
-        pull request) is actionable.
+        is a 400/401/403/409, where the instance's own ``errors[].message``
+        text (and nothing else from the body) is appended so a rejected
+        request (a write the server refuses, a missing repository permission,
+        or a read such as the merge status of a closed pull request) is
+        actionable.
 
         Args:
             method: HTTP method (``"GET"``, ``"POST"``, ``"PUT"``, ``"DELETE"``).
@@ -399,10 +400,16 @@ class BitbucketClient:
         except HTTPError as e:
             status = e.response.status_code if e.response is not None else None
             if status in (401, 403):
+                # Bitbucket also answers 401/403 for an authenticated caller
+                # who lacks a repository permission (REPO_WRITE to merge). The
+                # instance's own errors[].message says which, so it is appended
+                # the same bounded way as for a 400/409.
+                detail = self._extract_error_messages(e.response, path)
                 error_msg = (
                     "Bitbucket authentication failed (HTTP "
                     f"{status}). The forwarded OAuth bearer token was rejected "
-                    "or lacks permission for this resource."
+                    "or lacks permission for this resource"
+                    + (f": {detail}" if detail else ".")
                 )
                 logger.error(error_msg)
                 raise MCPAtlassianAuthenticationError(error_msg) from e
@@ -538,7 +545,7 @@ class BitbucketClient:
         Bitbucket DC reports request errors with a documented envelope,
         ``{"errors": [{"message": ...}, ...]}``. Only the human-readable
         ``message`` strings are surfaced, joined and length-capped, so a
-        400/409 is actionable. ``exceptionName``, ``context``, the raw body,
+        400/401/403/409 is actionable. ``exceptionName``, ``context``, the raw body,
         and transport internals are dropped.
 
         The body is read through the capped streamed reader under
@@ -557,7 +564,11 @@ class BitbucketClient:
             body = BitbucketClient._read_capped_json(
                 response, path, _ERROR_BODY_MAX_BYTES
             )
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RequestException):
+            # The body is optional detail. A stream that breaks while it is
+            # read (a RequestException from iter_content) is caught here, so
+            # the status-based message is kept and the raw transport error is
+            # not exposed.
             return None
         if not isinstance(body, dict):
             return None
@@ -872,7 +883,9 @@ class BitbucketClient:
             base_path=base_path,
         )
 
-    def _post(self, path: str, *, json_body: Any) -> Any:
+    def _post(
+        self, path: str, *, json_body: Any, params: dict[str, Any] | None = None
+    ) -> Any:
         """Issue a POST against the Bitbucket DC core REST API.
 
         Thin wrapper over :meth:`_request`; see it for the shared error
@@ -882,11 +895,14 @@ class BitbucketClient:
         Args:
             path: API path relative to ``/rest/api/1.0``.
             json_body: The JSON request body.
+            params: Optional query parameters, for endpoints that take the
+                optimistic-lock ``version`` in the query string as well as the
+                body (pull-request merge, decline, and reopen).
 
         Returns:
             The parsed JSON response.
         """
-        return self._request("POST", path, json_body=json_body)
+        return self._request("POST", path, json_body=json_body, params=params)
 
     def _put(self, path: str, *, json_body: Any) -> Any:
         """Issue a PUT against the Bitbucket DC core REST API.

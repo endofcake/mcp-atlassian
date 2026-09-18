@@ -3048,6 +3048,249 @@ async def delete_pull_request_comment(
 
 
 @bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Merge Bitbucket Pull Request",
+        "destructiveHint": True,
+    },
+)
+@check_write_access
+async def merge_pull_request(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The pull request's current version, read from "
+                "get_pull_request immediately before merging. Check "
+                "get_pull_request_merge_status first. A 409 means a merge "
+                "check vetoed, the branches conflict, the pull request is not "
+                "open, or the version is stale. Re-read and retry."
+            ),
+            ge=0,
+        ),
+    ],
+    message: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Text placed below the server's generated subject line in "
+                "the merge commit. When omitted the commit carries the subject "
+                "alone. At most 32768 characters."
+            ),
+            default=None,
+        ),
+    ] = None,
+    strategy_id: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The merge strategy id, passed through to the server, which "
+                "accepts only the strategies enabled on the repository. Common "
+                "ids: 'no-ff', 'ff', 'ff-only', 'squash', 'squash-ff-only', "
+                "'rebase-no-ff', 'rebase-ff-only'. When omitted the "
+                "repository default applies."
+            ),
+            default=None,
+        ),
+    ] = None,
+) -> str:
+    """Merge a pull request now (needs REPO_WRITE).
+
+    Merges the open pull request immediately (it does not queue an auto-merge)
+    via an optimistic-locked write: 'version' must be the pull request's
+    current version from get_pull_request. Check get_pull_request_merge_status
+    first. The tool does not check on its own, so a merge-check veto or a
+    conflict is reported as a 409 with the server's reason. The OAuth
+    examples configure the REPO_READ scope, so merging needs
+    BITBUCKET_OAUTH_SCOPE=REPO_WRITE (or a token issued with it). On a
+    timeout or a 5xx the merge may still have been applied: re-read the pull
+    request before retrying. Blocked when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        version: The pull request's current version (optimistic-lock token).
+        message: Text for the merge commit below the generated subject, or
+            None for the subject alone.
+        strategy_id: The merge strategy id, or None for the repository default.
+
+    Returns:
+        JSON string with the merged pull request (state MERGED and the new
+        version).
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    pull_request = await run_bitbucket_fetcher_call(
+        bitbucket.merge_pull_request,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        version=version,
+        message=message,
+        strategy_id=strategy_id,
+    )
+    return json.dumps(pull_request.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Decline Bitbucket Pull Request",
+        "destructiveHint": True,
+    },
+)
+@check_write_access
+async def decline_pull_request(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The pull request's current version, read from "
+                "get_pull_request immediately before declining. A 409 means "
+                "the pull request is not open or changed since you read it. "
+                "Re-read and retry."
+            ),
+            ge=0,
+        ),
+    ],
+    comment: Annotated[
+        str | None,
+        Field(
+            description=(
+                "An optional comment explaining why it is declined. At most "
+                "32768 characters."
+            ),
+            default=None,
+        ),
+    ] = None,
+) -> str:
+    """Decline an open Bitbucket Data Center pull request (needs REPO_READ).
+
+    Declines the pull request via an optimistic-locked write: 'version' must
+    be the pull request's current version from get_pull_request. A declined
+    pull request can be reopened with reopen_pull_request. On a timeout or a
+    5xx the decline may still have been applied: re-read the pull request
+    before retrying. Blocked when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        version: The pull request's current version (optimistic-lock token).
+        comment: An optional comment explaining the decline.
+
+    Returns:
+        JSON string with the declined pull request (state DECLINED and the new
+        version).
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    pull_request = await run_bitbucket_fetcher_call(
+        bitbucket.decline_pull_request,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        version=version,
+        comment=comment,
+    )
+    return json.dumps(pull_request.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Reopen Bitbucket Pull Request",
+        "destructiveHint": False,
+    },
+)
+@check_write_access
+async def reopen_pull_request(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The pull request's current version, read from "
+                "get_pull_request immediately before reopening. A 409 means "
+                "the pull request is not declined (merged ones cannot be "
+                "reopened) or changed since you read it. Re-read and retry."
+            ),
+            ge=0,
+        ),
+    ],
+) -> str:
+    """Reopen a declined Bitbucket Data Center pull request (needs REPO_READ).
+
+    Reopens the pull request via an optimistic-locked write: 'version' must be
+    the pull request's current version from get_pull_request. A merged pull
+    request cannot be reopened. Blocked when the server runs with
+    READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        version: The pull request's current version (optimistic-lock token).
+
+    Returns:
+        JSON string with the reopened pull request (state OPEN and the new
+        version).
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    pull_request = await run_bitbucket_fetcher_call(
+        bitbucket.reopen_pull_request,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        version=version,
+    )
+    return json.dumps(pull_request.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
     tags={"bitbucket", "read", "toolset:bitbucket_users"},
     annotations={"title": "Get Bitbucket Current User", "readOnlyHint": True},
 )

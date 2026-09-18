@@ -1,6 +1,6 @@
 """Toolset definitions and filtering utilities for MCP Atlassian.
 
-Groups 128 tools into 29 named toolsets controlled via the TOOLSETS env var.
+Groups 131 tools into 29 named toolsets controlled via the TOOLSETS env var.
 Supports 'all', 'default', and comma-separated toolset names.
 """
 
@@ -169,7 +169,7 @@ BITBUCKET_TOOLSETS: dict[str, ToolsetDefinition] = {
     "bitbucket_pull_requests": ToolsetDefinition(
         name="bitbucket_pull_requests",
         description="Bitbucket Data Center pull-request review (list, changed "
-        "files, diff, activities, comments)",
+        "files, diff, activities, comments) and lifecycle (merge, decline, reopen)",
         default=False,
     ),
     "bitbucket_users": ToolsetDefinition(

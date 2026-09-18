@@ -1653,3 +1653,269 @@ class PullRequestsMixin(BitbucketClient):
             to_ref_id=body["toRef"]["id"],
             draft=draft,
         )
+
+    @staticmethod
+    def _check_version(version: int) -> None:
+        """Reject a non-integer or negative ``version`` before any request."""
+        if not isinstance(version, int) or isinstance(version, bool) or version < 0:
+            raise ValueError(
+                "version must be a non-negative integer (the pull request's "
+                "current version)."
+            )
+
+    @staticmethod
+    def _check_optional_text(value: Any, *, name: str) -> None:
+        """Reject a blank or oversized optional text field before any request.
+
+        The merge ``message`` and the decline ``comment`` are shipped verbatim.
+        Bounding them client-side keeps an oversized body off the instance.
+        The cap reuses ``MAX_COMMENT_TEXT_CHARS``, the limit Bitbucket applies
+        to a comment (which a decline comment becomes).
+
+        Args:
+            value: The text as given.
+            name: The parameter name, for the error message.
+
+        Raises:
+            ValueError: If the value is not a non-blank string, or exceeds
+                ``MAX_COMMENT_TEXT_CHARS``.
+        """
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be a non-blank string when given.")
+        if len(value) > MAX_COMMENT_TEXT_CHARS:
+            raise ValueError(
+                f"{name} is {len(value)} characters; at most "
+                f"{MAX_COMMENT_TEXT_CHARS} are accepted. Shorten it."
+            )
+
+    @staticmethod
+    def _confirmed_lifecycle_pull_request(
+        data: Any, path: str, *, pr_id: int, expected_state: str, sent_version: int
+    ) -> BitbucketPullRequest:
+        """Parse a 2xx lifecycle-write body, confirming it against the request.
+
+        A merge, decline, or reopen is confirmed only by a ``RestPullRequest``
+        body whose ``id`` is the pull request written, whose ``state`` is the
+        one the write produces (``MERGED``, ``DECLINED``, or ``OPEN``), and
+        whose integer ``version`` is above the one sent, since each of these
+        writes bumps it. Any other 2xx body is reported as an error.
+
+        Args:
+            data: The parsed JSON body of the write.
+            path: The API path, for the error message.
+            pr_id: The id of the pull request written.
+            expected_state: The state the write produces.
+            sent_version: The optimistic-lock version sent.
+
+        Returns:
+            The confirmed :class:`~mcp_atlassian.models.bitbucket.BitbucketPullRequest`.
+
+        Raises:
+            ValueError: If the body is not an object or disagrees with the
+                request on the id, the state, or the version. The write may
+                have been applied on the server. The message says so.
+        """
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Bitbucket returned an unexpected response shape for "
+                f"{path}; expected a pull-request object."
+            )
+        returned_id = data.get("id")
+        state = data.get("state")
+        version = data.get("version")
+        mismatch: str | None = None
+        if returned_id != pr_id or isinstance(returned_id, bool):
+            mismatch = f"'id' {pr_id} but got {PullRequestsMixin._shown(returned_id)}"
+        elif state != expected_state:
+            mismatch = (
+                f"'state' '{expected_state}' but got {PullRequestsMixin._shown(state)}"
+            )
+        elif (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or version <= sent_version
+        ):
+            mismatch = (
+                f"a 'version' above {sent_version} but got "
+                f"{PullRequestsMixin._shown(version)}"
+            )
+        if mismatch is not None:
+            raise ValueError(
+                f"Bitbucket returned an unconfirmed pull-request body for {path}; "
+                f"expected {mismatch}. The write may have been applied but was "
+                "not confirmed."
+            )
+        return BitbucketPullRequest.from_api_response(data)
+
+    def merge_pull_request(
+        self,
+        project_key: str,
+        repository_slug: str,
+        pull_request_id: int | str,
+        version: int,
+        message: str | None = None,
+        strategy_id: str | None = None,
+    ) -> BitbucketPullRequest:
+        """Merge an open pull request immediately.
+
+        Calls ``POST .../pull-requests/{id}/merge`` (one request) with the
+        optimistic-lock ``version`` in both the query string and the body, plus
+        ``message`` and ``strategyId`` when given. ``autoMerge`` is not sent,
+        so this method merges now or fails. The server validates ``strategyId``
+        against the strategies enabled on the repository. Common ids are
+        ``no-ff``, ``ff``, ``ff-only``, ``squash``, ``squash-ff-only``,
+        ``rebase-no-ff``, and ``rebase-ff-only``. Needs ``REPO_WRITE`` on the
+        target repository.
+
+        No merge-status read precedes the write. Callers check
+        :meth:`get_pull_request_merge_status` first and pass the ``version``
+        from :meth:`get_pull_request`, so a merge-check veto, a conflict, or a
+        stale version is one 409 carrying the instance's own message. On a
+        timeout or a 5xx the write may still have been applied, so re-read the
+        pull request before retrying.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+            version: The pull request's current ``version``.
+            message: Text placed below the server's generated subject line in
+                the merge commit (the server keeps its ``autoSubject`` default).
+                When omitted, the commit carries the subject alone.
+            strategy_id: The merge strategy id, or the repository default when
+                omitted.
+
+        Returns:
+            The merged :class:`~mcp_atlassian.models.bitbucket.BitbucketPullRequest`
+            (``state`` ``MERGED``).
+
+        Raises:
+            ValueError: If a segment is blank, the id is not a positive integer,
+                ``version`` is not a non-negative int, ``message`` is blank or
+                over ``MAX_COMMENT_TEXT_CHARS``, ``strategy_id`` is blank, the
+                2xx body does not confirm the merge (the write may
+                have been applied but was not confirmed), or the request fails
+                (a 409 for a veto, conflict, stale version, or closed pull
+                request carries the instance's own message).
+            BitbucketResourceNotFoundError: If the pull request does not exist or
+                is not accessible.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected or
+                lacks ``REPO_WRITE`` (HTTP 401/403, with the instance's message).
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        self._check_version(version)
+        body: dict[str, Any] = {"version": version}
+        if message is not None:
+            self._check_optional_text(message, name="message")
+            body["message"] = message
+        if strategy_id is not None:
+            if not isinstance(strategy_id, str) or not strategy_id.strip():
+                raise ValueError("strategy_id must be a non-blank string when given.")
+            body["strategyId"] = strategy_id
+        path = f"{base}/{pr_id}/merge"
+        data = self._post(path, json_body=body, params={"version": version})
+        return self._confirmed_lifecycle_pull_request(
+            data, path, pr_id=pr_id, expected_state="MERGED", sent_version=version
+        )
+
+    def decline_pull_request(
+        self,
+        project_key: str,
+        repository_slug: str,
+        pull_request_id: int | str,
+        version: int,
+        comment: str | None = None,
+    ) -> BitbucketPullRequest:
+        """Decline an open pull request.
+
+        Calls ``POST .../pull-requests/{id}/decline`` (one request) with the
+        optimistic-lock ``version`` in both the query string and the body, plus
+        ``comment`` when given. Needs ``REPO_READ``. A declined pull request can
+        be reopened with :meth:`reopen_pull_request`.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+            version: The pull request's current ``version`` (from
+                :meth:`get_pull_request`).
+            comment: An optional comment explaining the decline.
+
+        Returns:
+            The declined
+            :class:`~mcp_atlassian.models.bitbucket.BitbucketPullRequest`
+            (``state`` ``DECLINED``).
+
+        Raises:
+            ValueError: If a segment is blank, the id is not a positive integer,
+                ``version`` is not a non-negative int, ``comment`` is blank or
+                over ``MAX_COMMENT_TEXT_CHARS``, the 2xx body does not confirm
+                the decline (the write may have been applied
+                but was not confirmed), or the request fails (a 409 for a stale
+                version or a pull request that is not open carries the
+                instance's own message).
+            BitbucketResourceNotFoundError: If the pull request does not exist or
+                is not accessible.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        self._check_version(version)
+        body: dict[str, Any] = {"version": version}
+        if comment is not None:
+            self._check_optional_text(comment, name="comment")
+            body["comment"] = comment
+        path = f"{base}/{pr_id}/decline"
+        data = self._post(path, json_body=body, params={"version": version})
+        return self._confirmed_lifecycle_pull_request(
+            data, path, pr_id=pr_id, expected_state="DECLINED", sent_version=version
+        )
+
+    def reopen_pull_request(
+        self,
+        project_key: str,
+        repository_slug: str,
+        pull_request_id: int | str,
+        version: int,
+    ) -> BitbucketPullRequest:
+        """Reopen a declined pull request.
+
+        Calls ``POST .../pull-requests/{id}/reopen`` (one request) with the
+        optimistic-lock ``version`` in both the query string and the body.
+        Needs ``REPO_READ``. A merged pull request cannot be reopened, and the
+        server answers 409.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+            version: The pull request's current ``version`` (from
+                :meth:`get_pull_request`).
+
+        Returns:
+            The reopened
+            :class:`~mcp_atlassian.models.bitbucket.BitbucketPullRequest`
+            (``state`` ``OPEN``).
+
+        Raises:
+            ValueError: If a segment is blank, the id is not a positive integer,
+                ``version`` is not a non-negative int, the 2xx body does not
+                confirm the reopen (the write may have been applied but was
+                not confirmed), or the request fails (a 409 for a stale
+                version or a pull request that is not declined carries the
+                instance's own message).
+            BitbucketResourceNotFoundError: If the pull request does not exist or
+                is not accessible.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        self._check_version(version)
+        path = f"{base}/{pr_id}/reopen"
+        data = self._post(
+            path, json_body={"version": version}, params={"version": version}
+        )
+        return self._confirmed_lifecycle_pull_request(
+            data, path, pr_id=pr_id, expected_state="OPEN", sent_version=version
+        )

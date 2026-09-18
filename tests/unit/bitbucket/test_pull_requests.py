@@ -22,6 +22,7 @@ from mcp_atlassian.bitbucket.pull_requests import (
     MAX_PRS_LIMIT,
     PullRequestsMixin,
 )
+from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.utils.oauth import BYOAccessTokenOAuthConfig
 from tests.unit.bitbucket.mock_responses import attach_body, attach_json
 
@@ -2712,3 +2713,328 @@ class TestCreatePullRequest:
                 "PROJ", "my-repo", "Add feature", "feature/x", "main"
             )
         assert pr.draft is False
+
+
+def _lifecycle_body(state: str, *, pr_id: int = 5, version: int = 4) -> dict:
+    """A RestPullRequest body as a merge, decline, or reopen returns it."""
+    return {
+        "id": pr_id,
+        "version": version,
+        "title": "Add X",
+        "state": state,
+        "open": state == "OPEN",
+        "closed": state != "OPEN",
+        "fromRef": {"id": "refs/heads/feature", "displayId": "feature"},
+        "toRef": {"id": "refs/heads/main", "displayId": "main"},
+    }
+
+
+class TestMergePullRequest:
+    """merge_pull_request: the body, the version in query and body, confirmation."""
+
+    def test_sends_version_in_query_and_body_with_no_extras(self):
+        """A minimal merge sends only the version: no autoMerge, no strategy."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(_lifecycle_body("MERGED")),
+        ) as mock_post:
+            result = fetcher.merge_pull_request("PROJ", "my-repo", 5, version=3)
+
+        url = mock_post.call_args[0][0]
+        assert url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/5/merge"
+        )
+        assert mock_post.call_args[1]["params"] == {"version": 3}
+        assert mock_post.call_args[1]["json"] == {"version": 3}
+        assert result.state == "MERGED"
+        assert result.version == 4
+
+    def test_message_and_strategy_are_forwarded_verbatim(self):
+        """message and strategyId are sent as given, and autoMerge is not sent."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(_lifecycle_body("MERGED")),
+        ) as mock_post:
+            fetcher.merge_pull_request(
+                "P", "r", 5, version=3, message="Merge it", strategy_id="squash"
+            )
+
+        body = mock_post.call_args[1]["json"]
+        assert body == {"version": 3, "message": "Merge it", "strategyId": "squash"}
+        assert "autoMerge" not in body
+        assert "autoSubject" not in body
+
+    def test_unknown_strategy_is_passed_through_for_the_server_to_reject(self):
+        """The strategy id is not validated client-side, because the server owns
+        the list.
+        """
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "Merge strategy 'octopus' is not enabled."}]}
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(400, body)
+        ) as mock_post:
+            with pytest.raises(ValueError, match="not enabled"):
+                fetcher.merge_pull_request(
+                    "P", "r", 5, version=3, strategy_id="octopus"
+                )
+        assert mock_post.call_args[1]["json"]["strategyId"] == "octopus"
+
+    @pytest.mark.parametrize("bad_version", ["3", 3.0, None, True, -1])
+    def test_non_int_version_rejected_before_post(self, bad_version):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="version must be a non-negative"):
+                fetcher.merge_pull_request("P", "r", 5, version=bad_version)
+        mock_post.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"message": "  "}, "message must be a non-blank"),
+            ({"message": "m" * (MAX_COMMENT_TEXT_CHARS + 1)}, "message is 32769"),
+            ({"strategy_id": ""}, "strategy_id must be a non-blank"),
+        ],
+    )
+    def test_blank_optionals_rejected_before_post(self, kwargs, match):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match=match):
+                fetcher.merge_pull_request("P", "r", 5, version=3, **kwargs)
+        mock_post.assert_not_called()
+
+    def test_stale_version_409_surfaces_server_message(self):
+        """A 409 (stale version, veto, or conflict) carries the server's reason."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [
+                {
+                    "message": "You are attempting to modify a pull request based on "
+                    "out-of-date information."
+                }
+            ]
+        }
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="out-of-date information"):
+                fetcher.merge_pull_request("P", "r", 5, version=1)
+
+    def test_merge_check_veto_409_surfaces_server_message(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [
+                {"message": "Requires 2 approvals. Vetoed by a merge check."},
+            ]
+        }
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="Vetoed by a merge check"):
+                fetcher.merge_pull_request("P", "r", 5, version=3)
+
+    def test_403_surfaces_server_message_as_auth_error(self):
+        """A 403 (repository setting or permission) keeps the auth type and text."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [
+                {"message": "You do not have write permission for this repository."}
+            ]
+        }
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(403, body)
+        ):
+            with pytest.raises(
+                MCPAtlassianAuthenticationError, match="write permission"
+            ):
+                fetcher.merge_pull_request("P", "r", 5, version=3)
+
+    @pytest.mark.parametrize(
+        ("body", "match"),
+        [
+            (["nope"], "unexpected response shape"),
+            (_lifecycle_body("OPEN"), "expected 'state' 'MERGED' but got 'OPEN'"),
+            (_lifecycle_body("MERGED", pr_id=6), "expected 'id' 5 but got 6"),
+            (
+                _lifecycle_body("MERGED", version=3),
+                "expected a 'version' above 3 but got 3",
+            ),
+            (
+                _lifecycle_body("MERGED", version="4"),
+                "expected a 'version' above 3 but got '4'",
+            ),
+            ({"id": 5, "state": "MERGED"}, "expected a 'version' above 3"),
+        ],
+    )
+    def test_unconfirmed_body_raises(self, body, match):
+        """A 2xx that does not confirm the merge raises."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post", return_value=_json_response(body)):
+            with pytest.raises(ValueError, match=match) as excinfo:
+                fetcher.merge_pull_request("P", "r", 5, version=3)
+        if not isinstance(body, list):
+            assert "may have been applied but was not confirmed" in str(excinfo.value)
+
+    def test_not_found_propagates(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(404, {})
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError):
+                fetcher.merge_pull_request("P", "r", 5, version=3)
+
+    def test_non_positive_id_rejected_before_post(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="pull_request_id must be"):
+                fetcher.merge_pull_request("P", "r", 0, version=3)
+        mock_post.assert_not_called()
+
+
+class TestDeclinePullRequest:
+    """decline_pull_request: the body, the version in query and body, confirmation."""
+
+    def test_sends_version_in_query_and_body(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(_lifecycle_body("DECLINED")),
+        ) as mock_post:
+            result = fetcher.decline_pull_request("PROJ", "my-repo", 5, version=3)
+
+        url = mock_post.call_args[0][0]
+        assert url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/5/decline"
+        )
+        assert mock_post.call_args[1]["params"] == {"version": 3}
+        assert mock_post.call_args[1]["json"] == {"version": 3}
+        assert result.state == "DECLINED"
+        assert result.version == 4
+
+    def test_comment_is_forwarded(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(_lifecycle_body("DECLINED")),
+        ) as mock_post:
+            fetcher.decline_pull_request("P", "r", 5, version=3, comment="Superseded")
+
+        assert mock_post.call_args[1]["json"] == {
+            "version": 3,
+            "comment": "Superseded",
+        }
+
+    @pytest.mark.parametrize(
+        ("comment", "match"),
+        [
+            (" ", "comment must be a non-blank"),
+            ("c" * (MAX_COMMENT_TEXT_CHARS + 1), "comment is 32769"),
+        ],
+    )
+    def test_bad_comment_rejected_before_post(self, comment, match):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match=match):
+                fetcher.decline_pull_request("P", "r", 5, version=3, comment=comment)
+        mock_post.assert_not_called()
+
+    def test_non_ascii_comment_is_forwarded_unchanged(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(_lifecycle_body("DECLINED")),
+        ) as mock_post:
+            fetcher.decline_pull_request("P", "r", 5, version=3, comment="Zamknięte 🚫")
+
+        assert mock_post.call_args[1]["json"]["comment"] == "Zamknięte 🚫"
+
+    @pytest.mark.parametrize("bad_version", ["3", 3.0, None, False, -1])
+    def test_non_int_version_rejected_before_post(self, bad_version):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="version must be a non-negative"):
+                fetcher.decline_pull_request("P", "r", 5, version=bad_version)
+        mock_post.assert_not_called()
+
+    def test_stale_version_409_surfaces_server_message(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "The pull request is not open."}]}
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="is not open"):
+                fetcher.decline_pull_request("P", "r", 5, version=1)
+
+    @pytest.mark.parametrize(
+        ("body", "match"),
+        [
+            (_lifecycle_body("OPEN"), "expected 'state' 'DECLINED' but got 'OPEN'"),
+            (_lifecycle_body("DECLINED", version=2), "a 'version' above 3 but got 2"),
+        ],
+    )
+    def test_unconfirmed_body_raises(self, body, match):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post", return_value=_json_response(body)):
+            with pytest.raises(ValueError, match=match):
+                fetcher.decline_pull_request("P", "r", 5, version=3)
+
+
+class TestReopenPullRequest:
+    """reopen_pull_request: the body, the version in query and body, confirmation."""
+
+    def test_sends_version_in_query_and_body(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(_lifecycle_body("OPEN")),
+        ) as mock_post:
+            result = fetcher.reopen_pull_request("PROJ", "my-repo", 5, version=3)
+
+        url = mock_post.call_args[0][0]
+        assert url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/5/reopen"
+        )
+        assert mock_post.call_args[1]["params"] == {"version": 3}
+        assert mock_post.call_args[1]["json"] == {"version": 3}
+        assert result.state == "OPEN"
+        assert result.version == 4
+
+    @pytest.mark.parametrize("bad_version", ["3", 3.0, None, True, -1])
+    def test_non_int_version_rejected_before_post(self, bad_version):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="version must be a non-negative"):
+                fetcher.reopen_pull_request("P", "r", 5, version=bad_version)
+        mock_post.assert_not_called()
+
+    def test_merged_pull_request_409_surfaces_server_message(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "A merged pull request cannot be reopened."}]}
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="cannot be reopened"):
+                fetcher.reopen_pull_request("P", "r", 5, version=3)
+
+    @pytest.mark.parametrize(
+        ("body", "match"),
+        [
+            (
+                _lifecycle_body("DECLINED"),
+                "expected 'state' 'OPEN' but got 'DECLINED'",
+            ),
+            (_lifecycle_body("OPEN", version=3), "a 'version' above 3 but got 3"),
+        ],
+    )
+    def test_unconfirmed_body_raises(self, body, match):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post", return_value=_json_response(body)):
+            with pytest.raises(ValueError, match=match):
+                fetcher.reopen_pull_request("P", "r", 5, version=3)
