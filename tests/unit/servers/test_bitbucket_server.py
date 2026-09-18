@@ -228,6 +228,9 @@ def mock_bitbucket_fetcher() -> MagicMock:
     mock_fetcher.update_comment.return_value = _model_mock(
         {"id": 9, "version": 4, "text": "edited", "thread_resolved": True}
     )
+    mock_fetcher.set_task_state.return_value = _model_mock(
+        {"id": 9, "version": 4, "severity": "BLOCKER", "state": "RESOLVED"}
+    )
     mock_fetcher.delete_comment.return_value = None
 
     mock_config = MagicMock()
@@ -290,6 +293,7 @@ def test_bitbucket_mcp(
         list_tags,
         list_user_pull_requests,
         resolve_pull_request_comment,
+        resolve_pull_request_task,
         set_pull_request_review_status,
     )
 
@@ -335,6 +339,7 @@ def test_bitbucket_mcp(
     bitbucket_sub_mcp.add_tool(set_pull_request_review_status)
     bitbucket_sub_mcp.add_tool(edit_pull_request_comment)
     bitbucket_sub_mcp.add_tool(resolve_pull_request_comment)
+    bitbucket_sub_mcp.add_tool(resolve_pull_request_task)
     bitbucket_sub_mcp.add_tool(delete_pull_request_comment)
     bitbucket_sub_mcp.add_tool(get_current_user)
 
@@ -2220,6 +2225,145 @@ class TestResolveComment:
 
 
 @pytest.mark.anyio
+class TestResolveTask:
+    """The resolve_pull_request_task write tool."""
+
+    async def test_state_defaults_to_resolved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The default resolves the task (state=RESOLVED) and echoes the state."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_resolve_pull_request_task",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+                "comment_id": 9,
+                "version": 3,
+            },
+        )
+
+        mock_bitbucket_fetcher.set_task_state.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=5,
+            comment_id=9,
+            version=3,
+            state="RESOLVED",
+        )
+        mock_bitbucket_fetcher.update_comment.assert_not_called()
+        result = _result_json(response)
+        assert result["state"] == "RESOLVED"
+        assert result["severity"] == "BLOCKER"
+
+    async def test_open_reopens_the_task(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """state=OPEN is passed through to reopen the task."""
+        await bitbucket_client.call_tool(
+            "bitbucket_resolve_pull_request_task",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 5,
+                "comment_id": 9,
+                "version": 3,
+                "state": "OPEN",
+            },
+        )
+
+        call_kwargs = mock_bitbucket_fetcher.set_task_state.call_args.kwargs
+        assert call_kwargs["state"] == "OPEN"
+
+    async def test_unknown_state_surfaces_the_rejection(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """The fetcher's rejection of an unknown state reaches the caller."""
+        mock_bitbucket_fetcher.set_task_state.side_effect = ValueError(
+            "state must be 'RESOLVED' or 'OPEN'."
+        )
+        with pytest.raises(ToolError, match="state must be 'RESOLVED' or 'OPEN'"):
+            await bitbucket_client.call_tool(
+                "bitbucket_resolve_pull_request_task",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 5,
+                    "comment_id": 9,
+                    "version": 3,
+                    "state": "DONE",
+                },
+            )
+
+    async def test_stale_version_surfaces_server_message(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A 409 stale-version message from the instance reaches the caller."""
+        mock_bitbucket_fetcher.set_task_state.side_effect = ValueError(
+            "Bitbucket API error (HTTP 409): The comment version is out of date."
+        )
+        with pytest.raises(ToolError, match="HTTP 409.*out of date"):
+            await bitbucket_client.call_tool(
+                "bitbucket_resolve_pull_request_task",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 5,
+                    "comment_id": 9,
+                    "version": 1,
+                },
+            )
+
+    async def test_is_a_write_tool_in_the_pull_requests_toolset(self, bitbucket_client):
+        """The write tag hides the tool under READ_ONLY_MODE, and the tool is
+        flagged destructive.
+        """
+        from src.mcp_atlassian.servers.bitbucket import bitbucket_mcp
+
+        tool = await bitbucket_mcp.get_tool("resolve_pull_request_task")
+        assert "write" in tool.tags
+        assert "read" not in tool.tags
+        assert "toolset:bitbucket_pull_requests" in tool.tags
+        assert tool.annotations is not None
+        assert tool.annotations.destructiveHint is True
+
+    @pytest.mark.parametrize("comment_id", [0, -1])
+    async def test_rejects_non_positive_comment_id(
+        self, bitbucket_client, mock_bitbucket_fetcher, comment_id
+    ):
+        """A non-positive comment id is rejected by the schema before any call."""
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_resolve_pull_request_task",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 5,
+                    "comment_id": comment_id,
+                    "version": 3,
+                },
+            )
+        mock_bitbucket_fetcher.set_task_state.assert_not_called()
+
+    async def test_rejects_negative_version(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A negative version is rejected by the schema. Zero is a fresh comment."""
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_resolve_pull_request_task",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 5,
+                    "comment_id": 9,
+                    "version": -1,
+                },
+            )
+        mock_bitbucket_fetcher.set_task_state.assert_not_called()
+
+
+@pytest.mark.anyio
 class TestDeleteComment:
     """The delete_pull_request_comment write tool."""
 
@@ -2333,6 +2477,25 @@ class TestReadOnlyMode:
                 )
         fetcher_dependency.assert_not_called()
 
+    async def test_resolve_pull_request_task_blocked(self):
+        from src.mcp_atlassian.servers.bitbucket import resolve_pull_request_task
+
+        fetcher_dependency = AsyncMock()
+        with patch(
+            "src.mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            fetcher_dependency,
+        ):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await resolve_pull_request_task(
+                    _read_only_context(),
+                    project_key="PROJ",
+                    repository_slug="my-repo",
+                    pull_request_id=5,
+                    comment_id=9,
+                    version=3,
+                )
+        fetcher_dependency.assert_not_called()
+
     async def test_delete_pull_request_comment_blocked(self):
         from src.mcp_atlassian.servers.bitbucket import delete_pull_request_comment
 
@@ -2403,7 +2566,7 @@ class TestFetcherOffload:
         tools = self._tool_functions()
         # The registered tool count is part of the contract: a new tool must
         # be routed through the helper and this pin bumped in the same change.
-        assert len(tools) == 28
+        assert len(tools) == 29
 
         for name, function in tools.items():
             fetcher_names = self._fetcher_names(function)

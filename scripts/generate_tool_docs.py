@@ -195,6 +195,7 @@ CATEGORY_TOOLS: dict[str, list[str]] = {
         "bitbucket_set_pull_request_review_status",
         "bitbucket_edit_pull_request_comment",
         "bitbucket_resolve_pull_request_comment",
+        "bitbucket_resolve_pull_request_task",
         "bitbucket_delete_pull_request_comment",
     ],
     "bitbucket-users": [

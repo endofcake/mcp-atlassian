@@ -49,6 +49,10 @@ _DASHBOARD_ORDERS = (
     "CLOSED_DATE",
 )
 
+# --- task comments ---
+# The ``state`` of a BLOCKER comment (a task), in the case the endpoint expects.
+_TASK_STATES = ("RESOLVED", "OPEN")
+
 # --- get_activities bounds ---
 # Default number of activity entries a single get_activities call returns.
 DEFAULT_ACTIVITIES_LIMIT = 25
@@ -916,6 +920,7 @@ class PullRequestsMixin(BitbucketClient):
         sent_version: int | None = None,
         text: str | None = None,
         thread_resolved: bool | None = None,
+        state: str | None = None,
     ) -> BitbucketComment:
         """Parse a 2xx comment write body, requiring its acknowledgement fields.
 
@@ -936,6 +941,7 @@ class PullRequestsMixin(BitbucketClient):
             text: The text sent, when the request carried one.
             thread_resolved: The thread state sent, when the request carried
                 one.
+            state: The task state sent, when the request carried one.
 
         Returns:
             The confirmed :class:`~mcp_atlassian.models.bitbucket.BitbucketComment`.
@@ -943,9 +949,9 @@ class PullRequestsMixin(BitbucketClient):
         Raises:
             ValueError: If the body is not an object, lacks a positive integer
                 ``id`` or an integer ``version``, or disagrees with the
-                request on the id, the version, the text, or the thread
-                state. The write may have been applied on the server; the
-                message says so.
+                request on the id, the version, the text, the thread state,
+                or the task state. The write may have been applied on the
+                server. The message says so.
         """
         if not isinstance(data, dict):
             raise ValueError(
@@ -979,6 +985,9 @@ class PullRequestsMixin(BitbucketClient):
         ):
             shown = PullRequestsMixin._shown(data.get("threadResolved"))
             mismatch = f"'threadResolved' {thread_resolved} but got {shown}"
+        elif state is not None and data.get("state") != state:
+            shown = PullRequestsMixin._shown(data.get("state"))
+            mismatch = f"'state' {state!r} but got {shown}"
         if mismatch is not None:
             raise ValueError(
                 f"Bitbucket returned an unconfirmed comment body for {path}; "
@@ -1064,6 +1073,77 @@ class PullRequestsMixin(BitbucketClient):
             sent_version=version,
             text=text,
             thread_resolved=thread_resolved,
+        )
+
+    def set_task_state(
+        self,
+        project_key: str,
+        repository_slug: str,
+        pull_request_id: int | str,
+        comment_id: int | str,
+        *,
+        version: int,
+        state: str,
+    ) -> BitbucketComment:
+        """Resolve or reopen a pull-request task (a ``BLOCKER`` comment).
+
+        Calls ``PUT .../pull-requests/{pullRequestId}/comments/{commentId}`` with
+        ``{version, state}``. A task is a comment whose ``severity`` is
+        ``BLOCKER``, and its ``state`` is ``OPEN`` or ``RESOLVED``. This is the
+        task state, distinct from the thread's ``threadResolved`` flag that
+        :meth:`update_comment` toggles. The request carries only ``version`` and
+        ``state``, so ``text`` and ``severity`` are left unchanged. The endpoint
+        needs ``REPO_READ``, and Bitbucket lets the comment author, the
+        pull-request author, or a repository admin change ``state``. What the
+        server does with ``state`` on a ``NORMAL`` comment is not documented.
+        The response is confirmed against the request either way, so an
+        unchanged ``state`` is reported as an unconfirmed write.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+            comment_id: The task comment id.
+            version: The comment's current ``version`` (from ``add_comment`` or
+                ``get_activities``). A stale value yields a 409.
+            state: ``RESOLVED`` or ``OPEN`` (case-insensitive).
+
+        Returns:
+            The updated :class:`~mcp_atlassian.models.bitbucket.BitbucketComment`
+            (carrying the resulting ``version`` and ``state``).
+
+        Raises:
+            ValueError: If a segment is blank, an id is not a positive integer,
+                ``version`` is not an int, ``state`` is not ``RESOLVED`` or
+                ``OPEN``, the 2xx body lacks a positive integer ``id`` or an
+                integer ``version`` or disagrees with the request on the id,
+                the version, or the state (the write may have been applied but
+                was not confirmed), or the request fails (a 409 for a stale
+                version carries the instance's own message).
+            BitbucketResourceNotFoundError: If the pull request or comment does
+                not exist or is not accessible.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected.
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        cid = self._coerce_comment_id(comment_id)
+        comment_path = self._comment_path(base, pr_id, cid)
+        if not isinstance(version, int) or isinstance(version, bool):
+            raise ValueError("version must be an integer (the comment's version).")
+        if not isinstance(state, str):
+            raise ValueError("state must be 'RESOLVED' or 'OPEN'.")
+        normalized_state = state.strip().upper()
+        if normalized_state not in _TASK_STATES:
+            raise ValueError("state must be 'RESOLVED' or 'OPEN'.")
+
+        body: dict[str, Any] = {"version": version, "state": normalized_state}
+        data = self._put(comment_path, json_body=body)
+        return self._confirmed_comment(
+            data,
+            comment_path,
+            comment_id=cid,
+            sent_version=version,
+            state=normalized_state,
         )
 
     def delete_comment(

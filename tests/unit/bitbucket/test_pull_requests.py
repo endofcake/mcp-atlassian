@@ -1681,6 +1681,141 @@ class TestUpdateComment:
                 fetcher.update_comment("P", "r", 5, 9, version=3, text="e")
 
 
+class TestSetTaskState:
+    """set_task_state: validation, the {version, state} body, confirmation, 409."""
+
+    @staticmethod
+    def _put_ok(body=None):
+        """A successful PUT response carrying the updated task comment."""
+        return _json_response(
+            body
+            if body is not None
+            else {"id": 9, "version": 4, "severity": "BLOCKER", "state": "RESOLVED"}
+        )
+
+    def test_resolve_sends_only_version_and_state(self):
+        """Resolving sends exactly {version, state: RESOLVED} to the comment path."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=self._put_ok()
+        ) as mock_put:
+            result = fetcher.set_task_state(
+                "PROJ", "my-repo", 5, 9, version=3, state="RESOLVED"
+            )
+
+        url = mock_put.call_args[0][0]
+        assert url.endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/5/comments/9"
+        )
+        assert mock_put.call_args[1]["json"] == {"version": 3, "state": "RESOLVED"}
+        assert result.id == 9
+        assert result.version == 4
+        assert result.state == "RESOLVED"
+        assert result.severity == "BLOCKER"
+
+    def test_reopen_sends_state_open(self):
+        """Reopening sends state: OPEN and is confirmed against the response."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"id": 9, "version": 4, "severity": "BLOCKER", "state": "OPEN"}
+        with patch.object(
+            fetcher._session, "put", return_value=self._put_ok(body)
+        ) as mock_put:
+            result = fetcher.set_task_state("P", "r", 5, 9, version=3, state="OPEN")
+
+        assert mock_put.call_args[1]["json"] == {"version": 3, "state": "OPEN"}
+        assert result.state == "OPEN"
+
+    def test_state_is_normalized_before_sending(self):
+        """A lower-case or padded state is sent in the case the endpoint expects."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=self._put_ok()
+        ) as mock_put:
+            fetcher.set_task_state("P", "r", 5, 9, version=3, state=" resolved ")
+
+        assert mock_put.call_args[1]["json"]["state"] == "RESOLVED"
+
+    @pytest.mark.parametrize("state", ["", "DONE", "CLOSED", "threadResolved", 1])
+    def test_rejects_unknown_state_before_put(self, state):
+        """Anything other than RESOLVED or OPEN is rejected without a request."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match="state must be 'RESOLVED' or 'OPEN'"):
+                fetcher.set_task_state("P", "r", 5, 9, version=3, state=state)
+        mock_put.assert_not_called()
+
+    @pytest.mark.parametrize("version", ["3", 3.0, None, True])
+    def test_rejects_non_int_version_before_put(self, version):
+        """The version must be a real int; nothing is sent otherwise."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match="version must be an integer"):
+                fetcher.set_task_state(
+                    "P", "r", 5, 9, version=version, state="RESOLVED"
+                )
+        mock_put.assert_not_called()
+
+    @pytest.mark.parametrize("bad_id", [0, -1, "abc", None])
+    def test_rejects_bad_comment_id_before_put(self, bad_id):
+        """A non-positive or non-numeric comment id is rejected without a request."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match="comment_id must be a positive"):
+                fetcher.set_task_state("P", "r", 5, bad_id, version=3, state="RESOLVED")
+        mock_put.assert_not_called()
+
+    def test_stale_version_409_surfaces_server_message(self):
+        """A 409 stale-version surfaces the instance's own errors[].message."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "The comment version is out of date."}]}
+        with patch.object(
+            fetcher._session, "put", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="HTTP 409.*out of date"):
+                fetcher.set_task_state("P", "r", 5, 9, version=1, state="RESOLVED")
+
+    def test_missing_state_in_response_is_unconfirmed(self):
+        """A 200 without a state field is an unconfirmed write."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"id": 9, "version": 3, "severity": "NORMAL", "text": "not a task"}
+        with patch.object(fetcher._session, "put", return_value=self._put_ok(body)):
+            with pytest.raises(ValueError, match="'state' 'RESOLVED' but got None"):
+                fetcher.set_task_state("P", "r", 5, 9, version=3, state="RESOLVED")
+
+    def test_wrong_state_in_response_is_unconfirmed(self):
+        """A 200 echoing a different state is an unconfirmed write."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"id": 9, "version": 4, "severity": "BLOCKER", "state": "OPEN"}
+        with patch.object(fetcher._session, "put", return_value=self._put_ok(body)):
+            with pytest.raises(ValueError, match="'state' 'RESOLVED' but got 'OPEN'"):
+                fetcher.set_task_state("P", "r", 5, 9, version=3, state="RESOLVED")
+
+    def test_no_op_with_unbumped_version_is_confirmed(self):
+        """Resolving an already-resolved task returns the sent version unchanged."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"id": 9, "version": 3, "severity": "BLOCKER", "state": "RESOLVED"}
+        with patch.object(fetcher._session, "put", return_value=self._put_ok(body)):
+            result = fetcher.set_task_state("P", "r", 5, 9, version=3, state="RESOLVED")
+        assert result.version == 3
+
+    def test_wrong_id_in_response_is_unconfirmed(self):
+        """A 200 carrying another comment's id is reported as unconfirmed."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"id": 10, "version": 4, "state": "RESOLVED"}
+        with patch.object(fetcher._session, "put", return_value=self._put_ok(body)):
+            with pytest.raises(ValueError, match="'id' 9 but got 10"):
+                fetcher.set_task_state("P", "r", 5, 9, version=3, state="RESOLVED")
+
+    def test_non_dict_response_raises(self):
+        """A non-object body raises an error."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=_json_response(["nope"])
+        ):
+            with pytest.raises(ValueError, match="unexpected response shape"):
+                fetcher.set_task_state("P", "r", 5, 9, version=3, state="RESOLVED")
+
+
 class TestDeleteComment:
     """delete_comment: the version query param, the 204 path, error surfacing."""
 

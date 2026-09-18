@@ -2738,6 +2738,100 @@ async def resolve_pull_request_comment(
 @bitbucket_mcp.tool(
     tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
     annotations={
+        "title": "Resolve Bitbucket Pull Request Task",
+        "destructiveHint": True,
+    },
+)
+@check_write_access
+async def resolve_pull_request_task(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    comment_id: Annotated[
+        int,
+        Field(
+            description=(
+                "The id of the task comment (a comment with severity BLOCKER)."
+            ),
+            ge=1,
+        ),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The comment's current version, from add_pull_request_comment or "
+                "get_pull_request_comments. A 409 means the comment changed "
+                "since you read it. Re-fetch its version and retry."
+            ),
+            ge=0,
+        ),
+    ],
+    state: Annotated[
+        str,
+        Field(
+            description=(
+                "The task state to set: 'RESOLVED' (default) or 'OPEN' to "
+                "reopen. Any other value is rejected."
+            ),
+            default="RESOLVED",
+        ),
+    ] = "RESOLVED",
+) -> str:
+    """Resolve or reopen a Bitbucket Data Center pull-request task (needs REPO_READ).
+
+    Sets the task 'state' of a comment whose severity is BLOCKER via an
+    optimistic-locked update: 'version' must be the comment's current version
+    (from add_pull_request_comment or get_pull_request_comments). A 409 means
+    the comment changed since you read it. Re-fetch the version and retry.
+    This is task state (the must-do checklist item on a pull request), not
+    thread resolution. Use resolve_pull_request_comment for the thread. The
+    endpoint needs REPO_READ, and Bitbucket lets the comment author, the
+    pull-request author, or a repository admin change the state. The result
+    is confirmed against the request, so setting a state on a NORMAL comment
+    that the server leaves unchanged is reported as an unconfirmed write.
+    Blocked when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        comment_id: The id of the task comment.
+        version: The comment's current version (optimistic-lock token).
+        state: 'RESOLVED' (default) resolves the task; 'OPEN' reopens it.
+
+    Returns:
+        JSON string with the updated comment: its resulting 'version',
+        'severity', and 'state'.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    comment = await run_bitbucket_fetcher_call(
+        bitbucket.set_task_state,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        comment_id=comment_id,
+        version=version,
+        state=state,
+    )
+    return json.dumps(comment.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
         "title": "Delete Bitbucket Pull Request Comment",
         "destructiveHint": True,
     },

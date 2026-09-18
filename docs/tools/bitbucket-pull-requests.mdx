@@ -235,6 +235,29 @@ Resolve or reopen a Bitbucket Data Center pull-request comment thread.
 
 ---
 
+### Resolve Bitbucket Pull Request Task
+
+Resolve or reopen a Bitbucket Data Center pull-request task (needs REPO_READ).
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `pull_request_id` | `integer` | Yes | The pull-request id (a positive integer). |
+| `comment_id` | `integer` | Yes | The id of the task comment (a comment with severity BLOCKER). |
+| `version` | `integer` | Yes | The comment's current version, from add_pull_request_comment or get_pull_request_comments. A 409 means the comment changed since you read it. Re-fetch its version and retry. |
+| `state` | `string` | No | The task state to set: 'RESOLVED' (default) or 'OPEN' to reopen. Any other value is rejected. |
+
+<Note>
+A task is a pull-request comment whose `severity` is `BLOCKER`. Bitbucket lists open tasks as a must-do checklist and can block merging on them. Its `state` (`OPEN` or `RESOLVED`) is separate from the comment thread's resolved flag: `bitbucket_resolve_pull_request_comment` resolves the thread, this tool resolves the task. Both are `PUT` updates on the same comment endpoint with the comment's current `version`. The endpoint needs `REPO_READ` on the repository, and Bitbucket lets the comment author, the pull-request author, or a repository admin change the task state. Comments that are not tasks (`severity: NORMAL`) have no task state. If the server accepts the request but leaves `state` unchanged, the tool reports the write as unconfirmed.
+</Note>
+
+---
+
 ### Delete Bitbucket Pull Request Comment
 
 Delete a Bitbucket Data Center pull-request comment.
