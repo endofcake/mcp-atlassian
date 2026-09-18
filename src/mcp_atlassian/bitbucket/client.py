@@ -650,6 +650,40 @@ class BitbucketClient:
         return f"/projects/{key}/repos/{slug}"
 
     @staticmethod
+    def _split_repo_ref(value: str, *, name: str) -> tuple[str, str]:
+        """Split a ``PROJECT/slug`` repository reference into its two segments.
+
+        Used where a request names another repository of the same hierarchy (a
+        fork) as a value rather than a path: the compare ``fromRepo`` query
+        parameter and a pull request's source ``repository`` object. Each half
+        is validated with the path-segment rules (non-blank, not ``.`` or
+        ``..``) so that a traversal-shaped value is rejected before any
+        request. The halves are returned stripped and unencoded, since they
+        travel as query or JSON values that the HTTP layer encodes.
+
+        Args:
+            value: The caller-supplied ``PROJECT/slug`` text.
+            name: The parameter name used in the error message.
+
+        Returns:
+            The ``(project_key, repository_slug)`` pair.
+
+        Raises:
+            ValueError: If the value is not a single ``PROJECT/slug`` pair of
+                valid segments.
+        """
+        parts = value.strip().split("/")
+        if len(parts) != 2:
+            raise ValueError(
+                f"{name} must be a project key and repository slug separated "
+                "by one slash (PROJECT/slug)."
+            )
+        key, slug = parts
+        BitbucketClient._encode_segment(key, name=name, what="project key")
+        BitbucketClient._encode_segment(slug, name=name, what="repository slug")
+        return key.strip(), slug.strip()
+
+    @staticmethod
     def _enum_param(
         value: str | None, *, name: str, allowed: tuple[str, ...]
     ) -> str | None:

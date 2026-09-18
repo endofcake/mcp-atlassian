@@ -56,10 +56,10 @@ class CompareMixin(BitbucketClient):
         values. The HTTP layer percent-encodes them, so they are only
         stripped here.
 
-        ``from_repo`` is accepted in ``PROJECT/slug`` form only. Each half is
-        validated with the path-segment rules (non-blank, not ``.`` or ``..``)
-        so that a traversal-shaped value is rejected before any request; the
-        value travels as a query parameter, so it is sent unencoded.
+        ``from_repo`` is accepted in ``PROJECT/slug`` form only and is split
+        by :meth:`BitbucketClient._split_repo_ref`, which rejects a
+        traversal-shaped value before any request. The value travels as a
+        query parameter, so it is sent unencoded.
 
         Args:
             from_ref: The source commit or ref name.
@@ -83,20 +83,9 @@ class CompareMixin(BitbucketClient):
         target = to_ref.strip() if to_ref else ""
         if target:
             params["to"] = target
-        repo_text = from_repo.strip() if from_repo else ""
-        if repo_text:
-            parts = repo_text.split("/")
-            if len(parts) != 2:
-                raise ValueError(
-                    "from_repo must be a project key and repository slug "
-                    "separated by one slash (PROJECT/slug)."
-                )
-            key, slug = parts
-            BitbucketClient._encode_segment(key, name="from_repo", what="project key")
-            BitbucketClient._encode_segment(
-                slug, name="from_repo", what="repository slug"
-            )
-            params["fromRepo"] = f"{key.strip()}/{slug.strip()}"
+        if from_repo and from_repo.strip():
+            key, slug = BitbucketClient._split_repo_ref(from_repo, name="from_repo")
+            params["fromRepo"] = f"{key}/{slug}"
         return params
 
     @staticmethod

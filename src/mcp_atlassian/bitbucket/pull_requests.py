@@ -65,6 +65,23 @@ MAX_ACTIVITIES_LIMIT = 200
 # spec), checked client-side so an oversized body is rejected before it is sent.
 MAX_COMMENT_TEXT_CHARS = 32768
 
+# --- pull-request write bounds ---
+# Maximum pull-request title length accepted before a request is issued.
+# Bitbucket Data Center rejects a longer title (the limit is not declared in the
+# REST spec), so the check runs client-side and an oversized body is not sent.
+MAX_PR_TITLE_CHARS = 255
+# Maximum pull-request description length, on the same footing as the title.
+MAX_PR_DESCRIPTION_CHARS = 32768
+# Maximum number of reviewers accepted in one request. The server resolves each
+# name with a user lookup, so the list is bounded before it is sent.
+MAX_PR_REVIEWERS = 50
+
+# Git ref namespaces. A bare name is qualified into ``_HEADS_PREFIX``. A value
+# already under ``_REFS_PREFIX`` is sent as given.
+_REFS_PREFIX = "refs/"
+_HEADS_PREFIX = "refs/heads/"
+_TAGS_PREFIX = "refs/tags/"
+
 # --- get_pull_request_changes bounds ---
 # Default number of changed files a single get_pull_request_changes call
 # returns.
@@ -1306,3 +1323,333 @@ class PullRequestsMixin(BitbucketClient):
                 user_data
             ).to_simplified_dict()
         return participant
+
+    @staticmethod
+    def _normalise_ref(value: str | None, *, name: str, allow_tag: bool) -> str:
+        """Qualify a caller-supplied ref for a pull-request body.
+
+        A bare name (``main``) becomes ``refs/heads/main``. A value that
+        already starts with ``refs/`` is sent as given, so ``refs/tags/v1`` and
+        an unusual namespace both pass through. Only a branch can be a
+        pull-request target, so with ``allow_tag`` false a ``refs/tags/``
+        value is rejected before any request. Whether the ref exists is left
+        to the server (a 404).
+
+        Args:
+            value: The caller-supplied ref name.
+            name: The parameter name used in the error message.
+            allow_tag: Whether a ``refs/tags/`` value is acceptable.
+
+        Returns:
+            The fully-qualified ref id.
+
+        Raises:
+            ValueError: If the value is blank, or is a tag where only a branch
+                is allowed.
+        """
+        text = value.strip() if value else ""
+        if not text:
+            raise ValueError(f"{name} must be a non-empty branch or tag name.")
+        if not text.startswith(_REFS_PREFIX):
+            text = f"{_HEADS_PREFIX}{text}"
+        if not allow_tag and text.startswith(_TAGS_PREFIX):
+            raise ValueError(
+                f"{name} must be a branch. Bitbucket does not accept a tag as a "
+                "pull-request target."
+            )
+        return text
+
+    @staticmethod
+    def _ref_object(ref_id: str, repo: tuple[str, str] | None) -> dict[str, Any]:
+        """Build a ``fromRef``/``toRef`` object, naming the repository when known."""
+        ref: dict[str, Any] = {"id": ref_id}
+        if repo is not None:
+            key, slug = repo
+            ref["repository"] = {"slug": slug, "project": {"key": key}}
+        return ref
+
+    @staticmethod
+    def _build_pull_request_body(
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        draft: bool | None = None,
+        from_ref: str | None = None,
+        to_ref: str | None = None,
+        reviewers: list[str] | None = None,
+        target_repo: tuple[str, str] | None = None,
+        from_repo: tuple[str, str] | None = None,
+    ) -> dict[str, Any]:
+        """Validate pull-request fields and build a ``RestPullRequest`` body.
+
+        Only the fields that are not ``None`` are emitted, so the same builder
+        serves a body that carries every field and one that carries a subset.
+        A ``title`` is stripped and must be a single non-blank line within
+        ``MAX_PR_TITLE_CHARS``. A ``description`` is sent as given within
+        ``MAX_PR_DESCRIPTION_CHARS``. Refs go through :meth:`_normalise_ref`
+        (``from_ref`` may be a tag, ``to_ref`` must be a branch) and carry a
+        ``repository`` object when the repository is known: ``to_ref`` names
+        ``target_repo``, ``from_ref`` names ``from_repo`` when given (a fork
+        in the same hierarchy) and otherwise ``target_repo``. ``reviewers``
+        are sent as ``[{"user": {"name": ...}}]`` with repeated names dropped
+        and at most ``MAX_PR_REVIEWERS`` entries. An empty list is sent as-is
+        (the server reads it as no reviewers), a blank entry raises, and
+        resolving the names is left to the server (a 409 names the unresolved
+        reviewer).
+
+        Args:
+            title: The pull-request title.
+            description: The pull-request description (Markdown).
+            draft: Whether the pull request is a draft.
+            from_ref: The source branch or tag name.
+            to_ref: The target branch name.
+            reviewers: User names to add as reviewers.
+            target_repo: The ``(project_key, repository_slug)`` of the target
+                repository, already validated as path segments.
+            from_repo: The ``(project_key, repository_slug)`` of the source
+                repository when it differs from the target.
+
+        Returns:
+            The JSON request body carrying the supplied fields.
+
+        Raises:
+            ValueError: If ``title`` is blank, spans lines, or is too long,
+                ``description`` is too long, a ref is blank, ``to_ref`` is a
+                tag, a reviewer entry is blank, or there are too many
+                reviewers.
+        """
+        body: dict[str, Any] = {}
+        if title is not None:
+            text = title.strip()
+            if not text:
+                raise ValueError("title must be a non-blank string.")
+            if "\n" in text or "\r" in text:
+                raise ValueError(
+                    "title must be a single line; put further text in description."
+                )
+            if len(text) > MAX_PR_TITLE_CHARS:
+                raise ValueError(
+                    f"title is {len(text)} characters; Bitbucket accepts at most "
+                    f"{MAX_PR_TITLE_CHARS}. Shorten the title."
+                )
+            body["title"] = text
+        if description is not None:
+            if len(description) > MAX_PR_DESCRIPTION_CHARS:
+                raise ValueError(
+                    f"description is {len(description)} characters; Bitbucket "
+                    f"accepts at most {MAX_PR_DESCRIPTION_CHARS}. Shorten it."
+                )
+            body["description"] = description
+        if draft is not None:
+            body["draft"] = draft
+        if from_ref is not None:
+            source_id = PullRequestsMixin._normalise_ref(
+                from_ref, name="from_ref", allow_tag=True
+            )
+            body["fromRef"] = PullRequestsMixin._ref_object(
+                source_id, from_repo if from_repo is not None else target_repo
+            )
+        if to_ref is not None:
+            target_id = PullRequestsMixin._normalise_ref(
+                to_ref, name="to_ref", allow_tag=False
+            )
+            body["toRef"] = PullRequestsMixin._ref_object(target_id, target_repo)
+        if reviewers is not None:
+            seen: dict[str, None] = {}
+            for entry in reviewers:
+                name = entry.strip()
+                if not name:
+                    raise ValueError("reviewers must be non-blank user names.")
+                seen.setdefault(name, None)
+            if len(seen) > MAX_PR_REVIEWERS:
+                raise ValueError(
+                    f"reviewers lists {len(seen)} distinct users; at most "
+                    f"{MAX_PR_REVIEWERS} are accepted in one request."
+                )
+            body["reviewers"] = [{"user": {"name": name}} for name in seen]
+        return body
+
+    @staticmethod
+    def _confirmed_pull_request(
+        data: Any,
+        path: str,
+        *,
+        title: str | None = None,
+        from_ref_id: str | None = None,
+        to_ref_id: str | None = None,
+        draft: bool | None = None,
+    ) -> BitbucketPullRequest:
+        """Parse a 2xx pull-request write body, requiring its acknowledgements.
+
+        A pull-request write is confirmed only by a ``RestPullRequest`` body
+        carrying a positive integer ``id`` and an integer ``version``, and by
+        each field that was sent being echoed back: the ``title``, the
+        fully-qualified ``fromRef.id`` and ``toRef.id``, and the ``draft``
+        flag. A server that ignores a field (a version without draft pull
+        requests) therefore reports an unconfirmed write rather than a
+        silently different one. Any other 2xx body is reported as an error
+        rather than a pull request with a made-up id or an unverified target,
+        following :meth:`_confirmed_comment`.
+
+        Args:
+            data: The parsed JSON body of the write.
+            path: The API path, for the error message.
+            title: The title sent, when the request carried one.
+            from_ref_id: The qualified source ref sent, when the request
+                carried one.
+            to_ref_id: The qualified target ref sent, when the request carried
+                one.
+            draft: The draft flag sent, when the request carried one.
+
+        Returns:
+            The confirmed
+            :class:`~mcp_atlassian.models.bitbucket.BitbucketPullRequest`.
+
+        Raises:
+            ValueError: If the body is not an object, lacks a positive integer
+                ``id`` or an integer ``version``, or disagrees with the request
+                on the title, a ref, or the draft flag. The write may have
+                been applied on the server; the message says so.
+        """
+        if not isinstance(data, dict):
+            raise ValueError(
+                "Bitbucket returned an unexpected response shape for "
+                f"{path}; expected a pull-request object."
+            )
+        returned_id = data.get("id")
+        version = data.get("version")
+        id_ok = (
+            isinstance(returned_id, int)
+            and not isinstance(returned_id, bool)
+            and returned_id > 0
+        )
+        version_ok = isinstance(version, int) and not isinstance(version, bool)
+        if not (id_ok and version_ok):
+            raise ValueError(
+                f"Bitbucket returned an incomplete pull-request body for {path}; "
+                "expected a positive integer 'id' and an integer 'version'. "
+                "The write may have been applied but was not confirmed."
+            )
+
+        def _ref_id(field: str) -> Any:
+            ref = data.get(field)
+            return ref.get("id") if isinstance(ref, dict) else None
+
+        mismatch: str | None = None
+        if title is not None and data.get("title") != title:
+            shown = PullRequestsMixin._shown(data.get("title"))
+            mismatch = f"'title' to echo the sent title but got {shown}"
+        elif from_ref_id is not None and _ref_id("fromRef") != from_ref_id:
+            sent = PullRequestsMixin._shown(from_ref_id)
+            shown = PullRequestsMixin._shown(_ref_id("fromRef"))
+            mismatch = f"'fromRef.id' {sent} but got {shown}"
+        elif to_ref_id is not None and _ref_id("toRef") != to_ref_id:
+            sent = PullRequestsMixin._shown(to_ref_id)
+            shown = PullRequestsMixin._shown(_ref_id("toRef"))
+            mismatch = f"'toRef.id' {sent} but got {shown}"
+        elif draft is not None and data.get("draft") is not draft:
+            shown = PullRequestsMixin._shown(data.get("draft"))
+            mismatch = f"'draft' {draft} but got {shown}"
+        if mismatch is not None:
+            raise ValueError(
+                f"Bitbucket returned an unconfirmed pull-request body for {path}; "
+                f"expected {mismatch}. The write may have been applied but was "
+                "not confirmed."
+            )
+        return BitbucketPullRequest.from_api_response(data)
+
+    def create_pull_request(
+        self,
+        project_key: str,
+        repository_slug: str,
+        title: str,
+        from_ref: str,
+        to_ref: str,
+        *,
+        description: str | None = None,
+        draft: bool | None = None,
+        reviewers: list[str] | None = None,
+        from_repo: str | None = None,
+    ) -> BitbucketPullRequest:
+        """Create a pull request in a Bitbucket Data Center repository.
+
+        Calls ``POST .../pull-requests`` once, with no ref or reviewer lookup
+        beforehand. The request body is built by
+        :meth:`_build_pull_request_body`: a bare ref name is qualified as
+        ``refs/heads/<name>``, a value under ``refs/`` is sent as given,
+        ``from_ref`` may be a tag but ``to_ref`` must be a branch, and
+        reviewers are sent by user name. The source may live in another
+        repository of the same hierarchy (a fork) named by ``from_repo`` as
+        ``PROJECT/slug``. The endpoint needs ``REPO_READ`` on both the source
+        and the target repository.
+
+        Args:
+            project_key: The target project key.
+            repository_slug: The target repository slug.
+            title: The pull-request title, which must be non-blank.
+            from_ref: The source branch or tag.
+            to_ref: The target branch.
+            description: Optional description (Markdown).
+            draft: Optional draft flag. None leaves the server default.
+            reviewers: Optional user names to add as reviewers.
+            from_repo: Optional ``PROJECT/slug`` of the repository holding
+                ``from_ref`` when it is not the target repository.
+
+        Returns:
+            The created
+            :class:`~mcp_atlassian.models.bitbucket.BitbucketPullRequest`
+            (carrying its ``id`` and ``version`` for later writes).
+
+        Raises:
+            ValueError: If a segment is blank, ``from_repo`` is malformed, a
+                body field fails validation (see
+                :meth:`_build_pull_request_body`), the 2xx body does not
+                confirm the write (see :meth:`_confirmed_pull_request`), or
+                the request fails, where a 400 (malformed entity) or a 409 (a
+                reviewer could not be resolved, the refs are the same, the
+                target is up to date, a pull request already exists, or the
+                target repository is archived) carries the instance's own
+                message.
+            BitbucketResourceNotFoundError: If a repository or ref does not
+                exist or is not accessible. The message names both refs.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected,
+                or lacks permission on one of the repositories (401/403).
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        target_repo = (project_key.strip(), repository_slug.strip())
+        source_repo: tuple[str, str] | None = None
+        if from_repo and from_repo.strip():
+            source_repo = self._split_repo_ref(from_repo, name="from_repo")
+        body = self._build_pull_request_body(
+            title=title,
+            description=description,
+            draft=draft,
+            from_ref=from_ref,
+            to_ref=to_ref,
+            reviewers=reviewers,
+            target_repo=target_repo,
+            from_repo=source_repo,
+        )
+        try:
+            data = self._post(base, json_body=body)
+        except BitbucketResourceNotFoundError as e:
+            # The generic 404 text names the repository and pull request. On
+            # a create the missing piece is more often one of the refs.
+            source_repo_text = (
+                f" in {source_repo[0]}/{source_repo[1]}" if source_repo else ""
+            )
+            raise BitbucketResourceNotFoundError(
+                f"Bitbucket resource not found (HTTP 404) for {base}. The "
+                f"repository, the source ref {self._shown(body['fromRef']['id'])}"
+                f"{source_repo_text}, or the target ref "
+                f"{self._shown(body['toRef']['id'])} does not exist, or the "
+                "authenticated user lacks permission to view it."
+            ) from e
+        return self._confirmed_pull_request(
+            data,
+            base,
+            title=body["title"],
+            from_ref_id=body["fromRef"]["id"],
+            to_ref_id=body["toRef"]["id"],
+            draft=draft,
+        )

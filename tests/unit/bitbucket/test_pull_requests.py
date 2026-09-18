@@ -16,7 +16,11 @@ from mcp_atlassian.bitbucket.pull_requests import (
     MAX_CHANGES_LIMIT,
     MAX_COMMENT_TEXT_CHARS,
     MAX_CONTEXT_LINES,
+    MAX_PR_DESCRIPTION_CHARS,
+    MAX_PR_REVIEWERS,
+    MAX_PR_TITLE_CHARS,
     MAX_PRS_LIMIT,
+    PullRequestsMixin,
 )
 from mcp_atlassian.utils.oauth import BYOAccessTokenOAuthConfig
 from tests.unit.bitbucket.mock_responses import attach_body, attach_json
@@ -2259,3 +2263,452 @@ class TestPullRequestPathDotSegments:
             with pytest.raises(ValueError, match=match):
                 fetcher.list_pull_requests(key, slug)
         mock_get.assert_not_called()
+
+
+def _created_pr(**overrides) -> dict:
+    """A 201 body for a same-repository pull request, with optional overrides."""
+    body = {
+        "id": 42,
+        "version": 0,
+        "title": "Add feature",
+        "state": "OPEN",
+        "open": True,
+        "closed": False,
+        "fromRef": {
+            "id": "refs/heads/feature/x",
+            "displayId": "feature/x",
+            "repository": {"slug": "my-repo", "project": {"key": "PROJ"}},
+        },
+        "toRef": {
+            "id": "refs/heads/main",
+            "displayId": "main",
+            "repository": {"slug": "my-repo", "project": {"key": "PROJ"}},
+        },
+        "author": {"user": {"name": "me"}, "role": "AUTHOR"},
+        "reviewers": [],
+    }
+    body.update(overrides)
+    return body
+
+
+class TestBuildPullRequestBody:
+    """_build_pull_request_body: partial emission, validation, ref shapes."""
+
+    build = staticmethod(PullRequestsMixin._build_pull_request_body)
+
+    def test_only_supplied_fields_are_emitted(self):
+        """A call with a subset of fields emits exactly those fields."""
+        assert self.build(title="  t  ") == {"title": "t"}
+        assert self.build(description="d", draft=False) == {
+            "description": "d",
+            "draft": False,
+        }
+        assert self.build() == {}
+
+    def test_full_create_shape(self):
+        """A create call carries every field in the RestPullRequest shape."""
+        body = self.build(
+            title="Add feature",
+            description="body",
+            draft=True,
+            from_ref="feature/x",
+            to_ref="main",
+            reviewers=["alice", " bob "],
+            target_repo=("PROJ", "my-repo"),
+        )
+        assert body == {
+            "title": "Add feature",
+            "description": "body",
+            "draft": True,
+            "fromRef": {
+                "id": "refs/heads/feature/x",
+                "repository": {"slug": "my-repo", "project": {"key": "PROJ"}},
+            },
+            "toRef": {
+                "id": "refs/heads/main",
+                "repository": {"slug": "my-repo", "project": {"key": "PROJ"}},
+            },
+            "reviewers": [{"user": {"name": "alice"}}, {"user": {"name": "bob"}}],
+        }
+
+    def test_from_repo_names_the_fork_on_the_source_only(self):
+        """A fork source carries its own repository; the target keeps its own."""
+        body = self.build(
+            from_ref="x",
+            to_ref="main",
+            target_repo=("PROJ", "my-repo"),
+            from_repo=("FORK", "their-repo"),
+        )
+        assert body["fromRef"]["repository"] == {
+            "slug": "their-repo",
+            "project": {"key": "FORK"},
+        }
+        assert body["toRef"]["repository"] == {
+            "slug": "my-repo",
+            "project": {"key": "PROJ"},
+        }
+
+    def test_ref_without_repository_carries_only_the_id(self):
+        """Without a target repository a ref is a bare ``{id}`` object."""
+        assert self.build(to_ref="main") == {"toRef": {"id": "refs/heads/main"}}
+
+    @pytest.mark.parametrize(
+        ("given", "expected"),
+        [
+            ("main", "refs/heads/main"),
+            ("  feature/x  ", "refs/heads/feature/x"),
+            ("refs/heads/main", "refs/heads/main"),
+            ("refs/tags/v1.2", "refs/tags/v1.2"),
+            ("refs/other/thing", "refs/other/thing"),
+        ],
+    )
+    def test_source_ref_normalisation(self, given, expected):
+        """A bare name is qualified; a refs/ value passes through, tags included."""
+        assert self.build(from_ref=given)["fromRef"]["id"] == expected
+
+    def test_target_tag_is_rejected(self):
+        """A tag target is rejected before any request."""
+        with pytest.raises(ValueError, match="to_ref must be a branch"):
+            self.build(to_ref="refs/tags/v1")
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_blank_ref_is_rejected(self, value):
+        """A supplied but blank ref is rejected (None means not supplied)."""
+        with pytest.raises(ValueError, match="from_ref must be a non-empty"):
+            self.build(from_ref=value)
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_blank_title_is_rejected(self, value):
+        with pytest.raises(ValueError, match="title must be a non-blank"):
+            self.build(title=value)
+
+    def test_oversized_title_is_rejected(self):
+        with pytest.raises(ValueError, match=f"at most {MAX_PR_TITLE_CHARS}"):
+            self.build(title="x" * (MAX_PR_TITLE_CHARS + 1))
+
+    def test_title_at_the_limit_is_accepted(self):
+        assert len(self.build(title="x" * MAX_PR_TITLE_CHARS)["title"]) == (
+            MAX_PR_TITLE_CHARS
+        )
+
+    def test_oversized_description_is_rejected(self):
+        with pytest.raises(ValueError, match=f"at most {MAX_PR_DESCRIPTION_CHARS}"):
+            self.build(description="x" * (MAX_PR_DESCRIPTION_CHARS + 1))
+
+    def test_empty_reviewers_list_is_sent(self):
+        """``[]`` is sent as an explicit empty list, not dropped."""
+        assert self.build(reviewers=[]) == {"reviewers": []}
+
+    @pytest.mark.parametrize("entry", ["", "  "])
+    def test_blank_reviewer_is_rejected(self, entry):
+        with pytest.raises(ValueError, match="reviewers must be non-blank"):
+            self.build(reviewers=["alice", entry])
+
+    def test_repeated_reviewers_are_sent_once(self):
+        """Repeated names collapse to one entry, first occurrence first."""
+        body = self.build(reviewers=["alice", " alice", "bob", "alice"])
+        assert body["reviewers"] == [
+            {"user": {"name": "alice"}},
+            {"user": {"name": "bob"}},
+        ]
+
+    def test_too_many_reviewers_is_rejected(self):
+        names = [f"user{i}" for i in range(MAX_PR_REVIEWERS + 1)]
+        with pytest.raises(ValueError, match=f"at most {MAX_PR_REVIEWERS}"):
+            self.build(reviewers=names)
+
+    def test_reviewers_at_the_limit_are_accepted(self):
+        names = [f"user{i}" for i in range(MAX_PR_REVIEWERS)]
+        assert len(self.build(reviewers=names)["reviewers"]) == MAX_PR_REVIEWERS
+
+    @pytest.mark.parametrize("title", ["first\nsecond", "first\r\nsecond"])
+    def test_multi_line_title_is_rejected(self, title):
+        with pytest.raises(ValueError, match="title must be a single line"):
+            self.build(title=title)
+
+
+class TestCreatePullRequest:
+    """create_pull_request: one POST, request shape, confirmation, errors."""
+
+    def test_request_shape_and_confirmed_return(self):
+        """A create POSTs the built body once and returns the confirmed PR."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=_json_response(_created_pr())
+        ) as mock_post:
+            pr = fetcher.create_pull_request(
+                "PROJ", "my-repo", "Add feature", "feature/x", "main"
+            )
+
+        mock_post.assert_called_once()
+        url = mock_post.call_args[0][0]
+        assert url.endswith("/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests")
+        assert mock_post.call_args[1]["json"] == {
+            "title": "Add feature",
+            "fromRef": {
+                "id": "refs/heads/feature/x",
+                "repository": {"slug": "my-repo", "project": {"key": "PROJ"}},
+            },
+            "toRef": {
+                "id": "refs/heads/main",
+                "repository": {"slug": "my-repo", "project": {"key": "PROJ"}},
+            },
+        }
+        assert pr.id == 42
+        assert pr.version == 0
+        assert pr.title == "Add feature"
+        assert pr.from_ref is not None and pr.from_ref.id == "refs/heads/feature/x"
+        assert pr.to_ref is not None and pr.to_ref.id == "refs/heads/main"
+
+    def test_optional_fields_and_reviewers_are_sent(self):
+        """description/draft/reviewers are sent in the body in the spec's shape."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = _created_pr(
+            draft=True,
+            description="d",
+            reviewers=[{"user": {"name": "alice"}, "role": "REVIEWER"}],
+        )
+        with patch.object(
+            fetcher._session, "post", return_value=_json_response(body)
+        ) as mock_post:
+            pr = fetcher.create_pull_request(
+                "PROJ",
+                "my-repo",
+                "Add feature",
+                "feature/x",
+                "main",
+                description="d",
+                draft=True,
+                reviewers=["alice"],
+            )
+
+        sent = mock_post.call_args[1]["json"]
+        assert sent["description"] == "d"
+        assert sent["draft"] is True
+        assert sent["reviewers"] == [{"user": {"name": "alice"}}]
+        assert pr.draft is True
+        assert [r.user.name for r in pr.reviewers if r.user] == ["alice"]
+
+    def test_from_repo_is_parsed_into_the_source_repository(self):
+        """``PROJECT/slug`` is split and stripped into fromRef.repository."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = _created_pr(
+            fromRef={
+                "id": "refs/heads/feature/x",
+                "repository": {"slug": "their-repo", "project": {"key": "FORK"}},
+            }
+        )
+        with patch.object(
+            fetcher._session, "post", return_value=_json_response(body)
+        ) as mock_post:
+            fetcher.create_pull_request(
+                "PROJ",
+                "my-repo",
+                "Add feature",
+                "feature/x",
+                "main",
+                from_repo=" FORK / their-repo ",
+            )
+
+        sent = mock_post.call_args[1]["json"]
+        assert sent["fromRef"]["repository"] == {
+            "slug": "their-repo",
+            "project": {"key": "FORK"},
+        }
+        assert sent["toRef"]["repository"] == {
+            "slug": "my-repo",
+            "project": {"key": "PROJ"},
+        }
+
+    @pytest.mark.parametrize("bad", ["FORK", "A/B/C", "../x", " /slug", "FORK/.."])
+    def test_malformed_from_repo_rejected_before_post(self, bad):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="from_repo"):
+                fetcher.create_pull_request("P", "r", "t", "x", "main", from_repo=bad)
+        mock_post.assert_not_called()
+
+    def test_blank_from_repo_means_same_repository(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=_json_response(_created_pr())
+        ) as mock_post:
+            fetcher.create_pull_request(
+                "PROJ", "my-repo", "Add feature", "feature/x", "main", from_repo="  "
+            )
+        sent = mock_post.call_args[1]["json"]
+        assert sent["fromRef"]["repository"]["slug"] == "my-repo"
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"title": "   "}, "title must be a non-blank"),
+            ({"from_ref": " "}, "from_ref must be a non-empty"),
+            ({"to_ref": "refs/tags/v1"}, "to_ref must be a branch"),
+            ({"reviewers": [" "]}, "reviewers must be non-blank"),
+            ({"project_key": " "}, "project_key"),
+        ],
+    )
+    def test_invalid_input_rejected_before_post(self, kwargs, match):
+        """Client-side validation fails before any HTTP call is made."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        args = {
+            "project_key": "P",
+            "repository_slug": "r",
+            "title": "t",
+            "from_ref": "x",
+            "to_ref": "main",
+        }
+        args.update(kwargs)
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match=match):
+                fetcher.create_pull_request(**args)
+        mock_post.assert_not_called()
+
+    def test_400_surfaces_server_message(self):
+        """A 400 (malformed entity) carries the instance's own message."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "The pull request title is required."}]}
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(400, body)
+        ):
+            with pytest.raises(ValueError, match="HTTP 400.*title is required"):
+                fetcher.create_pull_request("P", "r", "t", "x", "main")
+
+    def test_409_surfaces_server_message(self):
+        """A 409 (duplicate, same refs, unresolved reviewer) carries the message."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [
+                {
+                    "message": "Only one pull request may be open for a given source "
+                    "and target branch."
+                }
+            ]
+        }
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="HTTP 409.*Only one pull request"):
+                fetcher.create_pull_request("P", "r", "t", "x", "main")
+
+    def test_404_names_both_refs(self):
+        """A 404 names the qualified refs, the usual missing piece on a create."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_response(404)
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError) as excinfo:
+                fetcher.create_pull_request("P", "r", "t", "x", "main")
+        message = str(excinfo.value)
+        assert "HTTP 404" in message
+        assert "'refs/heads/x'" in message
+        assert "'refs/heads/main'" in message
+        assert " in " not in message
+
+    def test_404_names_the_fork_for_a_cross_repository_source(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_response(404)
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError, match="in FORK/r2"):
+                fetcher.create_pull_request(
+                    "P", "r", "t", "x", "main", from_repo="FORK/r2"
+                )
+
+    def test_non_dict_response_raises(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "post", return_value=_json_response(["not", "a", "pr"])
+        ):
+            with pytest.raises(ValueError, match="unexpected response shape"):
+                fetcher.create_pull_request("P", "r", "t", "x", "main")
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"id": 42},
+            {"id": 42, "version": "0"},
+            {"id": 0, "version": 0},
+            {"id": True, "version": 0},
+            {"version": 0},
+        ],
+        ids=[
+            "empty",
+            "missing-version",
+            "string-version",
+            "zero-id",
+            "bool-id",
+            "missing-id",
+        ],
+    )
+    def test_incomplete_2xx_body_raises(self, body):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post", return_value=_json_response(body)):
+            with pytest.raises(ValueError, match="was not confirmed"):
+                fetcher.create_pull_request("P", "r", "t", "x", "main")
+
+    @pytest.mark.parametrize(
+        ("overrides", "match"),
+        [
+            ({"title": "Other"}, "'title'"),
+            ({"fromRef": {"id": "refs/heads/else"}}, "'fromRef.id'"),
+            ({"fromRef": "refs/heads/feature/x"}, "'fromRef.id'"),
+            ({"toRef": {"id": "refs/heads/develop"}}, "'toRef.id'"),
+            ({"toRef": {}}, "'toRef.id'"),
+        ],
+        ids=["title", "from-ref", "from-ref-not-object", "to-ref", "to-ref-no-id"],
+    )
+    def test_mismatched_2xx_body_raises(self, overrides, match):
+        """A 2xx body that disagrees with the request is an unconfirmed write."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(_created_pr(**overrides)),
+        ):
+            with pytest.raises(ValueError, match=f"{match}.*was not confirmed"):
+                fetcher.create_pull_request(
+                    "PROJ", "my-repo", "Add feature", "feature/x", "main"
+                )
+
+    def test_confirmation_uses_the_qualified_ref(self):
+        """A bare ref is confirmed against its refs/heads/ form, not as given."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(_created_pr(toRef={"id": "main"})),
+        ):
+            with pytest.raises(ValueError, match="'toRef.id' 'refs/heads/main'"):
+                fetcher.create_pull_request(
+                    "PROJ", "my-repo", "Add feature", "feature/x", "main"
+                )
+
+    @pytest.mark.parametrize(
+        "body",
+        [_created_pr(), _created_pr(draft=False), _created_pr(draft="true")],
+        ids=["absent", "false", "string"],
+    )
+    def test_draft_not_echoed_raises(self, body):
+        """A server that ignores ``draft`` is reported as an unconfirmed write."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "post", return_value=_json_response(body)):
+            with pytest.raises(ValueError, match="'draft' True.*was not confirmed"):
+                fetcher.create_pull_request(
+                    "PROJ", "my-repo", "Add feature", "feature/x", "main", draft=True
+                )
+
+    def test_draft_is_not_checked_when_not_sent(self):
+        """Without a draft flag in the request, the response's value is free."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session,
+            "post",
+            return_value=_json_response(_created_pr(draft=False)),
+        ):
+            pr = fetcher.create_pull_request(
+                "PROJ", "my-repo", "Add feature", "feature/x", "main"
+            )
+        assert pr.draft is False

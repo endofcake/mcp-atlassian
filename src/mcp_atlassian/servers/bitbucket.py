@@ -33,6 +33,8 @@ from mcp_atlassian.bitbucket.pull_requests import (
     MAX_CONTEXT_LINES,
     MAX_MAX_FILES,
     MAX_MAX_LINES_PER_FILE,
+    MAX_PR_DESCRIPTION_CHARS,
+    MAX_PR_TITLE_CHARS,
     MAX_PRS_LIMIT,
 )
 from mcp_atlassian.bitbucket.refs import (
@@ -2372,6 +2374,149 @@ async def get_pull_request_comments(
         "next_page_start": page.next_page_start,
     }
     return json.dumps(response_data, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
+        "title": "Create Bitbucket Pull Request",
+        "destructiveHint": False,
+    },
+)
+@check_write_access
+async def create_pull_request(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The target Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The target repository slug (e.g. 'my-repo').")
+    ],
+    title: Annotated[
+        str,
+        Field(
+            description=(
+                "The pull-request title. One non-blank line of at most "
+                f"{MAX_PR_TITLE_CHARS} characters."
+            ),
+        ),
+    ],
+    from_ref: Annotated[
+        str,
+        Field(
+            description=(
+                "The source branch or tag. A bare name ('feature/x') is sent as "
+                "'refs/heads/feature/x'. A value starting with 'refs/' (for "
+                "example 'refs/tags/v1.2') is sent as given."
+            ),
+        ),
+    ],
+    to_ref: Annotated[
+        str,
+        Field(
+            description=(
+                "The target branch. A bare name ('main') is sent as "
+                "'refs/heads/main'. A 'refs/heads/...' value is sent as given. "
+                "Tags are not valid targets."
+            ),
+        ),
+    ],
+    description: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The pull-request description (Markdown) of at most "
+                f"{MAX_PR_DESCRIPTION_CHARS} characters."
+            ),
+            default=None,
+        ),
+    ] = None,
+    draft: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "Create the pull request as a draft. Omit to leave the server "
+                "default (not a draft). Needs a Data Center version with draft "
+                "pull requests. The flag is confirmed against the response."
+            ),
+            default=None,
+        ),
+    ] = None,
+    reviewers: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "User names to add as reviewers (the 'name' field of "
+                "get_current_user, not the display name). Repeated names are "
+                "sent once. A name the server cannot resolve fails the whole "
+                "request with a 409."
+            ),
+            default=None,
+        ),
+    ] = None,
+    from_repo: Annotated[
+        str | None,
+        Field(
+            description=(
+                "The repository holding 'from_ref' when it is not the target "
+                "repository, as 'PROJECT/slug'. Must be a fork in the same "
+                "hierarchy as the target. Omit for a same-repository pull "
+                "request."
+            ),
+            default=None,
+        ),
+    ] = None,
+) -> str:
+    """Create a pull request (needs REPO_READ on the source and target repositories).
+
+    One request. Refs and reviewers are sent as given and resolved by the
+    server. Bare ref names are qualified as 'refs/heads/<name>'. The source
+    may be a branch or a tag. The target must be a branch. The source may
+    live in a fork of the target repository ('from_repo'). Reviewers are
+    given by user name.
+
+    REPO_READ is the scope the documented OAuth setup grants. A 409 carries the
+    server's reason: an unresolved reviewer, source and target being the same
+    ref, the target already containing every source commit, an existing pull
+    request between the refs, or an archived target repository. A 404 names
+    the refs that were sent. An unconfirmed-write error means the server
+    replied 201 with a body that differs from the request. List the open
+    pull requests before retrying. Blocked when the server runs with
+    READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The target project key.
+        repository_slug: The target repository slug.
+        title: The pull-request title; must be non-blank.
+        from_ref: The source branch or tag.
+        to_ref: The target branch.
+        description: Optional description (Markdown).
+        draft: Optional draft flag.
+        reviewers: Optional reviewer user names.
+        from_repo: Optional 'PROJECT/slug' of the fork holding the source.
+
+    Returns:
+        JSON string with the created pull request: its 'id', 'version',
+        'title', 'state', refs, author, and reviewers.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    pull_request = await run_bitbucket_fetcher_call(
+        bitbucket.create_pull_request,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        title=title,
+        from_ref=from_ref,
+        to_ref=to_ref,
+        description=description,
+        draft=draft,
+        reviewers=reviewers,
+        from_repo=from_repo,
+    )
+    return json.dumps(pull_request.to_simplified_dict(), indent=2, ensure_ascii=False)
 
 
 @bitbucket_mcp.tool(

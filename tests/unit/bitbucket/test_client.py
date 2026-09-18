@@ -1342,6 +1342,25 @@ class TestPathSegmentValidation:
         with pytest.raises(ValueError, match="not the path segment"):
             BitbucketClient._repo_base_path(key, slug)
 
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("FORK/my-repo", ("FORK", "my-repo")),
+            (" FORK / my-repo ", ("FORK", "my-repo")),
+        ],
+    )
+    def test_split_repo_ref_returns_stripped_halves(self, value, expected):
+        """A ``PROJECT/slug`` value is split and stripped, not encoded."""
+        assert BitbucketClient._split_repo_ref(value, name="from_repo") == expected
+
+    @pytest.mark.parametrize(
+        "value", ["FORK", "A/B/C", "", "/", "../x", "FORK/..", " /slug", "FORK/ "]
+    )
+    def test_split_repo_ref_rejects_malformed_values(self, value):
+        """Anything but one pair of valid segments is rejected, naming the param."""
+        with pytest.raises(ValueError, match="from_repo"):
+            BitbucketClient._split_repo_ref(value, name="from_repo")
+
 
 class TestInvalidUtf8Body:
     """A 2xx body that is not UTF-8 maps to the crafted non-JSON error."""

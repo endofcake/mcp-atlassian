@@ -218,6 +218,16 @@ def mock_bitbucket_fetcher() -> MagicMock:
         activities=[activity], is_last_page=True, truncated=False, next_page_start=None
     )
 
+    mock_fetcher.create_pull_request.return_value = _model_mock(
+        {
+            "id": 42,
+            "title": "Add feature",
+            "state": "OPEN",
+            "from_ref": {"id": "refs/heads/feature/x"},
+            "to_ref": {"id": "refs/heads/main"},
+            "version": 0,
+        }
+    )
     mock_fetcher.add_comment.return_value = _model_mock(
         {"id": 101, "version": 0, "text": "hello"}
     )
@@ -271,6 +281,7 @@ def test_bitbucket_mcp(
         compare_changes,
         compare_commits,
         compare_diff,
+        create_pull_request,
         delete_pull_request_comment,
         edit_pull_request_comment,
         get_commit,
@@ -335,6 +346,7 @@ def test_bitbucket_mcp(
     bitbucket_sub_mcp.add_tool(get_pull_request_diff)
     bitbucket_sub_mcp.add_tool(get_pull_request_activities)
     bitbucket_sub_mcp.add_tool(get_pull_request_comments)
+    bitbucket_sub_mcp.add_tool(create_pull_request)
     bitbucket_sub_mcp.add_tool(add_pull_request_comment)
     bitbucket_sub_mcp.add_tool(set_pull_request_review_status)
     bitbucket_sub_mcp.add_tool(edit_pull_request_comment)
@@ -2001,6 +2013,83 @@ class TestGetPullRequestComments:
 
 
 @pytest.mark.anyio
+class TestCreatePullRequest:
+    """The create_pull_request write tool."""
+
+    async def test_success(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A minimal call forwards the required fields and returns the PR."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_create_pull_request",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "title": "Add feature",
+                "from_ref": "feature/x",
+                "to_ref": "main",
+            },
+        )
+
+        mock_bitbucket_fetcher.create_pull_request.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            title="Add feature",
+            from_ref="feature/x",
+            to_ref="main",
+            description=None,
+            draft=None,
+            reviewers=None,
+            from_repo=None,
+        )
+        result = _result_json(response)
+        assert result["id"] == 42
+        assert result["from_ref"] == {"id": "refs/heads/feature/x"}
+        assert result["version"] == 0
+
+    async def test_optional_parameters_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        await bitbucket_client.call_tool(
+            "bitbucket_create_pull_request",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "title": "Add feature",
+                "from_ref": "refs/tags/v1",
+                "to_ref": "main",
+                "description": "body",
+                "draft": True,
+                "reviewers": ["alice", "bob"],
+                "from_repo": "FORK/their-repo",
+            },
+        )
+        call_kwargs = mock_bitbucket_fetcher.create_pull_request.call_args[1]
+        assert call_kwargs["from_ref"] == "refs/tags/v1"
+        assert call_kwargs["description"] == "body"
+        assert call_kwargs["draft"] is True
+        assert call_kwargs["reviewers"] == ["alice", "bob"]
+        assert call_kwargs["from_repo"] == "FORK/their-repo"
+
+    async def test_value_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A validation or 409 rejection reaches the caller with its text."""
+        mock_bitbucket_fetcher.create_pull_request.side_effect = ValueError(
+            "Bitbucket request failed (HTTP 409): Only one pull request may be open"
+        )
+        with pytest.raises(ToolError, match="HTTP 409.*Only one pull request"):
+            await bitbucket_client.call_tool(
+                "bitbucket_create_pull_request",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "title": "Add feature",
+                    "from_ref": "feature/x",
+                    "to_ref": "main",
+                },
+            )
+
+
+@pytest.mark.anyio
 class TestAddComment:
     """The add_pull_request_comment write tool."""
 
@@ -2402,6 +2491,25 @@ class TestReadOnlyMode:
     same shape the real server lifespan yields).
     """
 
+    async def test_create_pull_request_blocked(self):
+        from src.mcp_atlassian.servers.bitbucket import create_pull_request
+
+        fetcher_dependency = AsyncMock()
+        with patch(
+            "src.mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            fetcher_dependency,
+        ):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await create_pull_request(
+                    _read_only_context(),
+                    project_key="PROJ",
+                    repository_slug="my-repo",
+                    title="Add feature",
+                    from_ref="feature/x",
+                    to_ref="main",
+                )
+        fetcher_dependency.assert_not_called()
+
     async def test_add_pull_request_comment_blocked(self):
         from src.mcp_atlassian.servers.bitbucket import add_pull_request_comment
 
@@ -2566,7 +2674,7 @@ class TestFetcherOffload:
         tools = self._tool_functions()
         # The registered tool count is part of the contract: a new tool must
         # be routed through the helper and this pin bumped in the same change.
-        assert len(tools) == 29
+        assert len(tools) == 30
 
         for name, function in tools.items():
             fetcher_names = self._fetcher_names(function)

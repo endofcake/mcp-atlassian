@@ -157,6 +157,28 @@ Get the comments on a Bitbucket Data Center pull request.
 
 ---
 
+### Create Bitbucket Pull Request
+
+Create a pull request (needs REPO_READ on the source and target repositories).
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The target Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The target repository slug (e.g. 'my-repo'). |
+| `title` | `string` | Yes | The pull-request title. One non-blank line of at most 255 characters. |
+| `from_ref` | `string` | Yes | The source branch or tag. A bare name ('feature/x') is sent as 'refs/heads/feature/x'. A value starting with 'refs/' (for example 'refs/tags/v1.2') is sent as given. |
+| `to_ref` | `string` | Yes | The target branch. A bare name ('main') is sent as 'refs/heads/main'. A 'refs/heads/...' value is sent as given. Tags are not valid targets. |
+| `description` | `string` | No | The pull-request description (Markdown) of at most 32768 characters. |
+| `draft` | `boolean` | No | Create the pull request as a draft. Omit to leave the server default (not a draft). Needs a Data Center version with draft pull requests. The flag is confirmed against the response. |
+| `reviewers` | `array` | No | User names to add as reviewers (the 'name' field of get_current_user, not the display name). Repeated names are sent once. A name the server cannot resolve fails the whole request with a 409. |
+| `from_repo` | `string` | No | The repository holding 'from_ref' when it is not the target repository, as 'PROJECT/slug'. Must be a fork in the same hierarchy as the target. Omit for a same-repository pull request. |
+
+---
+
 ### Add Bitbucket Pull Request Comment
 
 Add a comment to a Bitbucket Data Center pull request.

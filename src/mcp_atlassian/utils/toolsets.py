@@ -1,6 +1,6 @@
 """Toolset definitions and filtering utilities for MCP Atlassian.
 
-Groups 127 tools into 29 named toolsets controlled via the TOOLSETS env var.
+Groups 128 tools into 29 named toolsets controlled via the TOOLSETS env var.
 Supports 'all', 'default', and comma-separated toolset names.
 """
 
