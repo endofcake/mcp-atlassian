@@ -83,6 +83,120 @@ Get a Bitbucket Data Center repository's default branch.
 
 ---
 
+### Create Bitbucket Branch
+
+Create a branch in a Bitbucket Data Center repository.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `name` | `string` | Yes | The short branch name (e.g. 'feature/x'), without a 'refs/' prefix. The server adds 'refs/heads/'. Must be a valid git ref name (no '..', no leading '-', no whitespace, no trailing '.lock'). |
+| `start_point` | `string` | Yes | The commit id or ref the branch starts from (e.g. 'main', 'refs/tags/v1.0', or a 40-character commit id). |
+| `message` | `string` | No | Optional message recorded with the ref change (at most 32768 characters). |
+**Example:**
+
+```json
+{"project_key": "PROJ", "repository_slug": "my-repo", "name": "feature/login", "start_point": "main"}
+```
+
+<Note>
+Requires `REPO_WRITE` on the repository. The example configuration in
+[Authentication](/docs/authentication) sets `BITBUCKET_OAUTH_SCOPE=REPO_READ`,
+which is enough for every read tool but not for this one. Set
+`BITBUCKET_OAUTH_SCOPE=REPO_WRITE` (or use a token issued with it). The scope
+caps what the token may do. Bitbucket still enforces the user's own repository
+and branch permissions. With a forwarded bearer token the scope is fixed when
+that token is issued.
+The server prepends `refs/heads/` to the short name. The response is confirmed
+against the request (display id and a hexadecimal latest commit). A mismatch
+is reported as an unconfirmed write.
+</Note>
+
+---
+
+### Delete Bitbucket Branch
+
+Delete a branch in a Bitbucket Data Center repository.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `name` | `string` | Yes | The branch name, short (e.g. 'feature/x') or fully qualified ('refs/heads/feature/x'). A short name is sent as 'refs/heads/<name>' so the delete cannot address a tag. |
+| `end_point` | `string` | Yes | The full 40-character commit id the branch is expected to point at (its 'latest_commit' from list_branches). The server refuses the delete with a 400 when the branch points elsewhere. |
+| `dry_run` | `boolean` | No | When true the server performs a dry run and deletes nothing. |
+**Example:**
+
+```json
+{"project_key": "PROJ", "repository_slug": "my-repo", "name": "feature/login", "end_point": "8d51122def5632836d1cb1026e879069e10a1e13"}
+```
+
+<Tip>
+Read the branch's current `latest_commit` with `bitbucket_list_branches` first and
+pass it as `end_point`. Pass `dry_run: true` to validate without deleting.
+</Tip>
+
+<Note>
+Requires `REPO_WRITE` on the repository and branch permission on the name. The
+example configuration in [Authentication](/docs/authentication) sets
+`BITBUCKET_OAUTH_SCOPE=REPO_READ`. Set `BITBUCKET_OAUTH_SCOPE=REPO_WRITE` (or
+use a token issued with it). The scope caps what the token may do. Bitbucket
+still enforces the user's own repository and branch permissions. With a
+forwarded bearer token the scope is fixed when that token is issued.
+The delete is conditional on `end_point`: the server refuses with a 400 when
+the branch points at a different commit, and the default branch cannot be
+deleted. HTTP 204 acknowledges the request even when the branch did not
+exist, so the result reports the request as `accepted` with a `note`. List
+branches afterwards to verify the resulting state. A short name is sent as
+`refs/heads/<name>` so the request cannot address a tag.
+</Note>
+
+---
+
+### Create Bitbucket Tag
+
+Create a tag in a Bitbucket Data Center repository.
+
+<Note>This is a **write** tool. Disabled when `READ_ONLY_MODE=true`.</Note>
+
+**Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `project_key` | `string` | Yes | The Bitbucket project key (e.g. 'PROJ'). |
+| `repository_slug` | `string` | Yes | The repository slug (e.g. 'my-repo'). |
+| `name` | `string` | Yes | The short tag name (e.g. 'v1.2.0'), without a 'refs/' prefix. The server adds 'refs/tags/'. Must be a valid git ref name (no '..', no leading '-', no whitespace, no trailing '.lock'). |
+| `start_point` | `string` | Yes | The commit id or ref the tag points at (e.g. 'main' or a 40-character commit id). |
+| `message` | `string` | No | Optional annotation message (at most 32768 characters). When given the tag is annotated. Otherwise it is lightweight. |
+**Example:**
+
+```json
+{"project_key": "PROJ", "repository_slug": "my-repo", "name": "v1.2.0", "start_point": "8d51122def5632836d1cb1026e879069e10a1e13", "message": "Release 1.2.0"}
+```
+
+<Note>
+Requires `REPO_WRITE` on the repository. The example configuration in
+[Authentication](/docs/authentication) sets `BITBUCKET_OAUTH_SCOPE=REPO_READ`.
+Set `BITBUCKET_OAUTH_SCOPE=REPO_WRITE` (or use a token issued with it). The
+scope caps what the token may do. Bitbucket still enforces the user's own
+repository and branch permissions. With a forwarded bearer token the scope is
+fixed when that token is issued.
+A `message` creates an annotated tag (the response carries its `hash`).
+Without one the tag is lightweight. The server prepends `refs/tags/` to the
+short name, and the response is confirmed against the request.
+</Note>
+
+---
+
 ### List Bitbucket Commits
 
 List commits in a Bitbucket Data Center repository.

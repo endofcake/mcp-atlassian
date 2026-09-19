@@ -1,0 +1,18 @@
+example: |
+  {"project_key": "PROJ", "repository_slug": "my-repo", "name": "feature/login", "end_point": "8d51122def5632836d1cb1026e879069e10a1e13"}
+tips: |
+  Read the branch's current `latest_commit` with `bitbucket_list_branches` first and
+  pass it as `end_point`. Pass `dry_run: true` to validate without deleting.
+notes: |
+  Requires `REPO_WRITE` on the repository and branch permission on the name. The
+  example configuration in [Authentication](/docs/authentication) sets
+  `BITBUCKET_OAUTH_SCOPE=REPO_READ`. Set `BITBUCKET_OAUTH_SCOPE=REPO_WRITE` (or
+  use a token issued with it). The scope caps what the token may do. Bitbucket
+  still enforces the user's own repository and branch permissions. With a
+  forwarded bearer token the scope is fixed when that token is issued.
+  The delete is conditional on `end_point`: the server refuses with a 400 when
+  the branch points at a different commit, and the default branch cannot be
+  deleted. HTTP 204 acknowledges the request even when the branch did not
+  exist, so the result reports the request as `accepted` with a `note`. List
+  branches afterwards to verify the resulting state. A short name is sent as
+  `refs/heads/<name>` so the request cannot address a tag.

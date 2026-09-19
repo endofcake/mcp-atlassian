@@ -606,6 +606,251 @@ async def get_default_branch(
 
 
 @bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_repositories"},
+    annotations={"title": "Create Bitbucket Branch"},
+)
+@check_write_access
+async def create_branch(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "The short branch name (e.g. 'feature/x'), without a 'refs/' "
+                "prefix. The server adds 'refs/heads/'. Must be a valid git "
+                "ref name (no '..', no leading '-', no whitespace, no "
+                "trailing '.lock')."
+            ),
+        ),
+    ],
+    start_point: Annotated[
+        str,
+        Field(
+            description=(
+                "The commit id or ref the branch starts from (e.g. 'main', "
+                "'refs/tags/v1.0', or a 40-character commit id)."
+            ),
+        ),
+    ],
+    message: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional message recorded with the ref change (at most 32768 "
+                "characters)."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """Create a branch in a Bitbucket Data Center repository.
+
+    One request. The start point is sent as given and resolved by the server.
+    The response is confirmed against the request: its display id must equal
+    'name' and its
+    latest commit must be a commit id (equal to 'start_point' when that was a
+    full commit id). Requires REPO_WRITE on the repository. The documented
+    example configuration grants only REPO_READ, so set
+    BITBUCKET_OAUTH_SCOPE=REPO_WRITE (or use a token issued with it). Blocked
+    when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        name: The short branch name.
+        start_point: The commit id or ref to branch from.
+        message: Optional message recorded with the ref change.
+
+    Returns:
+        JSON string with the created branch: display id, ref id, latest
+        commit, and type.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    branch = await run_bitbucket_fetcher_call(
+        bitbucket.create_branch,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        name=name,
+        start_point=start_point,
+        message=message,
+    )
+    return json.dumps(branch.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_repositories"},
+    annotations={"title": "Delete Bitbucket Branch", "destructiveHint": True},
+)
+@check_write_access
+async def delete_branch(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "The branch name, short (e.g. 'feature/x') or fully qualified "
+                "('refs/heads/feature/x'). A short name is sent as "
+                "'refs/heads/<name>' so the delete cannot address a tag."
+            ),
+        ),
+    ],
+    end_point: Annotated[
+        str,
+        Field(
+            description=(
+                "The full 40-character commit id the branch is expected to "
+                "point at (its 'latest_commit' from list_branches). The server "
+                "refuses the delete with a 400 when the branch points elsewhere."
+            ),
+        ),
+    ],
+    dry_run: Annotated[
+        bool,
+        Field(
+            description=(
+                "When true the server performs a dry run and deletes nothing."
+            ),
+        ),
+    ] = False,
+) -> str:
+    """Delete a branch in a Bitbucket Data Center repository.
+
+    The delete is conditional on 'end_point': read the branch's current
+    'latest_commit' with list_branches first and pass it here. The server
+    refuses (400) when the branch has moved, so a push between the read and
+    the delete cannot be lost. HTTP 204 acknowledges the request even when
+    the branch did not exist. The result reports the request as accepted with
+    a note. List branches afterwards to verify the resulting state. The
+    default branch cannot be deleted (400). Requires REPO_WRITE on the
+    repository and branch permission on the name. The documented example
+    configuration grants only REPO_READ, so set
+    BITBUCKET_OAUTH_SCOPE=REPO_WRITE (or use a token issued with it). Blocked
+    when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        name: The branch name.
+        end_point: The full commit id the branch must currently point at.
+        dry_run: When true, validate only.
+
+    Returns:
+        JSON string with the fully-qualified 'branch' id that was sent, the
+        'end_point', 'dry_run', 'accepted' (true: the server answered 204),
+        and a 'note' on verifying the result.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    result = await run_bitbucket_fetcher_call(
+        bitbucket.delete_branch,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        name=name,
+        end_point=end_point,
+        dry_run=dry_run,
+    )
+    return json.dumps(result, indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_repositories"},
+    annotations={"title": "Create Bitbucket Tag"},
+)
+@check_write_access
+async def create_tag(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    name: Annotated[
+        str,
+        Field(
+            description=(
+                "The short tag name (e.g. 'v1.2.0'), without a 'refs/' prefix. "
+                "The server adds 'refs/tags/'. Must be a valid git ref name "
+                "(no '..', no leading '-', no whitespace, no trailing '.lock')."
+            ),
+        ),
+    ],
+    start_point: Annotated[
+        str,
+        Field(
+            description=(
+                "The commit id or ref the tag points at (e.g. 'main' or a "
+                "40-character commit id)."
+            ),
+        ),
+    ],
+    message: Annotated[
+        str | None,
+        Field(
+            description=(
+                "Optional annotation message (at most 32768 characters). When "
+                "given the tag is annotated. Otherwise it is lightweight."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """Create a tag in a Bitbucket Data Center repository.
+
+    One request. The start point is sent as given and resolved by the server.
+    The response is confirmed against the request: its display id must equal
+    'name' and its
+    latest commit must be a commit id (equal to 'start_point' when that was a
+    full commit id). Requires REPO_WRITE on the repository. The documented
+    example configuration grants only REPO_READ, so set
+    BITBUCKET_OAUTH_SCOPE=REPO_WRITE (or use a token issued with it). Blocked
+    when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        name: The short tag name.
+        start_point: The commit id or ref to tag.
+        message: Optional annotation message (makes an annotated tag).
+
+    Returns:
+        JSON string with the created tag: display id, ref id, latest commit,
+        type, and the annotated-tag 'hash' when present.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    tag = await run_bitbucket_fetcher_call(
+        bitbucket.create_tag,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        name=name,
+        start_point=start_point,
+        message=message,
+    )
+    return json.dumps(tag.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
     tags={"bitbucket", "read", "toolset:bitbucket_repositories"},
     annotations={"title": "List Bitbucket Commits", "readOnlyHint": True},
 )

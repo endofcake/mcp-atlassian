@@ -82,6 +82,30 @@ def mock_bitbucket_fetcher() -> MagicMock:
     mock_fetcher.list_branches.return_value = BitbucketBranchesPage(
         branches=[branch], is_last_page=True, truncated=False, next_page_start=None
     )
+    mock_fetcher.create_branch.return_value = _model_mock(
+        {
+            "display_id": "feature/x",
+            "id": "refs/heads/feature/x",
+            "latest_commit": FULL_SHA,
+            "type": "BRANCH",
+        }
+    )
+    mock_fetcher.delete_branch.return_value = {
+        "branch": "refs/heads/feature/x",
+        "end_point": FULL_SHA,
+        "dry_run": False,
+        "accepted": True,
+        "note": "verify with list_branches",
+    }
+    mock_fetcher.create_tag.return_value = _model_mock(
+        {
+            "display_id": "v1.2.0",
+            "id": "refs/tags/v1.2.0",
+            "latest_commit": FULL_SHA,
+            "type": "TAG",
+            "hash": "objsha",
+        }
+    )
     mock_fetcher.get_default_branch.return_value = _model_mock(
         {"id": "refs/heads/main", "display_id": "main", "type": "BRANCH"}
     )
@@ -290,8 +314,11 @@ def test_bitbucket_mcp(
         compare_changes,
         compare_commits,
         compare_diff,
+        create_branch,
         create_pull_request,
+        create_tag,
         decline_pull_request,
+        delete_branch,
         delete_pull_request_comment,
         edit_pull_request_comment,
         get_commit,
@@ -342,6 +369,9 @@ def test_bitbucket_mcp(
     bitbucket_sub_mcp.add_tool(list_tags)
     bitbucket_sub_mcp.add_tool(get_tag)
     bitbucket_sub_mcp.add_tool(get_default_branch)
+    bitbucket_sub_mcp.add_tool(create_branch)
+    bitbucket_sub_mcp.add_tool(delete_branch)
+    bitbucket_sub_mcp.add_tool(create_tag)
     bitbucket_sub_mcp.add_tool(list_commits)
     bitbucket_sub_mcp.add_tool(get_commit)
     bitbucket_sub_mcp.add_tool(get_commit_build_status)
@@ -2741,6 +2771,192 @@ class TestReopenPullRequest:
 
 
 @pytest.mark.anyio
+class TestCreateBranch:
+    """The create_branch write tool."""
+
+    async def test_success_returns_branch(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A successful create returns the confirmed branch entity."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_create_branch",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "name": "feature/x",
+                "start_point": "main",
+            },
+        )
+
+        mock_bitbucket_fetcher.create_branch.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            name="feature/x",
+            start_point="main",
+            message=None,
+        )
+        result = _result_json(response)
+        assert result["display_id"] == "feature/x"
+        assert result["latest_commit"] == FULL_SHA
+
+    async def test_message_forwarded(self, bitbucket_client, mock_bitbucket_fetcher):
+        """The optional message reaches the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_create_branch",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "name": "feature/x",
+                "start_point": "main",
+                "message": "why",
+            },
+        )
+        call_kwargs = mock_bitbucket_fetcher.create_branch.call_args.kwargs
+        assert call_kwargs["message"] == "why"
+
+    async def test_invalid_name_error_surfaces(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A fetcher ValueError for an invalid name surfaces as a tool error."""
+        mock_bitbucket_fetcher.create_branch.side_effect = ValueError(
+            "name 'a..b' is not a valid git branch name"
+        )
+        with pytest.raises(ToolError, match="not a valid git branch name"):
+            await bitbucket_client.call_tool(
+                "bitbucket_create_branch",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "name": "a..b",
+                    "start_point": "main",
+                },
+            )
+
+
+@pytest.mark.anyio
+class TestDeleteBranch:
+    """The delete_branch write tool."""
+
+    async def test_success_reports_deleted(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A successful delete (204, no body) echoes the sent branch and end point."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_delete_branch",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "name": "feature/x",
+                "end_point": FULL_SHA,
+            },
+        )
+
+        mock_bitbucket_fetcher.delete_branch.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            name="feature/x",
+            end_point=FULL_SHA,
+            dry_run=False,
+        )
+        assert _result_json(response) == {
+            "branch": "refs/heads/feature/x",
+            "end_point": FULL_SHA,
+            "dry_run": False,
+            "accepted": True,
+            "note": "verify with list_branches",
+        }
+
+    async def test_is_a_destructive_write_in_the_repositories_toolset(self):
+        """The tool is tagged as a write, annotated destructive, and in its toolset."""
+        from src.mcp_atlassian.servers.bitbucket import bitbucket_mcp
+
+        tool = await bitbucket_mcp.get_tool("delete_branch")
+        assert "toolset:bitbucket_repositories" in tool.tags
+        assert "write" in tool.tags
+        assert tool.annotations is not None
+        assert tool.annotations.destructiveHint is True
+
+    async def test_end_point_is_required(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """Omitting end_point is rejected by the schema before any fetcher call."""
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_delete_branch",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "name": "feature/x",
+                },
+            )
+        mock_bitbucket_fetcher.delete_branch.assert_not_called()
+
+    async def test_dry_run_forwarded(self, bitbucket_client, mock_bitbucket_fetcher):
+        """dry_run=True reaches the fetcher."""
+        await bitbucket_client.call_tool(
+            "bitbucket_delete_branch",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "name": "feature/x",
+                "end_point": FULL_SHA,
+                "dry_run": True,
+            },
+        )
+        call_kwargs = mock_bitbucket_fetcher.delete_branch.call_args.kwargs
+        assert call_kwargs["dry_run"] is True
+
+
+@pytest.mark.anyio
+class TestCreateTag:
+    """The create_tag write tool."""
+
+    async def test_success_returns_tag(self, bitbucket_client, mock_bitbucket_fetcher):
+        """A successful create returns the confirmed tag entity."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_create_tag",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "name": "v1.2.0",
+                "start_point": FULL_SHA,
+                "message": "Release 1.2.0",
+            },
+        )
+
+        mock_bitbucket_fetcher.create_tag.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            name="v1.2.0",
+            start_point=FULL_SHA,
+            message="Release 1.2.0",
+        )
+        result = _result_json(response)
+        assert result["display_id"] == "v1.2.0"
+        assert result["hash"] == "objsha"
+
+    async def test_confirmation_mismatch_surfaces(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """An unconfirmed 2xx body from the fetcher surfaces as a tool error."""
+        mock_bitbucket_fetcher.create_tag.side_effect = ValueError(
+            "Bitbucket returned an unconfirmed tag body; expected 'displayId' "
+            "'v1.2.0' but got 'v9'. The write may have been applied but was "
+            "not confirmed."
+        )
+        with pytest.raises(ToolError, match="not confirmed"):
+            await bitbucket_client.call_tool(
+                "bitbucket_create_tag",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "name": "v1.2.0",
+                    "start_point": "main",
+                },
+            )
+
+
+@pytest.mark.anyio
 class TestReadOnlyMode:
     """All write tools are blocked before any fetcher call in read-only mode.
 
@@ -2935,6 +3151,60 @@ class TestReadOnlyMode:
                 )
         fetcher_dependency.assert_not_called()
 
+    async def test_create_branch_blocked(self):
+        from src.mcp_atlassian.servers.bitbucket import create_branch
+
+        fetcher_dependency = AsyncMock()
+        with patch(
+            "src.mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            fetcher_dependency,
+        ):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await create_branch(
+                    _read_only_context(),
+                    project_key="PROJ",
+                    repository_slug="my-repo",
+                    name="feature/x",
+                    start_point="main",
+                )
+        fetcher_dependency.assert_not_called()
+
+    async def test_delete_branch_blocked(self):
+        from src.mcp_atlassian.servers.bitbucket import delete_branch
+
+        fetcher_dependency = AsyncMock()
+        with patch(
+            "src.mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            fetcher_dependency,
+        ):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await delete_branch(
+                    _read_only_context(),
+                    project_key="PROJ",
+                    repository_slug="my-repo",
+                    name="feature/x",
+                    end_point=FULL_SHA,
+                )
+        fetcher_dependency.assert_not_called()
+
+    async def test_create_tag_blocked(self):
+        from src.mcp_atlassian.servers.bitbucket import create_tag
+
+        fetcher_dependency = AsyncMock()
+        with patch(
+            "src.mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            fetcher_dependency,
+        ):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await create_tag(
+                    _read_only_context(),
+                    project_key="PROJ",
+                    repository_slug="my-repo",
+                    name="v1.2.0",
+                    start_point="main",
+                )
+        fetcher_dependency.assert_not_called()
+
 
 class TestFetcherOffload:
     """Every tool runs its fetcher call in a worker thread, off the event loop.
@@ -2986,7 +3256,7 @@ class TestFetcherOffload:
         tools = self._tool_functions()
         # The registered tool count is part of the contract: a new tool must
         # be routed through the helper and this pin bumped in the same change.
-        assert len(tools) == 33
+        assert len(tools) == 36
 
         for name, function in tools.items():
             fetcher_names = self._fetcher_names(function)

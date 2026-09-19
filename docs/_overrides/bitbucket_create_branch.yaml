@@ -1,0 +1,13 @@
+example: |
+  {"project_key": "PROJ", "repository_slug": "my-repo", "name": "feature/login", "start_point": "main"}
+notes: |
+  Requires `REPO_WRITE` on the repository. The example configuration in
+  [Authentication](/docs/authentication) sets `BITBUCKET_OAUTH_SCOPE=REPO_READ`,
+  which is enough for every read tool but not for this one. Set
+  `BITBUCKET_OAUTH_SCOPE=REPO_WRITE` (or use a token issued with it). The scope
+  caps what the token may do. Bitbucket still enforces the user's own repository
+  and branch permissions. With a forwarded bearer token the scope is fixed when
+  that token is issued.
+  The server prepends `refs/heads/` to the short name. The response is confirmed
+  against the request (display id and a hexadecimal latest commit). A mismatch
+  is reported as an unconfirmed write.

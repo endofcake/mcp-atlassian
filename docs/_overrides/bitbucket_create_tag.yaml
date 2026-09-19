@@ -1,0 +1,12 @@
+example: |
+  {"project_key": "PROJ", "repository_slug": "my-repo", "name": "v1.2.0", "start_point": "8d51122def5632836d1cb1026e879069e10a1e13", "message": "Release 1.2.0"}
+notes: |
+  Requires `REPO_WRITE` on the repository. The example configuration in
+  [Authentication](/docs/authentication) sets `BITBUCKET_OAUTH_SCOPE=REPO_READ`.
+  Set `BITBUCKET_OAUTH_SCOPE=REPO_WRITE` (or use a token issued with it). The
+  scope caps what the token may do. Bitbucket still enforces the user's own
+  repository and branch permissions. With a forwarded bearer token the scope is
+  fixed when that token is issued.
+  A `message` creates an annotated tag (the response carries its `hash`).
+  Without one the tag is lightweight. The server prepends `refs/tags/` to the
+  short name, and the response is confirmed against the request.

@@ -10,7 +10,9 @@ from mcp_atlassian.bitbucket.refs import MAX_REFS_LIMIT
 from mcp_atlassian.exceptions import MCPAtlassianAuthenticationError
 from mcp_atlassian.models.bitbucket import BitbucketBranch, BitbucketTag
 from mcp_atlassian.utils.oauth import BYOAccessTokenOAuthConfig
-from tests.unit.bitbucket.mock_responses import attach_json
+from tests.unit.bitbucket.mock_responses import attach_body, attach_json
+
+FULL_SHA = "8d51122def5632836d1cb1026e879069e10a1e13"
 
 
 def _branch(display_id, latest_commit="abc123", is_default=False):
@@ -58,14 +60,23 @@ def _object_response(body):
     return response
 
 
-def _http_error_response(status: int) -> MagicMock:
+def _http_error_response(status: int, body=None) -> MagicMock:
     """Build a mock response whose raise_for_status raises an HTTPError."""
     response = MagicMock()
     response.status_code = status
     error = HTTPError(f"{status} error")
     error.response = response
     response.raise_for_status.side_effect = error
+    if body is not None:
+        attach_json(response, body)
     return response
+
+
+def _no_content_response() -> MagicMock:
+    """Build a mock 204 response with an empty body."""
+    response = MagicMock()
+    response.raise_for_status.return_value = None
+    return attach_body(response, b"")
 
 
 def _fetcher() -> BitbucketFetcher:
@@ -512,3 +523,369 @@ class TestRefsErrors:
         ):
             with pytest.raises(ValueError, match="HTTP 503"):
                 fetcher.list_tags("PROJ", "my-repo")
+
+
+class TestCreateBranch:
+    """create_branch: request body, ref-name validation, and confirmation."""
+
+    def test_posts_short_name_and_start_point(self):
+        """The body carries the short name and start point; message is omitted."""
+        fetcher = _fetcher()
+        body = _branch("feature/x", latest_commit=FULL_SHA)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ) as mock_post:
+            branch = fetcher.create_branch("PROJ", "my-repo", "feature/x", "main")
+
+        assert mock_post.call_args[0][0].endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/branches"
+        )
+        assert mock_post.call_args[1]["json"] == {
+            "name": "feature/x",
+            "startPoint": "main",
+        }
+        assert isinstance(branch, BitbucketBranch)
+        assert branch.display_id == "feature/x"
+        assert branch.id == "refs/heads/feature/x"
+        assert branch.latest_commit == FULL_SHA
+
+    def test_message_is_sent_when_given(self):
+        """A non-blank message is forwarded; a blank one is dropped."""
+        fetcher = _fetcher()
+        body = _branch("topic", latest_commit=FULL_SHA)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ) as mock_post:
+            fetcher.create_branch("PROJ", "my-repo", "topic", "main", message="why")
+            fetcher.create_branch("PROJ", "my-repo", "topic", "main", message="  ")
+
+        first, second = (call[1]["json"] for call in mock_post.call_args_list)
+        assert first["message"] == "why"
+        assert "message" not in second
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "",
+            "   ",
+            "refs/heads/topic",
+            "a..b",
+            "-topic",
+            "topic.lock",
+            "dir/topic.lock/x",
+            "has space",
+            "bad~1",
+            "bad^2",
+            "bad:x",
+            "bad?",
+            "bad*",
+            "bad[",
+            "bad\\x",
+            "bad@{1}",
+            "/leading",
+            "trailing/",
+            "double//slash",
+            "ctrl\x01",
+            "del\x7f",
+            "@",
+            ".hidden",
+            "dir/.hidden",
+            "trailing.",
+        ],
+    )
+    def test_invalid_name_rejected_before_request(self, name):
+        """An invalid git ref name raises before any request is issued."""
+        fetcher = _fetcher()
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError):
+                fetcher.create_branch("PROJ", "my-repo", name, "main")
+        mock_post.assert_not_called()
+
+    def test_non_ascii_name_is_sent_verbatim(self):
+        """Non-ASCII letters are valid in git ref names and pass through."""
+        fetcher = _fetcher()
+        body = _branch("ветка/ünïcödé", latest_commit=FULL_SHA)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ) as mock_post:
+            fetcher.create_branch("PROJ", "my-repo", "ветка/ünïcödé", "main")
+        assert mock_post.call_args[1]["json"]["name"] == "ветка/ünïcödé"
+
+    def test_surrounding_whitespace_is_stripped_before_send(self):
+        """A padded name is stripped, sent, and confirmed against the stripped value."""
+        fetcher = _fetcher()
+        body = _branch("topic", latest_commit=FULL_SHA)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ) as mock_post:
+            branch = fetcher.create_branch("PROJ", "my-repo", "  topic  ", "main")
+        assert mock_post.call_args[1]["json"]["name"] == "topic"
+        assert branch.display_id == "topic"
+
+    def test_abbreviated_commit_start_point_is_sent_as_a_ref(self):
+        """A short hex start point is forwarded as given and confirmed as hex only."""
+        fetcher = _fetcher()
+        body = _branch("topic", latest_commit=FULL_SHA)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ) as mock_post:
+            fetcher.create_branch("PROJ", "my-repo", "topic", FULL_SHA[:7])
+        assert mock_post.call_args[1]["json"]["startPoint"] == FULL_SHA[:7]
+
+    def test_oversized_message_rejected_before_request(self):
+        """A message over the cap raises before any request is issued."""
+        fetcher = _fetcher()
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="message must be at most"):
+                fetcher.create_branch(
+                    "PROJ", "my-repo", "topic", "main", message="x" * 32769
+                )
+        mock_post.assert_not_called()
+
+    def test_confirmation_error_caps_upstream_value(self):
+        """An oversized upstream displayId is truncated in the error message."""
+        fetcher = _fetcher()
+        body = _branch("z" * 500, latest_commit=FULL_SHA)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ):
+            with pytest.raises(ValueError) as excinfo:
+                fetcher.create_branch("PROJ", "my-repo", "topic", "main")
+        assert "..." in str(excinfo.value)
+        assert len(str(excinfo.value)) < 300
+
+    def test_blank_start_point_rejected_before_request(self):
+        """A blank start point raises before any request is issued."""
+        fetcher = _fetcher()
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError, match="start_point"):
+                fetcher.create_branch("PROJ", "my-repo", "topic", "  ")
+        mock_post.assert_not_called()
+
+    def test_display_id_mismatch_raises(self):
+        """A mismatched branch acknowledgement raises an error."""
+        fetcher = _fetcher()
+        body = _branch("other", latest_commit=FULL_SHA)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ):
+            with pytest.raises(ValueError, match="not confirmed") as excinfo:
+                fetcher.create_branch("PROJ", "my-repo", "topic", "main")
+        assert "'displayId' 'topic'" in str(excinfo.value)
+
+    @pytest.mark.parametrize("latest_commit", [None, "", "not-hex", 42])
+    def test_non_hex_latest_commit_raises(self, latest_commit):
+        """A 2xx body without a hexadecimal latestCommit is unconfirmed."""
+        fetcher = _fetcher()
+        body = _branch("topic")
+        body["latestCommit"] = latest_commit
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ):
+            with pytest.raises(ValueError, match="not confirmed"):
+                fetcher.create_branch("PROJ", "my-repo", "topic", "main")
+
+    def test_full_sha_start_point_must_match_latest_commit(self):
+        """When the start point is a full commit id, latestCommit must equal it."""
+        fetcher = _fetcher()
+        body = _branch("topic", latest_commit="a" * 40)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ):
+            with pytest.raises(ValueError, match="not confirmed"):
+                fetcher.create_branch("PROJ", "my-repo", "topic", FULL_SHA)
+
+    def test_full_sha_start_point_matches_case_insensitively(self):
+        """A matching latestCommit in a different case is confirmed."""
+        fetcher = _fetcher()
+        body = _branch("topic", latest_commit=FULL_SHA.upper())
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ):
+            branch = fetcher.create_branch("PROJ", "my-repo", "topic", FULL_SHA)
+        assert branch.latest_commit == FULL_SHA.upper()
+
+    def test_non_object_body_raises(self):
+        """A 2xx body that is not an object is reported as unexpected."""
+        fetcher = _fetcher()
+        with patch.object(fetcher._session, "post", return_value=_object_response([1])):
+            with pytest.raises(ValueError, match="unexpected response shape"):
+                fetcher.create_branch("PROJ", "my-repo", "topic", "main")
+
+    def test_conflict_surfaces_instance_message(self):
+        """A 409 (name already exists) surfaces the instance's own message."""
+        fetcher = _fetcher()
+        body = {"errors": [{"message": "A branch named 'topic' already exists."}]}
+        with patch.object(
+            fetcher._session, "post", return_value=_http_error_response(409, body)
+        ):
+            with pytest.raises(ValueError, match="already exists"):
+                fetcher.create_branch("PROJ", "my-repo", "topic", "main")
+
+
+class TestDeleteBranch:
+    """delete_branch: the branch-utils body-addressed delete."""
+
+    def test_sends_json_body_under_branch_utils(self):
+        """A short name is qualified and sent with endPoint and dryRun."""
+        fetcher = _fetcher()
+        with patch.object(
+            fetcher._session, "delete", return_value=_no_content_response()
+        ) as mock_delete:
+            result = fetcher.delete_branch("PROJ", "my-repo", "feature/x", FULL_SHA)
+
+        assert mock_delete.call_args[0][0].endswith(
+            "/rest/branch-utils/1.0/projects/PROJ/repos/my-repo/branches"
+        )
+        assert mock_delete.call_args[1]["json"] == {
+            "name": "refs/heads/feature/x",
+            "endPoint": FULL_SHA,
+            "dryRun": False,
+        }
+        assert result["branch"] == "refs/heads/feature/x"
+        assert result["end_point"] == FULL_SHA
+        assert result["dry_run"] is False
+        assert result["accepted"] is True
+        assert "list_branches" in result["note"]
+
+    def test_qualified_name_sent_as_given(self):
+        """A refs/heads/... id is not double-prefixed."""
+        fetcher = _fetcher()
+        with patch.object(
+            fetcher._session, "delete", return_value=_no_content_response()
+        ) as mock_delete:
+            fetcher.delete_branch("PROJ", "my-repo", "refs/heads/topic", FULL_SHA)
+
+        assert mock_delete.call_args[1]["json"]["name"] == "refs/heads/topic"
+
+    def test_dry_run_forwarded_and_reported(self):
+        """dry_run=True is sent as a JSON boolean and reported as not deleted."""
+        fetcher = _fetcher()
+        with patch.object(
+            fetcher._session, "delete", return_value=_no_content_response()
+        ) as mock_delete:
+            result = fetcher.delete_branch(
+                "PROJ", "my-repo", "topic", FULL_SHA, dry_run=True
+            )
+
+        assert mock_delete.call_args[1]["json"]["dryRun"] is True
+        assert result["dry_run"] is True
+        assert result["accepted"] is True
+        assert result["note"] == "Dry run: nothing was deleted."
+
+    @pytest.mark.parametrize(
+        "end_point", ["", "main", "abc123", FULL_SHA[:39], FULL_SHA + "0", "g" * 40]
+    )
+    def test_end_point_must_be_full_commit_id(self, end_point):
+        """Anything but a 40-character hexadecimal id raises before any request."""
+        fetcher = _fetcher()
+        with patch.object(fetcher._session, "delete") as mock_delete:
+            with pytest.raises(ValueError, match="end_point"):
+                fetcher.delete_branch("PROJ", "my-repo", "topic", end_point)
+        mock_delete.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "name", ["", "refs/tags/v1", "refs/heads/", "a..b", "-x", "x.lock", "a b"]
+    )
+    def test_invalid_name_rejected_before_request(self, name):
+        """A non-branch or invalid ref name raises before any request."""
+        fetcher = _fetcher()
+        with patch.object(fetcher._session, "delete") as mock_delete:
+            with pytest.raises(ValueError):
+                fetcher.delete_branch("PROJ", "my-repo", name, FULL_SHA)
+        mock_delete.assert_not_called()
+
+    def test_end_point_mismatch_surfaces_instance_message(self):
+        """The server's 400 for a branch pointing elsewhere is reported."""
+        fetcher = _fetcher()
+        body = {"errors": [{"message": "Branch 'topic' points to a different commit"}]}
+        with patch.object(
+            fetcher._session, "delete", return_value=_http_error_response(400, body)
+        ):
+            with pytest.raises(ValueError, match="different commit"):
+                fetcher.delete_branch("PROJ", "my-repo", "topic", FULL_SHA)
+
+    def test_body_on_2xx_is_unconfirmed(self):
+        """A 2xx carrying a body matches no documented success and raises."""
+        fetcher = _fetcher()
+        with patch.object(
+            fetcher._session, "delete", return_value=_object_response({"x": 1})
+        ):
+            with pytest.raises(ValueError, match="not confirmed"):
+                fetcher.delete_branch("PROJ", "my-repo", "topic", FULL_SHA)
+
+    def test_auth_status_raises_authentication_error(self):
+        """A 401 (missing REPO_WRITE or branch permission) is the auth error."""
+        fetcher = _fetcher()
+        with patch.object(
+            fetcher._session, "delete", return_value=_http_error_response(401)
+        ):
+            with pytest.raises(MCPAtlassianAuthenticationError, match="401"):
+                fetcher.delete_branch("PROJ", "my-repo", "topic", FULL_SHA)
+
+
+class TestCreateTag:
+    """create_tag: request body, ref-name validation, and confirmation."""
+
+    def test_posts_short_name_start_point_and_message(self):
+        """The body carries the short name, start point, and message."""
+        fetcher = _fetcher()
+        body = _tag("v1.2.0", latest_commit=FULL_SHA, hash_="objsha")
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ) as mock_post:
+            tag = fetcher.create_tag(
+                "PROJ", "my-repo", "v1.2.0", FULL_SHA, message="Release 1.2.0"
+            )
+
+        assert mock_post.call_args[0][0].endswith(
+            "/rest/api/1.0/projects/PROJ/repos/my-repo/tags"
+        )
+        assert mock_post.call_args[1]["json"] == {
+            "name": "v1.2.0",
+            "startPoint": FULL_SHA,
+            "message": "Release 1.2.0",
+        }
+        assert isinstance(tag, BitbucketTag)
+        assert tag.display_id == "v1.2.0"
+        assert tag.hash == "objsha"
+
+    def test_lightweight_tag_omits_message(self):
+        """Without a message the body carries only name and startPoint."""
+        fetcher = _fetcher()
+        body = _tag("v1", latest_commit=FULL_SHA)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ) as mock_post:
+            fetcher.create_tag("PROJ", "my-repo", "v1", "main")
+
+        assert mock_post.call_args[1]["json"] == {"name": "v1", "startPoint": "main"}
+
+    @pytest.mark.parametrize("name", ["", "refs/tags/v1", "v..1", "-v1", "v1.lock"])
+    def test_invalid_name_rejected_before_request(self, name):
+        """An invalid git ref name raises before any request is issued."""
+        fetcher = _fetcher()
+        with patch.object(fetcher._session, "post") as mock_post:
+            with pytest.raises(ValueError):
+                fetcher.create_tag("PROJ", "my-repo", name, "main")
+        mock_post.assert_not_called()
+
+    def test_display_id_mismatch_raises(self):
+        """A mismatched tag acknowledgement raises an error."""
+        fetcher = _fetcher()
+        body = _tag("v9", latest_commit=FULL_SHA)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ):
+            with pytest.raises(ValueError, match="not confirmed"):
+                fetcher.create_tag("PROJ", "my-repo", "v1", "main")
+
+    def test_full_sha_start_point_must_match_latest_commit(self):
+        """When the start point is a full commit id, latestCommit must equal it."""
+        fetcher = _fetcher()
+        body = _tag("v1", latest_commit="b" * 40)
+        with patch.object(
+            fetcher._session, "post", return_value=_object_response(body)
+        ):
+            with pytest.raises(ValueError, match="not confirmed"):
+                fetcher.create_tag("PROJ", "my-repo", "v1", FULL_SHA)
