@@ -920,22 +920,37 @@ class BitbucketClient:
         """
         return self._request("PUT", path, json_body=json_body)
 
-    def _delete(self, path: str, *, params: dict[str, Any] | None = None) -> None:
-        """Issue a DELETE against the Bitbucket DC core REST API.
+    def _delete(
+        self,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json_body: Any | None = None,
+        base_path: str = API_BASE_PATH,
+    ) -> None:
+        """Issue a DELETE against a Bitbucket DC REST module.
 
         Thin wrapper over :meth:`_request`; see it for the shared error taxonomy.
         A successful DELETE returns ``204`` with no body, so the empty response
         is tolerated (``allow_empty``) and ``None`` is returned rather than
         raising the non-JSON-body path. A 2xx that carries a JSON body other
         than an empty object or list matches no documented success shape and
-        is reported as an unconfirmed delete. On a 400/409 the raised ValueError carries the
-        instance's own ``errors[].message`` text, so a rejection (e.g. a stale
-        ``version`` or a comment with replies) is actionable.
+        is reported as an unconfirmed delete. On a 400/409 the raised ValueError
+        carries the instance's own ``errors[].message`` text, so a rejection
+        (e.g. a stale ``version`` or a comment with replies) is actionable.
+
+        Most deletes address the resource by path and carry at most a query
+        parameter. The branch-utils module takes the ref to delete in a JSON
+        body, which ``json_body`` attaches when given.
 
         Args:
-            path: API path relative to ``/rest/api/1.0``.
+            path: API path relative to ``base_path``.
             params: Optional query parameters (e.g. the optimistic-lock
                 ``version``).
+            json_body: Optional JSON request body. When None no body is
+                attached, so the existing path-addressed deletes are unchanged.
+            base_path: The REST module prefix, the core API unless given (see
+                :meth:`_request`).
 
         Returns:
             None, since a successful delete has no body to return.
@@ -943,10 +958,16 @@ class BitbucketClient:
         Raises:
             ValueError: If the 2xx response carries a JSON body other than an
                 empty object or list (the delete may have been applied but was
-                not confirmed), or the
-                request fails (see :meth:`_request`).
+                not confirmed), or the request fails (see :meth:`_request`).
         """
-        body = self._request("DELETE", path, params=params, allow_empty=True)
+        body = self._request(
+            "DELETE",
+            path,
+            params=params,
+            json_body=json_body,
+            allow_empty=True,
+            base_path=base_path,
+        )
         if body:
             raise ValueError(
                 f"Bitbucket returned a body for DELETE {path}; expected an "

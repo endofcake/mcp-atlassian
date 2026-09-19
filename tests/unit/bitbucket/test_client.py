@@ -1055,6 +1055,37 @@ class TestDeleteVerb:
         )
         assert mock_delete.call_args[1]["params"] == {"version": 2}
 
+    def test_no_json_body_is_attached_by_default(self):
+        """Without json_body the DELETE carries no ``json=`` keyword at all."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "delete", return_value=_no_content_response()
+        ) as mock_delete:
+            fetcher._delete("/x", params={"version": 1})
+
+        assert "json" not in mock_delete.call_args[1]
+
+    def test_sends_json_body_and_module_base_path(self):
+        """A body-addressed delete carries the JSON body under the given module."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"name": "refs/heads/topic", "endPoint": "a" * 40, "dryRun": False}
+        with patch.object(
+            fetcher._session, "delete", return_value=_no_content_response()
+        ) as mock_delete:
+            result = fetcher._delete(
+                "/projects/PROJ/repos/r/branches",
+                json_body=body,
+                base_path="/rest/branch-utils/1.0",
+            )
+
+        assert result is None
+        called_url = mock_delete.call_args[0][0]
+        assert called_url.endswith(
+            "/rest/branch-utils/1.0/projects/PROJ/repos/r/branches"
+        )
+        assert mock_delete.call_args[1]["json"] == body
+        assert mock_delete.call_args[1]["params"] is None
+
     def test_empty_204_body_returns_none_without_json_error(self):
         """A 204 with no body returns None without the non-JSON-body ValueError."""
         fetcher = BitbucketFetcher(config=_byo_config())
