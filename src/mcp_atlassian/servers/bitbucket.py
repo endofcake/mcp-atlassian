@@ -2767,6 +2767,151 @@ async def create_pull_request(
 @bitbucket_mcp.tool(
     tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
     annotations={
+        "title": "Update Bitbucket Pull Request",
+        "destructiveHint": True,
+        "idempotentHint": False,
+    },
+)
+@check_write_access
+async def update_pull_request(
+    ctx: Context,
+    project_key: Annotated[
+        str, Field(description="The Bitbucket project key (e.g. 'PROJ').")
+    ],
+    repository_slug: Annotated[
+        str, Field(description="The repository slug (e.g. 'my-repo').")
+    ],
+    pull_request_id: Annotated[
+        int,
+        Field(description="The pull-request id (a positive integer).", ge=1),
+    ],
+    version: Annotated[
+        int,
+        Field(
+            description=(
+                "The pull request's current version, read from "
+                "get_pull_request immediately before updating. A 409 means "
+                "the pull request changed since you read it. Re-read and retry."
+            ),
+            ge=0,
+        ),
+    ],
+    title: Annotated[
+        str | None,
+        Field(
+            description=(
+                "A new title: one non-blank line of at most "
+                f"{MAX_PR_TITLE_CHARS} characters. Omit to keep the current one."
+            ),
+            default=None,
+        ),
+    ] = None,
+    description: Annotated[
+        str | None,
+        Field(
+            description=(
+                "A new description (Markdown) of at most "
+                f"{MAX_PR_DESCRIPTION_CHARS} characters; it replaces the whole "
+                "text, and an empty string clears it. Omit to keep the current "
+                "one."
+            ),
+            default=None,
+        ),
+    ] = None,
+    draft: Annotated[
+        bool | None,
+        Field(
+            description=(
+                "Set (true) or clear (false) the draft flag. Omit to keep the "
+                "current one. Needs a Data Center version with draft pull "
+                "requests. The flag is confirmed against the response."
+            ),
+            default=None,
+        ),
+    ] = None,
+    to_ref: Annotated[
+        str | None,
+        Field(
+            description=(
+                "A new target branch. A bare name ('main') is sent as "
+                "'refs/heads/main'. A 'refs/heads/...' value is sent as given. "
+                "Tags are not valid targets. Omit to keep the current one."
+            ),
+            default=None,
+        ),
+    ] = None,
+    reviewers: Annotated[
+        list[str] | None,
+        Field(
+            description=(
+                "The complete new reviewer list as user names (the 'name' "
+                "field of get_current_user). It replaces the current list, so "
+                "include the reviewers to keep. An empty list removes every "
+                "reviewer. Omit to keep the current list. A name the server "
+                "cannot resolve fails the whole request with a 409."
+            ),
+            default=None,
+        ),
+    ] = None,
+) -> str:
+    """Update pull-request metadata (needs REPO_WRITE, or REPO_READ as the author).
+
+    Changes the title, description, draft flag, target branch, or reviewers
+    of an existing pull request in one optimistic-locked request: 'version'
+    must be the pull request's current version from get_pull_request, and
+    at least one field to change must be given. Omitted fields keep their
+    current value. An empty description clears it. 'reviewers' replaces the
+    whole list: pass every reviewer to keep, or an empty list to remove them
+    all. The author and the participants cannot be changed.
+
+    The documented OAuth setup grants REPO_READ, which is enough only for
+    the pull request's author. Anyone else needs REPO_WRITE, a scope that
+    applies to every token the server issues. A 409 carries the server's
+    reason: a stale version, a reviewer that could not be added, or a
+    target-branch conflict (an open pull request to that branch already
+    exists, it equals the source, or it already contains every source
+    commit). An unconfirmed-write error means the server replied 200 with a
+    body that differs from the request. Read the pull request again before
+    retrying. Blocked when the server runs with READ_ONLY_MODE.
+
+    Args:
+        ctx: The FastMCP context.
+        project_key: The project key.
+        repository_slug: The repository slug.
+        pull_request_id: The pull-request id.
+        version: The pull request's current version (optimistic-lock token).
+        title: Optional new title.
+        description: Optional new description (Markdown).
+        draft: Optional new draft flag.
+        to_ref: Optional new target branch.
+        reviewers: Optional complete reviewer list; empty to clear.
+
+    Returns:
+        JSON string with the updated pull request: its 'id', new 'version',
+        'title', 'state', refs, author, and reviewers.
+
+    Raises:
+        ValueError: If in read-only mode.
+    """
+    bitbucket = await get_bitbucket_fetcher(ctx)
+    pull_request = await run_bitbucket_fetcher_call(
+        bitbucket.update_pull_request,
+        project_key=project_key,
+        repository_slug=repository_slug,
+        pull_request_id=pull_request_id,
+        version=version,
+        title=title,
+        description=description,
+        draft=draft,
+        to_ref=to_ref,
+        reviewers=reviewers,
+    )
+    return json.dumps(pull_request.to_simplified_dict(), indent=2, ensure_ascii=False)
+
+
+@bitbucket_mcp.tool(
+    tags={"bitbucket", "write", "toolset:bitbucket_pull_requests"},
+    annotations={
         "title": "Add Bitbucket Pull Request Comment",
         "destructiveHint": False,
     },

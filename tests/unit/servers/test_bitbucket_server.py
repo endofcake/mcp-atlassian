@@ -252,6 +252,16 @@ def mock_bitbucket_fetcher() -> MagicMock:
             "version": 0,
         }
     )
+    mock_fetcher.update_pull_request.return_value = _model_mock(
+        {
+            "id": 42,
+            "title": "Renamed",
+            "state": "OPEN",
+            "from_ref": {"id": "refs/heads/feature/x"},
+            "to_ref": {"id": "refs/heads/main"},
+            "version": 4,
+        }
+    )
     mock_fetcher.add_comment.return_value = _model_mock(
         {"id": 101, "version": 0, "text": "hello"}
     )
@@ -345,6 +355,7 @@ def test_bitbucket_mcp(
         resolve_pull_request_comment,
         resolve_pull_request_task,
         set_pull_request_review_status,
+        update_pull_request,
     )
 
     @asynccontextmanager
@@ -389,6 +400,7 @@ def test_bitbucket_mcp(
     bitbucket_sub_mcp.add_tool(get_pull_request_activities)
     bitbucket_sub_mcp.add_tool(get_pull_request_comments)
     bitbucket_sub_mcp.add_tool(create_pull_request)
+    bitbucket_sub_mcp.add_tool(update_pull_request)
     bitbucket_sub_mcp.add_tool(add_pull_request_comment)
     bitbucket_sub_mcp.add_tool(set_pull_request_review_status)
     bitbucket_sub_mcp.add_tool(edit_pull_request_comment)
@@ -2528,6 +2540,111 @@ class TestDeleteComment:
 
 
 @pytest.mark.anyio
+class TestUpdatePullRequest:
+    """The update_pull_request write tool."""
+
+    async def test_success_forwards_only_the_given_fields(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """Omitted fields reach the fetcher as None, the rest verbatim."""
+        response = await bitbucket_client.call_tool(
+            "bitbucket_update_pull_request",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 42,
+                "version": 3,
+                "title": "Renamed",
+            },
+        )
+
+        mock_bitbucket_fetcher.update_pull_request.assert_called_once_with(
+            project_key="PROJ",
+            repository_slug="my-repo",
+            pull_request_id=42,
+            version=3,
+            title="Renamed",
+            description=None,
+            draft=None,
+            to_ref=None,
+            reviewers=None,
+        )
+        result = _result_json(response)
+        assert result["id"] == 42
+        assert result["title"] == "Renamed"
+        assert result["version"] == 4
+
+    async def test_all_optional_parameters_are_forwarded(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """An empty reviewer list is forwarded as [] (clear), not dropped."""
+        await bitbucket_client.call_tool(
+            "bitbucket_update_pull_request",
+            {
+                "project_key": "PROJ",
+                "repository_slug": "my-repo",
+                "pull_request_id": 42,
+                "version": 3,
+                "description": "body",
+                "draft": False,
+                "to_ref": "develop",
+                "reviewers": [],
+            },
+        )
+        call_kwargs = mock_bitbucket_fetcher.update_pull_request.call_args[1]
+        assert call_kwargs["title"] is None
+        assert call_kwargs["description"] == "body"
+        assert call_kwargs["draft"] is False
+        assert call_kwargs["to_ref"] == "develop"
+        assert call_kwargs["reviewers"] == []
+
+    async def test_version_is_required(self, bitbucket_client, mock_bitbucket_fetcher):
+        """The tool does not fetch the version itself, so a call without it fails."""
+        with pytest.raises(ToolError):
+            await bitbucket_client.call_tool(
+                "bitbucket_update_pull_request",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 42,
+                    "title": "Renamed",
+                },
+            )
+        mock_bitbucket_fetcher.update_pull_request.assert_not_called()
+
+    async def test_is_flagged_destructive(self):
+        """Replacing the description or reviewers loses data, so the tool is
+        flagged destructive.
+        """
+        from src.mcp_atlassian.servers.bitbucket import bitbucket_mcp
+
+        tool = await bitbucket_mcp.get_tool("update_pull_request")
+        assert tool.annotations is not None
+        assert tool.annotations.destructiveHint is True
+        assert tool.annotations.idempotentHint is False
+
+    async def test_value_error_preserved(
+        self, bitbucket_client, mock_bitbucket_fetcher
+    ):
+        """A stale-version 409 or an unconfirmed write reaches the caller."""
+        mock_bitbucket_fetcher.update_pull_request.side_effect = ValueError(
+            "Bitbucket request failed (HTTP 409): You are attempting to modify a "
+            "pull request based on out-of-date information."
+        )
+        with pytest.raises(ToolError, match="HTTP 409.*out-of-date"):
+            await bitbucket_client.call_tool(
+                "bitbucket_update_pull_request",
+                {
+                    "project_key": "PROJ",
+                    "repository_slug": "my-repo",
+                    "pull_request_id": 42,
+                    "version": 1,
+                    "title": "Renamed",
+                },
+            )
+
+
+@pytest.mark.anyio
 class TestMergePullRequest:
     """The merge_pull_request write tool."""
 
@@ -2761,6 +2878,7 @@ class TestReopenPullRequest:
         from src.mcp_atlassian.servers.bitbucket import bitbucket_mcp
 
         for name in (
+            "update_pull_request",
             "merge_pull_request",
             "decline_pull_request",
             "reopen_pull_request",
@@ -3097,6 +3215,25 @@ class TestReadOnlyMode:
                 )
         fetcher_dependency.assert_not_called()
 
+    async def test_update_pull_request_blocked(self):
+        from src.mcp_atlassian.servers.bitbucket import update_pull_request
+
+        fetcher_dependency = AsyncMock()
+        with patch(
+            "src.mcp_atlassian.servers.bitbucket.get_bitbucket_fetcher",
+            fetcher_dependency,
+        ):
+            with pytest.raises(ToolError, match="read-only mode"):
+                await update_pull_request(
+                    _read_only_context(),
+                    project_key="PROJ",
+                    repository_slug="my-repo",
+                    pull_request_id=42,
+                    version=3,
+                    title="Renamed",
+                )
+        fetcher_dependency.assert_not_called()
+
     async def test_merge_pull_request_blocked(self):
         from src.mcp_atlassian.servers.bitbucket import merge_pull_request
 
@@ -3256,7 +3393,7 @@ class TestFetcherOffload:
         tools = self._tool_functions()
         # The registered tool count is part of the contract: a new tool must
         # be routed through the helper and this pin bumped in the same change.
-        assert len(tools) == 36
+        assert len(tools) == 37
 
         for name, function in tools.items():
             fetcher_names = self._fetcher_names(function)

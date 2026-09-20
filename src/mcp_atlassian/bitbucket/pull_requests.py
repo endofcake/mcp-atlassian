@@ -1478,18 +1478,25 @@ class PullRequestsMixin(BitbucketClient):
         from_ref_id: str | None = None,
         to_ref_id: str | None = None,
         draft: bool | None = None,
+        description: str | None = None,
+        reviewers_cleared: bool = False,
+        sent_version: int | None = None,
     ) -> BitbucketPullRequest:
         """Parse a 2xx pull-request write body, requiring its acknowledgements.
 
         A pull-request write is confirmed only by a ``RestPullRequest`` body
         carrying a positive integer ``id`` and an integer ``version``, and by
         each field that was sent being echoed back: the ``title``, the
-        fully-qualified ``fromRef.id`` and ``toRef.id``, and the ``draft``
-        flag. A server that ignores a field (a version without draft pull
-        requests) therefore reports an unconfirmed write rather than a
-        silently different one. Any other 2xx body is reported as an error
-        rather than a pull request with a made-up id or an unverified target,
-        following :meth:`_confirmed_comment`.
+        fully-qualified ``fromRef.id`` and ``toRef.id``, the ``draft`` flag,
+        the ``description`` (a cleared description may come back absent),
+        and an empty ``reviewers`` list when the request cleared the
+        reviewers. A non-empty reviewer list is not compared, because
+        Bitbucket drops the author from it without an error. An update also
+        expects ``version`` to be the one sent plus one, since each accepted
+        update bumps it once. A missing or mismatched field, including one a
+        server ignores (a version without draft pull requests), raises an
+        unconfirmed-write error. The write may already have been applied.
+        This follows :meth:`_confirmed_comment`.
 
         Args:
             data: The parsed JSON body of the write.
@@ -1500,6 +1507,10 @@ class PullRequestsMixin(BitbucketClient):
             to_ref_id: The qualified target ref sent, when the request carried
                 one.
             draft: The draft flag sent, when the request carried one.
+            description: The description sent, when the request carried one.
+            reviewers_cleared: Whether the request sent an empty reviewer
+                list, which the body must echo as no reviewers.
+            sent_version: For an update, the optimistic-lock version sent.
 
         Returns:
             The confirmed
@@ -1508,8 +1519,9 @@ class PullRequestsMixin(BitbucketClient):
         Raises:
             ValueError: If the body is not an object, lacks a positive integer
                 ``id`` or an integer ``version``, or disagrees with the request
-                on the title, a ref, or the draft flag. The write may have
-                been applied on the server; the message says so.
+                on the title, a ref, the draft flag, the description, the
+                cleared reviewers, or the version. The write may have been
+                applied on the server. The message says so.
         """
         if not isinstance(data, dict):
             raise ValueError(
@@ -1550,6 +1562,18 @@ class PullRequestsMixin(BitbucketClient):
         elif draft is not None and data.get("draft") is not draft:
             shown = PullRequestsMixin._shown(data.get("draft"))
             mismatch = f"'draft' {draft} but got {shown}"
+        elif (
+            description is not None
+            and (data.get("description") if data.get("description") is not None else "")
+            != description
+        ):
+            shown = PullRequestsMixin._shown(data.get("description"))
+            mismatch = f"'description' to echo the sent description but got {shown}"
+        elif reviewers_cleared and data.get("reviewers", []) != []:
+            shown = PullRequestsMixin._shown(data.get("reviewers"))
+            mismatch = f"'reviewers' to be empty but got {shown}"
+        elif sent_version is not None and version != sent_version + 1:
+            mismatch = f"a 'version' of {sent_version + 1} but got {version}"
         if mismatch is not None:
             raise ValueError(
                 f"Bitbucket returned an unconfirmed pull-request body for {path}; "
@@ -1652,6 +1676,114 @@ class PullRequestsMixin(BitbucketClient):
             from_ref_id=body["fromRef"]["id"],
             to_ref_id=body["toRef"]["id"],
             draft=draft,
+        )
+
+    def update_pull_request(
+        self,
+        project_key: str,
+        repository_slug: str,
+        pull_request_id: int | str,
+        version: int,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        draft: bool | None = None,
+        to_ref: str | None = None,
+        reviewers: list[str] | None = None,
+    ) -> BitbucketPullRequest:
+        """Update the metadata of an existing pull request.
+
+        Calls ``PUT .../pull-requests/{id}`` once with the optimistic-lock
+        ``version`` and only the fields given. ``None`` means "leave as is"
+        and an empty ``description`` clears it. The body is built by
+        :meth:`_build_pull_request_body`, so ``to_ref`` is qualified like a
+        create's target (a bare name becomes ``refs/heads/<name>`` and a tag
+        is rejected) and reviewers are sent by user name. Sending
+        ``reviewers`` replaces the whole list, so ``[]`` removes every
+        reviewer. The author and the participants cannot be
+        changed here. The endpoint needs ``REPO_WRITE`` on the repository, or
+        ``REPO_READ`` when the caller is the pull request's author.
+
+        Args:
+            project_key: The project key.
+            repository_slug: The repository slug.
+            pull_request_id: The pull-request id (positive integer).
+            version: The pull request's current ``version`` (from
+                :meth:`get_pull_request`).
+            title: A new title, or ``None`` to keep the current one.
+            description: A new description (Markdown), or ``None`` to keep
+                the current one.
+            draft: A new draft flag, or ``None`` to keep the current one.
+            to_ref: A new target branch, or ``None`` to keep the current one.
+            reviewers: The complete new reviewer list (user names), ``[]`` to
+                clear it, or ``None`` to keep the current one.
+
+        Returns:
+            The updated
+            :class:`~mcp_atlassian.models.bitbucket.BitbucketPullRequest`
+            (carrying its new ``version`` for later writes).
+
+        Raises:
+            ValueError: If a segment is blank, the id is not a positive integer,
+                ``version`` is not a non-negative int, no field to change is
+                given, a field fails validation (see
+                :meth:`_build_pull_request_body`), the 2xx body does not
+                confirm the write (see :meth:`_confirmed_pull_request`), or
+                the request fails, where a 400 or a 409 (a stale version, a
+                reviewer that could not be added, a target conflict, or an
+                archived repository) carries the instance's own message.
+            BitbucketResourceNotFoundError: If the repository, the pull
+                request, or the new target branch does not exist or is not
+                accessible. With a new target the message names it.
+            MCPAtlassianAuthenticationError: If the bearer token is rejected
+                or lacks permission to update this pull request (401/403).
+        """
+        base = self._pr_base_path(project_key, repository_slug)
+        pr_id = self._coerce_pr_id(pull_request_id)
+        self._check_version(version)
+        if (
+            title is None
+            and description is None
+            and draft is None
+            and to_ref is None
+            and reviewers is None
+        ):
+            raise ValueError(
+                "Nothing to update: give at least one of title, description, "
+                "draft, to_ref, or reviewers."
+            )
+        body = self._build_pull_request_body(
+            title=title,
+            description=description,
+            draft=draft,
+            to_ref=to_ref,
+            reviewers=reviewers,
+            target_repo=(project_key.strip(), repository_slug.strip()),
+        )
+        body["version"] = version
+        path = f"{base}/{pr_id}"
+        try:
+            data = self._put(path, json_body=body)
+        except BitbucketResourceNotFoundError as e:
+            if "toRef" not in body:
+                raise
+            # The generic 404 text names the repository and pull request. With
+            # a new target the missing piece is more often that branch.
+            raise BitbucketResourceNotFoundError(
+                f"Bitbucket resource not found (HTTP 404) for {path}. The "
+                "repository, the pull request, or the new target ref "
+                f"{self._shown(body['toRef']['id'])} does not exist, or the "
+                "authenticated user lacks permission to view it."
+            ) from e
+        return self._confirmed_pull_request(
+            data,
+            path,
+            title=body.get("title"),
+            to_ref_id=body["toRef"]["id"] if "toRef" in body else None,
+            draft=draft,
+            description=description,
+            reviewers_cleared=reviewers is not None and not reviewers,
+            sent_version=version,
         )
 
     @staticmethod

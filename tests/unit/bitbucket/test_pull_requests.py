@@ -2715,6 +2715,288 @@ class TestCreatePullRequest:
         assert pr.draft is False
 
 
+def _updated_pr(**overrides) -> dict:
+    """A 200 body for an update of the pull request `_created_pr` describes."""
+    overrides.setdefault("version", 4)
+    return _created_pr(**overrides)
+
+
+class TestUpdatePullRequest:
+    """update_pull_request: one PUT, partial body, confirmation, errors."""
+
+    PATH = "/rest/api/1.0/projects/PROJ/repos/my-repo/pull-requests/42"
+
+    def _put(self, fetcher, body):
+        return patch.object(fetcher._session, "put", return_value=_json_response(body))
+
+    def test_title_only_sends_version_and_title(self):
+        """One field plus the version is the whole body."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with self._put(fetcher, _updated_pr(title="Renamed")) as mock_put:
+            pr = fetcher.update_pull_request(
+                "PROJ", "my-repo", 42, version=3, title="Renamed"
+            )
+
+        mock_put.assert_called_once()
+        assert mock_put.call_args[0][0].endswith(self.PATH)
+        assert mock_put.call_args[1]["json"] == {"title": "Renamed", "version": 3}
+        assert mock_put.call_args[1]["params"] is None
+        assert pr.id == 42
+        assert pr.version == 4
+        assert pr.title == "Renamed"
+
+    def test_every_field_is_sent_in_the_spec_shape(self):
+        """description, draft, toRef, and reviewers are sent as the PUT expects."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = _updated_pr(
+            title="T",
+            description="d",
+            draft=True,
+            toRef={"id": "refs/heads/develop", "displayId": "develop"},
+            reviewers=[{"user": {"name": "alice"}, "role": "REVIEWER"}],
+        )
+        with self._put(fetcher, body) as mock_put:
+            pr = fetcher.update_pull_request(
+                "PROJ",
+                "my-repo",
+                42,
+                version=3,
+                title="T",
+                description="d",
+                draft=True,
+                to_ref="develop",
+                reviewers=["alice", "alice"],
+            )
+
+        assert mock_put.call_args[1]["json"] == {
+            "title": "T",
+            "description": "d",
+            "draft": True,
+            "toRef": {
+                "id": "refs/heads/develop",
+                "repository": {"slug": "my-repo", "project": {"key": "PROJ"}},
+            },
+            "reviewers": [{"user": {"name": "alice"}}],
+            "version": 3,
+        }
+        assert pr.to_ref is not None and pr.to_ref.id == "refs/heads/develop"
+
+    def test_empty_reviewers_clears_and_none_omits(self):
+        """``[]`` sends an empty list; ``None`` leaves the key out."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with self._put(fetcher, _updated_pr()) as mock_put:
+            fetcher.update_pull_request("PROJ", "my-repo", 42, version=3, reviewers=[])
+        assert mock_put.call_args[1]["json"] == {"reviewers": [], "version": 3}
+
+        with self._put(fetcher, _updated_pr(title="T")) as mock_put:
+            fetcher.update_pull_request(
+                "PROJ", "my-repo", 42, version=3, title="T", reviewers=None
+            )
+        assert "reviewers" not in mock_put.call_args[1]["json"]
+
+    def test_nothing_to_update_rejected_before_put(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match="Nothing to update"):
+                fetcher.update_pull_request("PROJ", "my-repo", 42, version=3)
+        mock_put.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("kwargs", "match"),
+        [
+            ({"version": -1, "title": "T"}, "version must be a non-negative"),
+            ({"version": "3", "title": "T"}, "version must be a non-negative"),
+            ({"version": True, "title": "T"}, "version must be a non-negative"),
+            ({"version": 3, "title": "  "}, "title must be a non-blank"),
+            ({"version": 3, "to_ref": "refs/tags/v1"}, "to_ref must be a branch"),
+            ({"version": 3, "to_ref": " "}, "to_ref must be a non-empty"),
+            ({"version": 3, "reviewers": ["a", ""]}, "reviewers must be non-blank"),
+            (
+                {"version": 3, "description": "x" * (MAX_PR_DESCRIPTION_CHARS + 1)},
+                f"at most {MAX_PR_DESCRIPTION_CHARS}",
+            ),
+        ],
+        ids=[
+            "negative-version",
+            "string-version",
+            "bool-version",
+            "blank-title",
+            "tag-target",
+            "blank-target",
+            "blank-reviewer",
+            "long-description",
+        ],
+    )
+    def test_invalid_input_rejected_before_put(self, kwargs, match):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError, match=match):
+                fetcher.update_pull_request("PROJ", "my-repo", 42, **kwargs)
+        mock_put.assert_not_called()
+
+    @pytest.mark.parametrize("bad_id", [0, -1, "x"])
+    def test_bad_pull_request_id_rejected_before_put(self, bad_id):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(fetcher._session, "put") as mock_put:
+            with pytest.raises(ValueError):
+                fetcher.update_pull_request(
+                    "PROJ", "my-repo", bad_id, version=3, title="T"
+                )
+        mock_put.assert_not_called()
+
+    def test_stale_version_409_surfaces_server_message(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {
+            "errors": [
+                {
+                    "message": "You are attempting to modify a pull request based on "
+                    "out-of-date information."
+                }
+            ]
+        }
+        with patch.object(
+            fetcher._session, "put", return_value=_http_error_with_body(409, body)
+        ):
+            with pytest.raises(ValueError, match="HTTP 409.*out-of-date information"):
+                fetcher.update_pull_request("PROJ", "my-repo", 42, version=1, title="T")
+
+    def test_400_surfaces_server_message(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = {"errors": [{"message": "The reviewer's username was not specified."}]}
+        with patch.object(
+            fetcher._session, "put", return_value=_http_error_with_body(400, body)
+        ):
+            with pytest.raises(ValueError, match="HTTP 400.*username was not"):
+                fetcher.update_pull_request(
+                    "PROJ", "my-repo", 42, version=1, reviewers=["bob"]
+                )
+
+    def test_404_raises_not_found(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=_http_error_with_body(404, {})
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError):
+                fetcher.update_pull_request("PROJ", "my-repo", 42, version=1, title="T")
+
+    def test_404_with_a_new_target_names_the_ref(self):
+        """A 404 on a retarget names the qualified target, the likely gap."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=_http_error_with_body(404, {})
+        ):
+            with pytest.raises(BitbucketResourceNotFoundError) as excinfo:
+                fetcher.update_pull_request(
+                    "PROJ", "my-repo", 42, version=1, to_ref="develop"
+                )
+        message = str(excinfo.value)
+        assert "HTTP 404" in message
+        assert "'refs/heads/develop'" in message
+        assert message.endswith("lacks permission to view it.")
+
+    def test_401_raises_auth_error(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with patch.object(
+            fetcher._session, "put", return_value=_http_error_with_body(401, {})
+        ):
+            with pytest.raises(MCPAtlassianAuthenticationError):
+                fetcher.update_pull_request("PROJ", "my-repo", 42, version=1, title="T")
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [{}, {"description": None}, {"description": ""}],
+        ids=["absent", "null", "empty"],
+    )
+    def test_cleared_description_is_confirmed_by_an_absent_one(self, overrides):
+        """Bitbucket omits an empty description; clearing it still confirms."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with self._put(fetcher, _updated_pr(**overrides)) as mock_put:
+            pr = fetcher.update_pull_request(
+                "PROJ", "my-repo", 42, version=3, description=""
+            )
+        assert mock_put.call_args[1]["json"] == {"description": "", "version": 3}
+        assert pr.version == 4
+
+    def test_non_dict_response_raises(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with self._put(fetcher, [1, 2]):
+            with pytest.raises(ValueError, match="unexpected response shape"):
+                fetcher.update_pull_request("PROJ", "my-repo", 42, version=1, title="T")
+
+    @pytest.mark.parametrize(
+        ("kwargs", "overrides", "match"),
+        [
+            ({"title": "Renamed"}, {"title": "Other"}, "'title'"),
+            ({"description": "d"}, {"description": "other"}, "'description'"),
+            ({"description": "d"}, {}, "'description'"),
+            ({"draft": True}, {"draft": False}, "'draft' True"),
+            ({"draft": False}, {}, "'draft' False"),
+            ({"to_ref": "develop"}, {}, "'toRef.id' 'refs/heads/develop'"),
+            (
+                {"reviewers": []},
+                {"reviewers": [{"user": {"name": "a"}}]},
+                "'reviewers'",
+            ),
+            (
+                {"title": "Renamed"},
+                {"title": "Renamed", "version": 3},
+                "'version' of 4",
+            ),
+            (
+                {"title": "Renamed"},
+                {"title": "Renamed", "version": 5},
+                "'version' of 4",
+            ),
+        ],
+        ids=[
+            "title",
+            "description",
+            "description-absent",
+            "draft-true",
+            "draft-false-absent",
+            "to-ref-unchanged",
+            "reviewers-not-cleared",
+            "version-unchanged",
+            "version-skipped",
+        ],
+    )
+    def test_mismatched_2xx_body_raises(self, kwargs, overrides, match):
+        """A 200 body that disagrees with a sent field is an unconfirmed write."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with self._put(fetcher, _updated_pr(**overrides)):
+            with pytest.raises(ValueError, match=f"{match}.*was not confirmed"):
+                fetcher.update_pull_request("PROJ", "my-repo", 42, version=3, **kwargs)
+
+    def test_unsent_fields_are_not_checked(self):
+        """Only the sent fields are compared; the rest of the body is free."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        body = _updated_pr(
+            description="whatever",
+            draft=False,
+            reviewers=[{"user": {"name": "alice"}}],
+        )
+        with self._put(fetcher, body):
+            pr = fetcher.update_pull_request(
+                "PROJ", "my-repo", 42, version=3, title="Add feature"
+            )
+        assert pr.version == 4
+
+    def test_non_empty_reviewers_are_not_compared(self):
+        """A sent reviewer the server dropped (the author) is not a mismatch."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with self._put(fetcher, _updated_pr(reviewers=[])):
+            pr = fetcher.update_pull_request(
+                "PROJ", "my-repo", 42, version=3, reviewers=["me"]
+            )
+        assert pr.reviewers == []
+
+    def test_incomplete_2xx_body_raises(self):
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with self._put(fetcher, {"id": 42, "title": "T"}):
+            with pytest.raises(ValueError, match="integer 'version'.*not confirmed"):
+                fetcher.update_pull_request("PROJ", "my-repo", 42, version=3, title="T")
+
+
 def _lifecycle_body(state: str, *, pr_id: int = 5, version: int = 4) -> dict:
     """A RestPullRequest body as a merge, decline, or reopen returns it."""
     return {
