@@ -1494,9 +1494,10 @@ class PullRequestsMixin(BitbucketClient):
         reviewers. A non-empty reviewer list is not compared, because
         Bitbucket drops the author from it without an error. An update also
         expects ``id`` to be the pull request written and ``version`` to be
-        the one sent plus one, since each accepted update bumps it once. A missing or mismatched field, including one a
-        server ignores (a version without draft pull requests), raises an
-        unconfirmed-write error. The write may already have been applied.
+        the one sent plus one, since each accepted update bumps it once. A
+        missing or mismatched field, including one a server ignores (a
+        version without draft pull requests), raises an unconfirmed-write
+        error. The write may already have been applied.
         This follows :meth:`_confirmed_comment`.
 
         Args:
@@ -1697,14 +1698,18 @@ class PullRequestsMixin(BitbucketClient):
     ) -> BitbucketPullRequest:
         """Update the metadata of an existing pull request.
 
-        Calls ``PUT .../pull-requests/{id}`` once with the optimistic-lock
-        ``version`` and only the fields given. ``None`` means "leave as is"
-        and an empty ``description`` clears it. The body is built by
-        :meth:`_build_pull_request_body`, so ``to_ref`` is qualified like a
-        create's target (a bare name becomes ``refs/heads/<name>`` and a tag
-        is rejected) and reviewers are sent by user name. Sending
-        ``reviewers`` replaces the whole list, so ``[]`` removes every
-        reviewer. The author and the participants cannot be
+        Bitbucket treats an update body as the pull request's new state and
+        clears the reviewers (at least) when the body leaves them out, so the
+        update reads before it writes: ``GET .../pull-requests/{id}``, then
+        one ``PUT`` carrying the optimistic-lock ``version`` and every
+        updatable field, each either the change given or the value just read
+        (see :meth:`_update_body`). ``None`` means "leave as is" and an empty
+        ``description`` clears it. The changes are validated by
+        :meth:`_build_pull_request_body` before any request, so ``to_ref`` is
+        qualified like a create's target (a bare name becomes
+        ``refs/heads/<name>`` and a tag is rejected) and reviewers are sent by
+        user name. Sending ``reviewers`` replaces the whole list, so ``[]``
+        removes every reviewer. The author and the participants cannot be
         changed here. The endpoint needs ``REPO_WRITE`` on the repository, or
         ``REPO_READ`` when the caller is the pull request's author.
 
@@ -1731,7 +1736,9 @@ class PullRequestsMixin(BitbucketClient):
             ValueError: If a segment is blank, the id is not a positive integer,
                 ``version`` is not a non-negative int, no field to change is
                 given, a field fails validation (see
-                :meth:`_build_pull_request_body`), the 2xx body does not
+                :meth:`_build_pull_request_body`), the pull request read is at
+                another version or cannot be re-sent (see
+                :meth:`_update_body`; no write is sent), the 2xx body does not
                 confirm the write (see :meth:`_confirmed_pull_request`), or
                 the request fails, where a 400 or a 409 (a stale version, a
                 reviewer that could not be added, a target conflict, or an
@@ -1756,20 +1763,27 @@ class PullRequestsMixin(BitbucketClient):
                 "Nothing to update: give at least one of title, description, "
                 "draft, to_ref, or reviewers."
             )
-        body = self._build_pull_request_body(
+        target_repo = (project_key.strip(), repository_slug.strip())
+        changes = self._build_pull_request_body(
             title=title,
             description=description,
             draft=draft,
             to_ref=to_ref,
             reviewers=reviewers,
-            target_repo=(project_key.strip(), repository_slug.strip()),
+            target_repo=target_repo,
         )
-        body["version"] = version
         path = f"{base}/{pr_id}"
+        body = self._update_body(
+            self._get(path),
+            changes,
+            path=path,
+            version=version,
+            target_repo=target_repo,
+        )
         try:
             data = self._put(path, json_body=body)
         except BitbucketResourceNotFoundError as e:
-            if "toRef" not in body:
+            if "toRef" not in changes:
                 raise
             # The generic 404 text names the repository and pull request. With
             # a new target the missing piece is more often that branch.
@@ -1782,14 +1796,107 @@ class PullRequestsMixin(BitbucketClient):
         return self._confirmed_pull_request(
             data,
             path,
-            title=body.get("title"),
-            to_ref_id=body["toRef"]["id"] if "toRef" in body else None,
+            title=changes.get("title"),
+            to_ref_id=changes["toRef"]["id"] if "toRef" in changes else None,
             draft=draft,
             description=description,
             reviewers_cleared=reviewers is not None and not reviewers,
             sent_version=version,
             pr_id=pr_id,
         )
+
+    @staticmethod
+    def _update_body(
+        current: Any,
+        changes: dict[str, Any],
+        *,
+        path: str,
+        version: int,
+        target_repo: tuple[str, str],
+    ) -> dict[str, Any]:
+        """Merge the requested changes into the pull request's current state.
+
+        Every updatable field is sent: ``title``, ``toRef``, and ``reviewers``
+        always, and ``description`` and ``draft`` when the change or the
+        pull request carries them (Bitbucket omits an empty description, and
+        a version without draft pull requests omits the flag). A field not in
+        ``changes`` takes the value read. Reviewers are re-sent by user name,
+        without the ``MAX_PR_REVIEWERS`` cap that applies to a requested
+        list, so a pull request that already has more can still be updated.
+
+        Args:
+            current: The parsed ``GET .../pull-requests/{id}`` body.
+            changes: The validated fields to change, from
+                :meth:`_build_pull_request_body`.
+            path: The API path, for the error messages.
+            version: The optimistic-lock version the caller sent.
+            target_repo: The ``(project_key, repository_slug)`` the pull
+                request belongs to, for the ``toRef`` repository.
+
+        Returns:
+            The ``PUT`` body, carrying ``version``.
+
+        Raises:
+            ValueError: If ``current`` is not an object, its ``version`` is
+                not an integer or differs from ``version`` (the caller's view
+                is stale), or a field to keep is missing or malformed (a title, a target ref
+                id, or a reviewer user name), since leaving it out of the
+                write could clear it.
+        """
+        if not isinstance(current, dict):
+            raise ValueError(
+                "Bitbucket returned an unexpected response shape for "
+                f"{path}; expected a pull-request object. Nothing was updated."
+            )
+
+        def _missing(field: str) -> ValueError:
+            return ValueError(
+                f"Bitbucket returned a pull request for {path} without a usable "
+                f"{field}. Nothing was updated, because leaving it out of the "
+                "update could clear it."
+            )
+
+        current_version = current.get("version")
+        if not isinstance(current_version, int) or isinstance(current_version, bool):
+            raise _missing("'version'")
+        if current_version != version:
+            raise ValueError(
+                f"version {version} is stale: the pull request at {path} is at "
+                f"version {current_version}. Read it again with "
+                "bitbucket_get_pull_request and reapply the change. Nothing was "
+                "updated."
+            )
+
+        body = dict(changes)
+        if "title" not in body:
+            title = current.get("title")
+            if not isinstance(title, str) or not title.strip():
+                raise _missing("'title'")
+            body["title"] = title
+        if "description" not in body and isinstance(current.get("description"), str):
+            body["description"] = current["description"]
+        if "draft" not in body and isinstance(current.get("draft"), bool):
+            body["draft"] = current["draft"]
+        if "toRef" not in body:
+            to_ref = current.get("toRef")
+            ref_id = to_ref.get("id") if isinstance(to_ref, dict) else None
+            if not isinstance(ref_id, str) or not ref_id:
+                raise _missing("'toRef.id'")
+            body["toRef"] = PullRequestsMixin._ref_object(ref_id, target_repo)
+        if "reviewers" not in body:
+            entries = current.get("reviewers")
+            if not isinstance(entries, list):
+                raise _missing("'reviewers' list")
+            names: list[str] = []
+            for entry in entries:
+                user = entry.get("user") if isinstance(entry, dict) else None
+                name = user.get("name") if isinstance(user, dict) else None
+                if not isinstance(name, str) or not name:
+                    raise _missing("reviewer user name")
+                names.append(name)
+            body["reviewers"] = [{"user": {"name": name}} for name in names]
+        body["version"] = version
+        return body
 
     @staticmethod
     def _check_version(version: int) -> None:

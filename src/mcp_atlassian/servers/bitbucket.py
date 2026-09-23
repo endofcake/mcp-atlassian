@@ -2790,8 +2790,9 @@ async def update_pull_request(
         Field(
             description=(
                 "The pull request's current version, read from "
-                "get_pull_request immediately before updating. A 409 means "
-                "the pull request changed since you read it. Re-read and retry."
+                "get_pull_request immediately before updating. If the pull "
+                "request has moved on, the update is refused without writing "
+                "(or the server returns a 409). Re-read and retry."
             ),
             ge=0,
         ),
@@ -2857,10 +2858,16 @@ async def update_pull_request(
     """Update pull-request metadata (needs REPO_WRITE, or REPO_READ as the author).
 
     Changes the title, description, draft flag, target branch, or reviewers
-    of an existing pull request in one optimistic-locked request: 'version'
-    must be the pull request's current version from get_pull_request, and
-    at least one field to change must be given. Omitted fields keep their
-    current value. An empty description clears it. 'reviewers' replaces the
+    of an existing pull request. 'version' must be the pull request's
+    current version from get_pull_request, and at least one field to change
+    must be given. Bitbucket removes reviewers (and possibly other fields)
+    that an update leaves out, so the tool reads the pull request first and
+    writes its full current state with the changes applied: two requests,
+    the write optimistic-locked on 'version'. Omitted fields keep their
+    current value. An empty description clears it. Because the current
+    reviewers are re-sent, one who can no longer be added (for example a
+    deactivated user) fails the update with a 409; pass 'reviewers' without
+    that user. 'reviewers' replaces the
     whole list: pass every reviewer to keep, or an empty list to remove them
     all. The author and the participants cannot be changed.
 
