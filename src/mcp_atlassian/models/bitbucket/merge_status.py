@@ -106,9 +106,9 @@ class BitbucketMergeStatus(ApiModel):
     def to_simplified_dict(self) -> dict[str, Any]:
         """Convert to a simplified dictionary for API responses.
 
-        ``vetoes`` is always present (possibly empty) so a caller can tell
-        "no vetoes" from "not reported". The optional scalars are omitted when
-        the server did not report them.
+        ``vetoes`` is always present. It is empty when the server reports no
+        vetoes or omits the field. The optional scalars are omitted when the
+        server did not report them.
         """
         result: dict[str, Any] = {}
         if self.can_merge is not None:
