@@ -1481,6 +1481,7 @@ class PullRequestsMixin(BitbucketClient):
         description: str | None = None,
         reviewers_cleared: bool = False,
         sent_version: int | None = None,
+        pr_id: int | None = None,
     ) -> BitbucketPullRequest:
         """Parse a 2xx pull-request write body, requiring its acknowledgements.
 
@@ -1492,8 +1493,8 @@ class PullRequestsMixin(BitbucketClient):
         and an empty ``reviewers`` list when the request cleared the
         reviewers. A non-empty reviewer list is not compared, because
         Bitbucket drops the author from it without an error. An update also
-        expects ``version`` to be the one sent plus one, since each accepted
-        update bumps it once. A missing or mismatched field, including one a
+        expects ``id`` to be the pull request written and ``version`` to be
+        the one sent plus one, since each accepted update bumps it once. A missing or mismatched field, including one a
         server ignores (a version without draft pull requests), raises an
         unconfirmed-write error. The write may already have been applied.
         This follows :meth:`_confirmed_comment`.
@@ -1511,6 +1512,7 @@ class PullRequestsMixin(BitbucketClient):
             reviewers_cleared: Whether the request sent an empty reviewer
                 list, which the body must echo as no reviewers.
             sent_version: For an update, the optimistic-lock version sent.
+            pr_id: For an update, the id of the pull request written.
 
         Returns:
             The confirmed
@@ -1519,8 +1521,8 @@ class PullRequestsMixin(BitbucketClient):
         Raises:
             ValueError: If the body is not an object, lacks a positive integer
                 ``id`` or an integer ``version``, or disagrees with the request
-                on the title, a ref, the draft flag, the description, the
-                cleared reviewers, or the version. The write may have been
+                on the id, the title, a ref, the draft flag, the description,
+                the cleared reviewers, or the version. The write may have been
                 applied on the server. The message says so.
         """
         if not isinstance(data, dict):
@@ -1548,7 +1550,9 @@ class PullRequestsMixin(BitbucketClient):
             return ref.get("id") if isinstance(ref, dict) else None
 
         mismatch: str | None = None
-        if title is not None and data.get("title") != title:
+        if pr_id is not None and returned_id != pr_id:
+            mismatch = f"'id' {pr_id} but got {returned_id}"
+        elif title is not None and data.get("title") != title:
             shown = PullRequestsMixin._shown(data.get("title"))
             mismatch = f"'title' to echo the sent title but got {shown}"
         elif from_ref_id is not None and _ref_id("fromRef") != from_ref_id:
@@ -1784,6 +1788,7 @@ class PullRequestsMixin(BitbucketClient):
             description=description,
             reviewers_cleared=reviewers is not None and not reviewers,
             sent_version=version,
+            pr_id=pr_id,
         )
 
     @staticmethod

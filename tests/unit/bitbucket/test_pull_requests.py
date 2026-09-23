@@ -2990,6 +2990,13 @@ class TestUpdatePullRequest:
             )
         assert pr.reviewers == []
 
+    def test_body_for_another_pull_request_raises(self):
+        """A body whose id is not the pull request written is unconfirmed."""
+        fetcher = BitbucketFetcher(config=_byo_config())
+        with self._put(fetcher, _updated_pr(id=43, title="T")):
+            with pytest.raises(ValueError, match="'id' 42 but got 43.*not confirmed"):
+                fetcher.update_pull_request("PROJ", "my-repo", 42, version=3, title="T")
+
     def test_incomplete_2xx_body_raises(self):
         fetcher = BitbucketFetcher(config=_byo_config())
         with self._put(fetcher, {"id": 42, "title": "T"}):
